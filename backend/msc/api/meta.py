@@ -92,8 +92,8 @@ WRITE
   POST   /memories/batch              {{"memories":[...], "upsert":true}} -> per-item result
   POST   /memories/{{slug}}/relate    link two memories
   POST   /memories/graph/auto-link    connect memory pairs sharing >=min_shared exact
-                                      keywords (default min_freq=3, max_coverage=0.4,
-                                      min_shared=2, rebuild=false)
+                                      keywords (default min_freq=3, max_coverage=0.3,
+                                      min_shared=3, rebuild=false)
   DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge)
   DELETE /memories/archived           hard-purge every archived memory at once
   POST   /memories/{{slug}}/restore   undo a soft delete

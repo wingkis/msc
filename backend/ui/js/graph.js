@@ -29,7 +29,7 @@ async function autoLinkGraph() {
   try {
     const result = await API.autoLinkGraph();
     if (result.relations_created === 0) {
-      toast('自动关联: 没有新的强关联 (共享≥2个精确关键词的对才建边)');
+      toast('自动关联: 没有新的强关联 (共享≥3个精确关键词的对才建边)');
     } else {
       const generic = result.generic_words.slice(0, 5).map(w => w.word).join(', ');
       toast(`自动关联完成: 新增 ${result.relations_created} 条强关联；通用词已排除: ${generic || '无'}`);

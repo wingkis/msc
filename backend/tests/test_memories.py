@@ -227,7 +227,8 @@ def test_auto_link_requires_several_shared_keywords(client):
     client.post("/api/v1/memories", json={"name": "Pine", "slug": "link-c",
                                           "body": "alpha gamma", "category": "knowledge"})
 
-    client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 2, "max_coverage": 1.0})
+    client.post("/api/v1/memories/graph/auto-link",
+                params={"min_freq": 2, "max_coverage": 1.0, "min_shared": 2})
     linked = {r["slug"] for r in client.get("/api/v1/memories/link-a/relate").json()}
     assert "link-b" in linked
     assert "link-c" not in linked

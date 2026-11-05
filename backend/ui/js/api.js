@@ -104,7 +104,7 @@ const API = {
     const qs = center ? `?center=${encodeURIComponent(center)}` : '';
     return apiFetch(`/memories/graph${qs}`);
   },
-  autoLinkGraph({ minFreq = 3, maxCoverage = 0.4, minShared = 2, rebuild = false } = {}) {
+  autoLinkGraph({ minFreq = 3, maxCoverage = 0.3, minShared = 3, rebuild = false } = {}) {
     return apiFetch(`/memories/graph/auto-link?min_freq=${minFreq}&max_coverage=${maxCoverage}&min_shared=${minShared}&rebuild=${rebuild}`,
       { method: 'POST' });
   },
