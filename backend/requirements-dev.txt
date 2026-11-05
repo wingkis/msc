@@ -1,0 +1,2 @@
+# Test-only dependencies: pip install -r backend/requirements-dev.txt
+pytest>=8.0.0

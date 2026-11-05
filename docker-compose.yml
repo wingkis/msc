@@ -1,0 +1,44 @@
+services:
+  msc-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: msc-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - /home/astro/msc/data:/app/data
+      - /home/astro/msc/backups:/app/backups
+      - /home/astro/.msc/memory:/home/astro/.msc/memory:rw
+      - /home/astro/.claude/projects/-home-astro/memory:/home/astro/.claude/projects/-home-astro/memory:rw
+    environment:
+      - MSC_DB_PATH=/app/data/msc.db
+      - MSC_MEMORY_DIR=/home/astro/.msc/memory
+      - MSC_CLAUDE_MEMORY_DIR=/home/astro/.claude/projects/-home-astro/memory
+      - MSC_BACKUP_DIR=/app/backups
+      # LAN mode: no login, no token, nothing expires.
+      # Set MSC_AUTH_ENABLED=true in .env to switch JWT/API-Key auth back on.
+      - MSC_AUTH_ENABLED=${MSC_AUTH_ENABLED:-false}
+      - MSC_SECRET_KEY=${MSC_SECRET_KEY:-change-me-in-production}
+      - MSC_INITIAL_ADMIN_KEY=${MSC_INITIAL_ADMIN_KEY:-}
+      - MSC_BIND_HOST=0.0.0.0
+      - MSC_CORS_ORIGINS=${MSC_CORS_ORIGINS:-*}
+      # Address agents should use; only affects /api/v1/help and /llms.txt.
+      - MSC_PUBLIC_URL=${MSC_PUBLIC_URL:-}
+      - MSC_READ_ONLY=${MSC_READ_ONLY:-false}
+      - MSC_HEALTH_DETAIL=${MSC_HEALTH_DETAIL:-true}
+      - MSC_SYNC_INTERVAL_SECONDS=${MSC_SYNC_INTERVAL_SECONDS:-60}
+      - MSC_BACKUP_KEEP=${MSC_BACKUP_KEEP:-14}
+    restart: unless-stopped
+    # The access log is the audit trail of a no-login service — keep it, but
+    # cap it so it cannot fill the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

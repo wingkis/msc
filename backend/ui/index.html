@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MSC Memory</title>
+  <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.1">
+</head>
+<body>
+  <!-- Header -->
+  <header id="app-header">
+    <div class="header-inner">
+      <a href="javascript:void(0)" onclick="navTo('dashboard')" class="logo">
+        <span class="logo-icon">🧠</span>
+        <span class="logo-text">MSC Memory</span>
+      </a>
+      <nav class="nav-links" id="nav-links">
+        <a href="javascript:void(0)" data-page="dashboard" onclick="navTo('dashboard')" class="nav-link active">
+          <span class="nav-icon">📊</span> 仪表板
+        </a>
+        <a href="javascript:void(0)" data-page="memories" onclick="navTo('memories')" class="nav-link">
+          <span class="nav-icon">📝</span> 记忆
+        </a>
+        <a href="javascript:void(0)" data-page="search" onclick="navTo('search')" class="nav-link">
+          <span class="nav-icon">🔍</span> 搜索
+        </a>
+        <a href="javascript:void(0)" data-page="graph" onclick="navTo('graph')" class="nav-link">
+          <span class="nav-icon">🔗</span> 图谱
+        </a>
+        <a href="javascript:void(0)" data-page="settings" onclick="navTo('settings')" class="nav-link">
+          <span class="nav-icon">⚙️</span> 设置
+        </a>
+      </nav>
+      <div class="header-actions">
+        <button class="btn btn-primary" onclick="openAddModal()">+ 新建</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main id="app-main">
+    <!-- Dashboard -->
+    <section id="page-dashboard" class="page active">
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card">
+          <div class="stat-number" id="stat-total">-</div>
+          <div class="stat-label">总记忆数</div>
+        </div>
+        <div class="stat-card stat-config">
+          <div class="stat-number" id="stat-config">-</div>
+          <div class="stat-label">配置</div>
+        </div>
+        <div class="stat-card stat-project">
+          <div class="stat-number" id="stat-project">-</div>
+          <div class="stat-label">项目</div>
+        </div>
+        <div class="stat-card stat-user">
+          <div class="stat-number" id="stat-user">-</div>
+          <div class="stat-label">用户</div>
+        </div>
+        <div class="stat-card stat-knowledge">
+          <div class="stat-number" id="stat-knowledge">-</div>
+          <div class="stat-label">知识</div>
+        </div>
+        <div class="stat-card stat-reference">
+          <div class="stat-number" id="stat-reference">-</div>
+          <div class="stat-label">参考</div>
+        </div>
+      </div>
+
+      <div class="dashboard-layout">
+        <div class="dashboard-main">
+          <h2>最近记忆</h2>
+          <div id="recent-memories" class="memory-list"></div>
+        </div>
+        <div class="dashboard-sidebar">
+          <div class="widget">
+            <h3>快速搜索</h3>
+            <div class="search-box">
+              <input type="text" placeholder="关键词搜索..." id="dashboard-search"
+                     onkeydown="if(event.key==='Enter')quickSearch('dashboard-search')">
+              <button onclick="quickSearch('dashboard-search')">🔍</button>
+            </div>
+          </div>
+          <div class="widget">
+            <h3>优先级分布</h3>
+            <div id="priority-chart" class="priority-bars"></div>
+          </div>
+          <div class="widget">
+            <h3>同步状态</h3>
+            <div id="sync-status" class="sync-status">
+              <div class="sync-indicator">● 就绪</div>
+              <button class="btn btn-sm" onclick="doSync()">同步</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Memory List -->
+    <section id="page-memories" class="page">
+      <div class="memories-layout">
+        <aside class="filters-sidebar">
+          <h3>筛选</h3>
+          <div class="filter-group">
+            <label>分类</label>
+            <div class="checkbox-list">
+              <label><input type="checkbox" value="config" onchange="filterMemories()"> 配置</label>
+              <label><input type="checkbox" value="project" onchange="filterMemories()"> 项目</label>
+              <label><input type="checkbox" value="user" onchange="filterMemories()"> 用户</label>
+              <label><input type="checkbox" value="knowledge" onchange="filterMemories()"> 知识</label>
+              <label><input type="checkbox" value="reference" onchange="filterMemories()"> 参考</label>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label>优先级</label>
+            <div class="checkbox-list">
+              <label><input type="checkbox" value="critical" onchange="filterMemories()"> 致命</label>
+              <label><input type="checkbox" value="high" onchange="filterMemories()"> 高</label>
+              <label><input type="checkbox" value="medium" onchange="filterMemories()"> 中</label>
+              <label><input type="checkbox" value="low" onchange="filterMemories()"> 低</label>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label>分支</label>
+            <select id="filter-branch" onchange="filterMemories()">
+              <option value="">全部分支</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label><input type="checkbox" id="filter-archived" onchange="loadMemories()"> 显示已归档</label>
+          </div>
+          <button class="btn btn-ghost" onclick="clearFilters()">清除筛选</button>
+        </aside>
+        <div class="memories-main">
+          <div class="memories-header">
+            <h2 id="memories-count">记忆列表</h2>
+            <div class="memories-search">
+              <input type="text" placeholder="搜索记忆..." id="memories-search-input"
+                     oninput="debouncedSearch()">
+            </div>
+          </div>
+          <div id="memories-list" class="memory-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Search -->
+    <section id="page-search" class="page">
+      <div class="search-page">
+        <div class="search-hero">
+          <h1>搜索记忆</h1>
+          <div class="search-bar">
+            <input type="text" placeholder="输入关键词搜索..." id="search-input"
+                   onkeydown="if(event.key==='Enter')doSearch()">
+            <button class="btn btn-primary btn-lg" onclick="doSearch()">搜索</button>
+          </div>
+          <div class="search-filters">
+            <select id="search-tag-filter">
+              <option value="">所有标签</option>
+            </select>
+            <select id="search-category-filter">
+              <option value="">所有分类</option>
+              <option value="config">配置</option>
+              <option value="project">项目</option>
+              <option value="user">用户</option>
+              <option value="knowledge">知识</option>
+              <option value="reference">参考</option>
+            </select>
+            <select id="search-priority-filter">
+              <option value="">所有优先级</option>
+              <option value="critical">致命</option>
+              <option value="high">高</option>
+              <option value="medium">中</option>
+              <option value="low">低</option>
+            </select>
+          </div>
+        </div>
+        <div id="search-results" class="search-results"></div>
+        <div id="search-empty" class="search-empty">
+          <p>输入关键词开始搜索记忆...</p>
+          <p class="search-hint">支持全文搜索，自动匹配名称、描述和内容</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Graph -->
+    <section id="page-graph" class="page">
+      <div class="graph-page">
+        <div class="graph-controls">
+          <div class="search-box small">
+            <input type="text" placeholder="搜索节点..." id="graph-search"
+                   oninput="filterGraphNodes()">
+          </div>
+          <select id="graph-category-filter" onchange="filterGraphNodes()">
+            <option value="">所有分类</option>
+            <option value="config">配置</option>
+            <option value="project">项目</option>
+            <option value="user">用户</option>
+            <option value="knowledge">知识</option>
+            <option value="reference">参考</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="fitGraph()">适应视图</button>
+          <button class="btn btn-ghost btn-sm" onclick="reloadGraph()">刷新</button>
+        </div>
+        <div id="graph-container" class="graph-container"></div>
+        <div id="graph-detail" class="graph-detail">
+          <p class="graph-detail-hint">点击节点查看详情</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="page-settings" class="page">
+      <div class="settings-page">
+        <h1>设置</h1>
+        <div class="settings-grid">
+          <div class="settings-card">
+            <h3>🔓 访问模式</h3>
+            <div class="setting-item">
+              <div id="settings-auth-status" style="color:var(--text-muted)">局域网模式 — 无需登录</div>
+            </div>
+            <div class="setting-hint">
+              局域网免登录：所有 API 和 Web UI 直接可用，没有 token 过期问题。<br>
+              需要恢复鉴权时，在 <code>.env</code> 里设 <code>MSC_AUTH_ENABLED=true</code> 并重启容器。
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>🔄 同步</h3>
+            <div class="sync-controls">
+              <button class="btn" onclick="doSync()">推送到文件</button>
+              <button class="btn" onclick="doPull()">从文件拉取</button>
+              <button class="btn btn-ghost" onclick="doReindex()">重建索引</button>
+              <div id="sync-result" class="sync-result"></div>
+            </div>
+            <div id="sync-detail" class="kv-list"></div>
+            <h4>最近同步日志</h4>
+            <div id="sync-logs" class="log-list"></div>
+          </div>
+          <div class="settings-card">
+            <h3>🩺 服务自检</h3>
+            <div id="health-detail" class="kv-list"></div>
+          </div>
+          <div class="settings-card">
+            <h3>💾 备份</h3>
+            <div class="backup-controls">
+              <button class="btn btn-primary" onclick="createBackup()">创建备份</button>
+              <div id="backup-list" class="backup-list"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>ℹ️ 关于</h3>
+            <div class="about-info">
+              <p><strong>MSC</strong></p>
+              <p>Memory Sync Client — 个人记忆管理系统</p>
+              <p id="about-version">版本: -</p>
+              <p>API 用法（给 agent 看的纯文本）：<a href="/llms.txt" target="_blank">/llms.txt</a></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Add/Edit Modal -->
+  <div id="modal-overlay" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal" id="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-title">新建记忆</h2>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>名称 *</label>
+            <input type="text" id="form-name" placeholder="记忆名称">
+          </div>
+          <div class="form-group">
+            <label>描述</label>
+            <input type="text" id="form-description" placeholder="简短描述">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>分类</label>
+            <select id="form-category">
+              <option value="config">配置</option>
+              <option value="project">项目</option>
+              <option value="user">用户</option>
+              <option value="knowledge" selected>知识</option>
+              <option value="reference">参考</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>优先级</label>
+            <select id="form-priority">
+              <option value="critical">致命</option>
+              <option value="high">高</option>
+              <option value="medium" selected>中</option>
+              <option value="low">低</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>标签</label>
+            <input type="text" id="form-tags" placeholder="逗号分隔">
+          </div>
+          <div class="form-group">
+            <label>分支</label>
+            <input type="text" id="form-branch" placeholder="可选分支名">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>内容</label>
+          <textarea id="form-body" rows="10" placeholder="记忆内容 (Markdown)"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveMemory()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory Detail Modal -->
+  <div id="detail-overlay" class="modal-overlay" onclick="if(event.target===this)closeDetailModal()">
+    <div class="modal modal-lg" id="detail-content">
+      <div class="modal-header">
+        <h2 id="detail-title">记忆详情</h2>
+        <button class="modal-close" onclick="closeDetailModal()">✕</button>
+      </div>
+      <div class="modal-body" id="detail-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" onclick="deleteCurrentMemory()">删除</button>
+        <button class="btn btn-ghost" onclick="closeDetailModal()">关闭</button>
+        <button class="btn btn-primary" onclick="editCurrentMemory()">编辑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast: delete is soft, so the undo button lives here -->
+  <div id="toast" class="toast"></div>
+
+  <script src="/ui/js/api.js?v=2.1.1"></script>
+  <script src="/ui/js/app.js?v=2.1.1"></script>
+  <script src="/ui/js/graph.js?v=2.1.1"></script>
+  <script>
+    // Init app on load
+    document.addEventListener('DOMContentLoaded', () => { initApp(); });
+  </script>
+</body>
+</html>
