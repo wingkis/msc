@@ -236,7 +236,8 @@ def test_auto_link_requires_several_shared_keywords(client):
 
 def test_auto_link_rebuild_replaces_keyword_edges(client):
     rebuilt = client.post("/api/v1/memories/graph/auto-link",
-                          params={"min_freq": 2, "max_coverage": 1.0, "rebuild": True}).json()
+                          params={"min_freq": 2, "max_coverage": 1.0,
+                                  "min_shared": 2, "rebuild": True}).json()
     assert rebuilt["relations_created"] > 0
     relation = client.get("/api/v1/memories/link-a/relate").json()
     assert any(r["relation_type"] == "keyword" for r in relation)
