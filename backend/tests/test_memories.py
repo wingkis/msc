@@ -182,11 +182,14 @@ def test_graph_auto_link_shares_exact_keywords(client):
     client.post("/api/v1/memories", json={
         "name": "Unrelated", "slug": "unrelated-note", "body": "nothing relevant here"})
 
-    resp = client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3})
+    # max_coverage=1.0 turns off the ambient-word cap so these tests isolate
+    # the pair logic; the cap itself is exercised by the live corpus.
+    resp = client.post("/api/v1/memories/graph/auto-link",
+                       params={"min_freq": 3, "max_coverage": 1.0})
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["relations_created"] > 0
-    assert any(w["word"] in ("backup", "docker") for w in data["words"])
+    assert any("backup" in p["words"] for p in data["pairs"])
 
     relations = client.get("/api/v1/memories/backup-note-0/relate").json()
     linked = {r["slug"] for r in relations}
@@ -194,7 +197,8 @@ def test_graph_auto_link_shares_exact_keywords(client):
     assert "unrelated-note" not in linked
 
     # Idempotent: a second pass creates nothing new.
-    second = client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3}).json()
+    second = client.post("/api/v1/memories/graph/auto-link",
+                         params={"min_freq": 3, "max_coverage": 1.0}).json()
     assert second["relations_created"] == 0
 
 
@@ -208,7 +212,30 @@ def test_graph_auto_link_ignores_substring_only_matches(client):
         "name": "Substring trap", "slug": "substring-trap",
         "body": "notexactwordnot is a different token", "category": "knowledge"})
 
-    client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3})
+    client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3, "max_coverage": 1.0})
     relations = {r["slug"] for r in client.get("/api/v1/memories/keyword-test-0/relate").json()}
     assert "substring-trap" not in relations
     assert {"keyword-test-1", "keyword-test-2"} <= relations
+
+
+def test_auto_link_requires_several_shared_keywords(client):
+    """Pairs sharing only one keyword stay unlinked; the cap skips ubiquitous words."""
+    client.post("/api/v1/memories", json={"name": "Maple", "slug": "link-a",
+                                          "body": "alpha beta", "category": "knowledge"})
+    client.post("/api/v1/memories", json={"name": "Cedar", "slug": "link-b",
+                                          "body": "alpha beta", "category": "knowledge"})
+    client.post("/api/v1/memories", json={"name": "Pine", "slug": "link-c",
+                                          "body": "alpha gamma", "category": "knowledge"})
+
+    client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 2, "max_coverage": 1.0})
+    linked = {r["slug"] for r in client.get("/api/v1/memories/link-a/relate").json()}
+    assert "link-b" in linked
+    assert "link-c" not in linked
+
+
+def test_auto_link_rebuild_replaces_keyword_edges(client):
+    rebuilt = client.post("/api/v1/memories/graph/auto-link",
+                          params={"min_freq": 2, "max_coverage": 1.0, "rebuild": True}).json()
+    assert rebuilt["relations_created"] > 0
+    relation = client.get("/api/v1/memories/link-a/relate").json()
+    assert any(r["relation_type"] == "keyword" for r in relation)

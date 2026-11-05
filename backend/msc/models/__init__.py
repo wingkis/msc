@@ -159,7 +159,10 @@ class MemoryRelation(Base):
     memory_b = relationship("Memory", foreign_keys=[memory_id_b], back_populates="relations_in")
 
     __table_args__ = (
-        CheckConstraint("relation_type IN ('related','depends_on','supersedes','seealso')", name="ck_relation_type"),
+        CheckConstraint(
+            "relation_type IN ('related','depends_on','supersedes','seealso','keyword')",
+            name="ck_relation_type",
+        ),
     )
 
 

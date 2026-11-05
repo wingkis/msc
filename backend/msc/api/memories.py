@@ -308,25 +308,25 @@ def get_graph(center: Optional[str] = Query(None), db: Session = Depends(get_db)
 @router.post("/graph/auto-link")
 def auto_link_graph(
     min_freq: int = Query(3, ge=2, le=10, description="A keyword must appear in at least this many memories"),
+    max_coverage: float = Query(0.4, gt=0.0, le=1.0, description="Words covering more than this share of memories are too generic to link on"),
+    min_shared: int = Query(2, ge=1, le=5, description="A pair must share at least this many keywords"),
+    rebuild: bool = Query(False, description="Drop all auto-created keyword edges first, then recompute"),
     request: Request = None, db: Session = Depends(get_db),
 ):
-    """One pass: link memories that share an exact whole-word keyword.
+    """One pass: link memories that share several exact whole-word keywords.
 
     Scans name/description/body/tags of every live memory, tokenises it
-    (ASCII words + segmented Chinese words), and connects memories sharing a
-    word that occurs in at least ``min_freq`` memories. Idempotent — already
-    linked pairs are skipped.
+    (ASCII words + segmented Chinese words), and connects pairs whose shared
+    keyword count reaches ``min_shared``. Keywords whose coverage exceeds
+    ``max_coverage`` of the corpus are treated as ambient vocabulary and
+    skipped. Idempotent — already linked pairs are skipped.
     """
     from msc.services.keyword_links import build_keyword_links
 
     _require_auth(request, db)
     _guard_write()
-    links = build_keyword_links(db, min_freq=min_freq)
-    return {
-        "relations_created": sum(link["pairs_created"] for link in links),
-        "words": links,
-        "min_freq": min_freq,
-    }
+    return build_keyword_links(db, min_freq=min_freq, max_coverage=max_coverage,
+                               min_shared=min_shared, rebuild=rebuild)
 
 
 # ── Get memory detail ─────────────────────────────────────────────────

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.5">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.6">
 </head>
 <body>
   <!-- Header -->
@@ -202,7 +202,7 @@
             <option value="reference">参考</option>
           </select>
           <button class="btn btn-primary btn-sm" onclick="autoLinkGraph()"
-                  title="扫描高频关键词, 精确整词匹配自动建立关联 (幂等, 已关联的跳过)">⚡ 自动关联</button>
+                  title="精确整词匹配: 记忆对共享 ≥2 个高频关键词才建边; 覆盖 >40% 的通用词排除 (幂等)">⚡ 自动关联</button>
           <button class="btn btn-ghost btn-sm" onclick="fitGraph()">适应视图</button>
           <button class="btn btn-ghost btn-sm" onclick="reloadGraph()">刷新</button>
         </div>
@@ -357,9 +357,9 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.1.5"></script>
-  <script src="/ui/js/app.js?v=2.1.5"></script>
-  <script src="/ui/js/graph.js?v=2.1.5"></script>
+  <script src="/ui/js/api.js?v=2.1.6"></script>
+  <script src="/ui/js/app.js?v=2.1.6"></script>
+  <script src="/ui/js/graph.js?v=2.1.6"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

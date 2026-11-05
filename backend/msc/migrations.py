@@ -158,6 +158,37 @@ def clean_existing_bodies() -> list[str]:
     return fixed
 
 
+def ensure_relation_types() -> bool:
+    """Add 'keyword' to the relation_type CHECK constraint.
+
+    SQLite cannot ALTER a CHECK, so the table is rebuilt in place. Idempotent:
+    a no-op once the constraint already allows 'keyword'.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name='memory_relations' AND type='table'"
+        )).fetchone()
+        if row is None or "keyword" in (row[0] or ""):
+            return False
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conn.execute(text("""
+            CREATE TABLE memory_relations_new (
+                memory_id_a INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                memory_id_b INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                relation_type TEXT NOT NULL DEFAULT 'related'
+                    CHECK (relation_type IN ('related','depends_on','supersedes','seealso','keyword')),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (memory_id_a, memory_id_b)
+            )
+        """))
+        conn.execute(text("INSERT INTO memory_relations_new SELECT * FROM memory_relations"))
+        conn.execute(text("DROP TABLE memory_relations"))
+        conn.execute(text("ALTER TABLE memory_relations_new RENAME TO memory_relations"))
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        _log.info("schema: memory_relations now allows the 'keyword' relation type")
+        return True
+
+
 def prune_version_history() -> int:
     """Keep only the newest version snapshot per memory.
 
@@ -186,6 +217,7 @@ def run_maintenance() -> dict:
         "branches_registered": ensure_branch_records(),
         "bodies_cleaned": clean_existing_bodies(),
         "versions_pruned": prune_version_history(),
+        "relation_types_updated": ensure_relation_types(),
     }
     ensure_fts()
     desync = fts_desync_report()
