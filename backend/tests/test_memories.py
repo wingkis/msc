@@ -172,3 +172,43 @@ def test_purge_archived_hard_deletes_everything_soft_deleted(client):
     for slug in slugs:
         assert client.get(f"/api/v1/memories/{slug}",
                           params={"include_archived": True}).status_code == 404
+
+
+def test_graph_auto_link_shares_exact_keywords(client):
+    for i in range(3):
+        client.post("/api/v1/memories", json={
+            "name": f"Backup note {i}", "slug": f"backup-note-{i}",
+            "body": "docker backup strategy", "category": "project"})
+    client.post("/api/v1/memories", json={
+        "name": "Unrelated", "slug": "unrelated-note", "body": "nothing relevant here"})
+
+    resp = client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["relations_created"] > 0
+    assert any(w["word"] in ("backup", "docker") for w in data["words"])
+
+    relations = client.get("/api/v1/memories/backup-note-0/relate").json()
+    linked = {r["slug"] for r in relations}
+    assert {"backup-note-1", "backup-note-2"} <= linked
+    assert "unrelated-note" not in linked
+
+    # Idempotent: a second pass creates nothing new.
+    second = client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3}).json()
+    assert second["relations_created"] == 0
+
+
+def test_graph_auto_link_ignores_substring_only_matches(client):
+    """A word embedded inside a longer token must not count as a match."""
+    for i in range(3):
+        client.post("/api/v1/memories", json={
+            "name": f"Keyword test {i}", "slug": f"keyword-test-{i}",
+            "body": "exactword appears here", "category": "knowledge"})
+    client.post("/api/v1/memories", json={
+        "name": "Substring trap", "slug": "substring-trap",
+        "body": "notexactwordnot is a different token", "category": "knowledge"})
+
+    client.post("/api/v1/memories/graph/auto-link", params={"min_freq": 3})
+    relations = {r["slug"] for r in client.get("/api/v1/memories/keyword-test-0/relate").json()}
+    assert "substring-trap" not in relations
+    assert {"keyword-test-1", "keyword-test-2"} <= relations

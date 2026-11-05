@@ -23,6 +23,23 @@ function getCategoryColor(cat) {
   return CATEGORY_COLORS[cat] || '#6b7280';
 }
 
+// One pass: the server finds whole-word keywords shared by several memories
+// and creates the edges; we then re-render with the fresh graph.
+async function autoLinkGraph() {
+  try {
+    const result = await API.autoLinkGraph();
+    if (result.relations_created === 0) {
+      toast('自动关联: 没有新的关联 (已关联的会跳过)');
+    } else {
+      const top = result.words.slice(0, 6).map(w => `${w.word}×${w.memories}`).join(', ');
+      toast(`自动关联完成: 新增 ${result.relations_created} 条边, 高频关键词: ${top}`);
+    }
+    loadGraph();
+  } catch (e) {
+    toast('自动关联失败: ' + e.message, 'error');
+  }
+}
+
 async function loadGraph() {
   try {
     const data = await API.getGraph();

@@ -305,6 +305,30 @@ def get_graph(center: Optional[str] = Query(None), db: Session = Depends(get_db)
     return GraphResponse(nodes=nodes, edges=edges)
 
 
+@router.post("/graph/auto-link")
+def auto_link_graph(
+    min_freq: int = Query(3, ge=2, le=10, description="A keyword must appear in at least this many memories"),
+    request: Request = None, db: Session = Depends(get_db),
+):
+    """One pass: link memories that share an exact whole-word keyword.
+
+    Scans name/description/body/tags of every live memory, tokenises it
+    (ASCII words + segmented Chinese words), and connects memories sharing a
+    word that occurs in at least ``min_freq`` memories. Idempotent — already
+    linked pairs are skipped.
+    """
+    from msc.services.keyword_links import build_keyword_links
+
+    _require_auth(request, db)
+    _guard_write()
+    links = build_keyword_links(db, min_freq=min_freq)
+    return {
+        "relations_created": sum(link["pairs_created"] for link in links),
+        "words": links,
+        "min_freq": min_freq,
+    }
+
+
 # ── Get memory detail ─────────────────────────────────────────────────
 
 @router.get("/{slug}", response_model=MemoryResponse)

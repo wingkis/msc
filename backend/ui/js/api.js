@@ -104,6 +104,9 @@ const API = {
     const qs = center ? `?center=${encodeURIComponent(center)}` : '';
     return apiFetch(`/memories/graph${qs}`);
   },
+  autoLinkGraph(minFreq = 3) {
+    return apiFetch(`/memories/graph/auto-link?min_freq=${minFreq}`, { method: 'POST' });
+  },
   listTags() {
     return apiFetch('/tags');
   },

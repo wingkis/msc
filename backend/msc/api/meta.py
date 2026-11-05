@@ -91,6 +91,8 @@ WRITE
   PUT    /memories/{{slug}}           create-or-replace (upsert by default)
   POST   /memories/batch              {{"memories":[...], "upsert":true}} -> per-item result
   POST   /memories/{{slug}}/relate    link two memories
+  POST   /memories/graph/auto-link    link memories sharing exact high-frequency
+                                      whole-word keywords (?min_freq=3)
   DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge)
   DELETE /memories/archived           hard-purge every archived memory at once
   POST   /memories/{{slug}}/restore   undo a soft delete
