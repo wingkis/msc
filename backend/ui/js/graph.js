@@ -75,7 +75,7 @@ function renderGraph(data) {
   const visNodes = data.nodes.map(n => ({
     id: n.id,
     label: n.slug,
-    title: `<strong>${escHtml(n.name)}</strong><br>${n.category} · ${n.priority}`,
+    title: `<strong>#${n.id} ${escHtml(n.name)}</strong><br>${n.category} · ${n.priority}`,
     size: getPrioritySize(n.priority),
     color: {
       background: getCategoryColor(n.category),
@@ -140,22 +140,8 @@ function renderGraph(data) {
       const nodeId = params.nodes[0];
       const nodeData = visNodes.find(n => n.id == nodeId);
       if (nodeData) {
-        // Open memory detail
-        API.getMemory(nodeData.label).then(m => {
-          currentEditSlug = m.slug;
-          document.getElementById('detail-title').textContent = m.name;
-          const tagsHtml = (m.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
-          document.getElementById('detail-body').innerHTML = `
-            <div class="detail-meta">
-              <span class="category-badge category-${m.category}">${m.category}</span>
-              <span class="memory-priority-dot priority-${m.priority}"></span>
-              ${tagsHtml}
-            </div>
-            <div class="detail-description">${escHtml(m.description || '')}</div>
-            <div class="detail-body">${escHtml(m.body || '')}</div>
-          `;
-          document.getElementById('detail-overlay').classList.add('active');
-        });
+        // Same detail modal as the list view: id, history, relations, delete.
+        showMemoryDetail(nodeData.label);
       }
     }
   });
@@ -175,7 +161,7 @@ function showGraphNodeDetail(nodeId) {
 
   const container = document.getElementById('graph-detail');
   container.innerHTML = `
-    <p><strong>${escHtml(node.name)}</strong> <em>(${escHtml(node.slug)})</em></p>
+    <p><span class="memory-id">#${node.id}</span> <strong>${escHtml(node.name)}</strong> <em>(${escHtml(node.slug)})</em></p>
     <p><span class="category-badge category-${node.category}">${node.category}</span> · ${node.priority}</p>
     ${related.length > 0 ? `<p style="margin-top:8px;color:var(--text-muted)">关联: ${related.join(', ')}</p>` : '<p style="margin-top:8px;color:var(--text-dim)">无关联</p>'}
   `;

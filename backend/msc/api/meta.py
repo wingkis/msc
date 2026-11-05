@@ -82,7 +82,7 @@ READ
   GET  /tags                          tag names + usage counts
   GET  /stats                         counts by category/priority/source
   GET  /memories/graph                relation graph
-  GET  /versions/{{slug}}             edit history
+  GET  /versions/{{slug}}             edit history (only the latest snapshot is kept)
 
 WRITE
   POST   /memories                    create            {{"name":..., "slug":..., "body":...,
@@ -92,7 +92,9 @@ WRITE
   POST   /memories/batch              {{"memories":[...], "upsert":true}} -> per-item result
   POST   /memories/{{slug}}/relate    link two memories
   DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge)
+  DELETE /memories/archived           hard-purge every archived memory at once
   POST   /memories/{{slug}}/restore   undo a soft delete
+  POST   /backup/backups/{{filename}}/restore  replay a backup into DB + files
 
 FILES
   Memories are mirrored as markdown in {memory_dir}/<slug>.md. Dropping a file

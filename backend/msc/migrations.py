@@ -158,6 +158,23 @@ def clean_existing_bodies() -> list[str]:
     return fixed
 
 
+def prune_version_history() -> int:
+    """Keep only the newest version snapshot per memory.
+
+    Writes now record a single snapshot (undo of the last change), so rows
+    accumulated from older multi-version behaviour are dropped on startup.
+    """
+    with engine.begin() as conn:
+        removed = conn.execute(text(
+            "DELETE FROM memory_versions WHERE version_num < ("
+            "SELECT MAX(version_num) FROM memory_versions mv "
+            "WHERE mv.memory_id = memory_versions.memory_id)"
+        )).rowcount
+    if removed:
+        _log.info("schema: pruned %d old version snapshots", removed)
+    return removed
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -168,6 +185,7 @@ def run_maintenance() -> dict:
         "tags_normalized": normalize_existing_tags(),
         "branches_registered": ensure_branch_records(),
         "bodies_cleaned": clean_existing_bodies(),
+        "versions_pruned": prune_version_history(),
     }
     ensure_fts()
     desync = fts_desync_report()

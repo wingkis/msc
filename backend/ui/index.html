@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
-  <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.1">
+  <script src="/ui/js/vis-network.min.js"></script>
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.4">
 </head>
 <body>
   <!-- Header -->
@@ -105,7 +105,7 @@
           <h3>筛选</h3>
           <div class="filter-group">
             <label>分类</label>
-            <div class="checkbox-list">
+            <div class="checkbox-list" id="filter-categories">
               <label><input type="checkbox" value="config" onchange="filterMemories()"> 配置</label>
               <label><input type="checkbox" value="project" onchange="filterMemories()"> 项目</label>
               <label><input type="checkbox" value="user" onchange="filterMemories()"> 用户</label>
@@ -115,7 +115,7 @@
           </div>
           <div class="filter-group">
             <label>优先级</label>
-            <div class="checkbox-list">
+            <div class="checkbox-list" id="filter-priorities">
               <label><input type="checkbox" value="critical" onchange="filterMemories()"> 致命</label>
               <label><input type="checkbox" value="high" onchange="filterMemories()"> 高</label>
               <label><input type="checkbox" value="medium" onchange="filterMemories()"> 中</label>
@@ -250,6 +250,19 @@
             </div>
           </div>
           <div class="settings-card">
+            <h3>🧹 维护</h3>
+            <div class="setting-item">
+              <div id="archived-count" style="color:var(--text-muted)">已归档: -</div>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-hard" onclick="purgeArchived()">彻底清除所有已归档</button>
+            </div>
+            <div class="setting-hint">
+              硬删除全部软删除记忆(含编辑历史与关联),不可撤销。记忆 id 不受影响。<br>
+              编辑历史只保留最近一次快照,用于撤销最后一次修改。
+            </div>
+          </div>
+          <div class="settings-card">
             <h3>ℹ️ 关于</h3>
             <div class="about-info">
               <p><strong>MSC</strong></p>
@@ -331,19 +344,20 @@
       </div>
       <div class="modal-body" id="detail-body"></div>
       <div class="modal-footer">
-        <button class="btn btn-danger" onclick="deleteCurrentMemory()">删除</button>
+        <button class="btn btn-danger" onclick="deleteCurrentMemory()">软删除</button>
+        <button class="btn btn-hard" onclick="hardDeleteCurrentMemory()">彻底删除</button>
         <button class="btn btn-ghost" onclick="closeDetailModal()">关闭</button>
         <button class="btn btn-primary" onclick="editCurrentMemory()">编辑</button>
       </div>
     </div>
   </div>
 
-  <!-- Toast: delete is soft, so the undo button lives here -->
+  <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.1.1"></script>
-  <script src="/ui/js/app.js?v=2.1.1"></script>
-  <script src="/ui/js/graph.js?v=2.1.1"></script>
+  <script src="/ui/js/api.js?v=2.1.4"></script>
+  <script src="/ui/js/app.js?v=2.1.4"></script>
+  <script src="/ui/js/graph.js?v=2.1.4"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

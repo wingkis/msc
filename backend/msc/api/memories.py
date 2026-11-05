@@ -204,6 +204,25 @@ def next_version_num(db: Session, memory_id: int) -> int:
         MemoryVersion.memory_id == memory_id).scalar() or 0) + 1
 
 
+def snapshot_previous(db: Session, memory: Memory, change_summary: str, actor: str) -> None:
+    """Record the pre-edit state, keeping only the newest snapshot.
+
+    The full history used to grow forever; one snapshot is enough to undo the
+    last change, and the versions table stays small. Version numbers keep
+    increasing so a restore still has a stable reference.
+    """
+    version_num = next_version_num(db, memory.id)
+    db.query(MemoryVersion).filter(MemoryVersion.memory_id == memory.id).delete()
+    db.add(MemoryVersion(
+        memory_id=memory.id, version_num=version_num,
+        name=memory.name, description=memory.description, body=memory.body,
+        priority=memory.priority, category=memory.category,
+        tags_snapshot=json.dumps([t.name for t in memory.tags]),
+        change_summary=change_summary,
+        created_at=datetime.now(timezone.utc).isoformat(), created_by=actor,
+    ))
+
+
 # ── List memories ─────────────────────────────────────────────────────
 
 @router.get("", response_model=List[MemoryResponse])
@@ -365,15 +384,9 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
     if memory.archived:
         memory.archived = 0  # writing to a soft-deleted memory revives it
 
-    tag_names = [t.name for t in memory.tags]
-    version = MemoryVersion(memory_id=memory.id,
-                            version_num=next_version_num(db, memory.id),
-                            name=memory.name, description=memory.description, body=memory.body,
-                            priority=memory.priority, category=memory.category,
-                            tags_snapshot=json.dumps(tag_names),
-                            change_summary=data.body if data.body else (data.name if data.name else "metadata update"),
-                            created_at=datetime.now(timezone.utc).isoformat(), created_by=current_user["username"])
-    db.add(version)
+    snapshot_previous(db, memory,
+                      data.body if data.body else (data.name or "metadata update"),
+                      current_user["username"])
 
     for field in ("name", "description", "body", "priority", "category", "lifespan", "branch"):
         val = getattr(data, field)
@@ -390,16 +403,48 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
     return memory
 
 
+# ── Purge every archived memory (hard) ────────────────────────────────
+# Registered before /{slug}: Starlette matches routes in registration order,
+# and a bare DELETE /memories/archived would otherwise be read as a slug.
+
+@router.delete("/archived")
+def purge_archived(request: Request, db: Session = Depends(get_db)):
+    """Hard-delete all soft-deleted memories in one pass (rows, history, relations)."""
+    _require_auth(request, db)
+    _guard_write()
+    actor = _actor(request)
+
+    memories = db.query(Memory).filter(Memory.archived == 1).all()
+    purged = []
+    for memory in memories:
+        slug = memory.slug
+        db.query(MemoryVersion).filter(MemoryVersion.memory_id == memory.id).delete()
+        db.query(MemoryRelation).filter(
+            (MemoryRelation.memory_id_a == memory.id) | (MemoryRelation.memory_id_b == memory.id)
+        ).delete()
+        memory.tags = []
+        db.delete(memory)
+        purged.append(slug)
+    db.commit()
+    for slug in purged:
+        delete_through(slug)
+    return {"purged": len(purged), "slugs": purged, "by": actor}
+
+
 # ── Delete memory (soft delete) ───────────────────────────────────────
 
 @router.delete("/{slug}")
 def delete_memory(slug: str, request: Request,
                   hard: bool = Query(False, description="Really remove the row and its history"),
                   db: Session = Depends(get_db)):
-    """Soft delete by default — a LAN service with no login needs an undo path."""
+    """Soft delete by default — a LAN service with no login needs an undo path.
+
+    Resolution includes archived rows: a soft-deleted memory can still be
+    purged with ?hard=true, which is exactly what the UI's "彻底删除" does.
+    """
     _require_auth(request, db)
     _guard_write()
-    memory = _resolve_memory(db, slug)
+    memory = _resolve_memory(db, slug, include_archived=True)
     actor = _actor(request)
 
     if hard:
@@ -423,13 +468,12 @@ def delete_memory(slug: str, request: Request,
 
 @router.post("/{slug}/restore", response_model=MemoryResponse)
 def restore_memory(slug: str, request: Request, db: Session = Depends(get_db)):
-    """Bring a soft-deleted memory back."""
+    """Bring a soft-deleted memory back. Accepts the same slug/name resolution
+    as the other detail routes, not just an exact slug."""
     _require_auth(request, db)
     _guard_write()
 
-    memory = db.query(Memory).filter(Memory.slug == slug).first()
-    if not memory:
-        raise HTTPException(status_code=404, detail=f"Memory not found: {slug}")
+    memory = _resolve_memory(db, slug, include_archived=True)
     if not memory.archived:
         raise HTTPException(status_code=409, detail=f"Memory is not archived: {slug}")
 
@@ -458,6 +502,7 @@ def batch_memories(data: BatchMemories, request: Request, db: Session = Depends(
                 if not data.upsert:
                     failed.append({"slug": slug, "error": "exists"})
                     continue
+                snapshot_previous(db, existing, "batch update", actor)
                 existing.name = item.name or existing.name
                 existing.description = item.description or ""
                 existing.body = clean_body(item.body)

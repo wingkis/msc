@@ -13,7 +13,11 @@ settings.db_path.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     f"sqlite:///{settings.db_path}",
-    connect_args={"check_same_thread": False},
+    # timeout: a LAN host (agent CLIs, maintenance scripts) may hold the file
+    # briefly; wait rather than fail with "disk I/O error".
+    # pool_recycle: pooled connections that outlive a WAL hiccup are rebuilt.
+    connect_args={"check_same_thread": False, "timeout": 30},
+    pool_recycle=600,
     echo=False,
 )
 

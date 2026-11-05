@@ -1,7 +1,10 @@
-"""API routes: backup (create, list, download, delete)."""
+"""API routes: backup (create, list, download, delete, restore)."""
 
 import re
+import shutil
+import sqlite3
 import tarfile
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,3 +104,76 @@ def delete_backup(filename: str):
     backup_path = _backup_path(filename)
     backup_path.unlink()
     return {"message": f"Backup deleted: {filename}"}
+
+
+# Tables a backup can replay. Ids are copied verbatim, so a restored memory
+# keeps the id it had when the backup was taken.
+_RESTORE_TABLES = ("memories", "tags", "memory_tags", "memory_versions", "memory_relations")
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+@router.post("/backups/{filename}/restore")
+def restore_backup(filename: str):
+    """Replay a backup archive into the live database and memory files."""
+    backup_path = _backup_path(filename)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        with tarfile.open(backup_path, "r:gz") as tar:
+            tar.extractall(tmpdir, filter="data")
+
+        src_db = tmpdir / "msc.db"
+        if not src_db.exists():
+            raise HTTPException(status_code=400, detail="Backup contains no database")
+
+        restored: dict[str, int] = {}
+        with sqlite3.connect(src_db) as src, sqlite3.connect(settings.db_path) as dst:
+            dst.execute("PRAGMA foreign_keys=OFF")
+            src_tables = {row[0] for row in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = [t for t in _RESTORE_TABLES if t not in src_tables]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Backup database is missing tables: {', '.join(missing)}",
+                )
+            live_tables = {row[0] for row in dst.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+            for table in _RESTORE_TABLES:
+                if table not in live_tables:
+                    continue  # created by startup maintenance before inserts land
+                columns = [c[1] for c in src.execute(f'PRAGMA table_info("{table}")')
+                           if _IDENTIFIER.match(c[1])]
+                if not columns:
+                    continue
+                quoted = ", ".join(f'"{c}"' for c in columns)
+                rows = src.execute(f'SELECT {quoted} FROM "{table}"').fetchall()
+                dst.execute(f'DELETE FROM "{table}"')
+                if rows:
+                    placeholders = ", ".join("?" for _ in columns)
+                    dst.executemany(f'INSERT INTO "{table}" ({quoted}) VALUES ({placeholders})', rows)
+                restored[table] = len(rows)
+            dst.commit()
+
+        # Memory files and the JSON index, so disk and DB agree after a restore.
+        mem_dir = settings.memory_dir
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        files = 0
+        if (tmpdir / "memories").is_dir():
+            for md in (tmpdir / "memories").glob("*.md"):
+                shutil.copy(md, mem_dir / md.name)
+                files += 1
+        if (tmpdir / "msc_index.json").exists():
+            shutil.copy(tmpdir / "msc_index.json", mem_dir / ".msc_index.json")
+
+    from msc.database import engine
+    from msc.fts import ensure_fts, rebuild_fts
+    engine.dispose()  # fresh pooled connections see the restored rows
+    ensure_fts()
+    rebuild_fts()
+
+    return {
+        "message": f"Backup restored: {filename}",
+        "memories": restored.get("memories", 0),
+        "versions": restored.get("memory_versions", 0),
+        "files": files,
+    }

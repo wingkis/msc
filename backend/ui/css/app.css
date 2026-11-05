@@ -755,6 +755,23 @@ html, body {
 }
 .restore-btn { margin-left: auto; align-self: center; flex-shrink: 0; }
 
+/* Memory id badge, shown in front of every name */
+.memory-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+
+/* Hard delete: outlined danger, visually distinct from the filled soft-delete */
+.btn-hard {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+.btn-hard:hover { background: var(--danger); color: #fff; }
+
 .detail-facts {
   display: flex;
   flex-wrap: wrap;

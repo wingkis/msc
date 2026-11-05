@@ -74,3 +74,21 @@ def test_backups_are_listed_newest_first(client, backup_dir):
     names = [b["filename"] for b in listed]
     assert names[:2] == ["msc-backup-0000aaaa-20260102_000000.tar.gz",
                          "msc-backup-ffff0000-20260101_000000.tar.gz"]
+
+
+def test_backup_restore_replays_memories(client, backup_dir):
+    original = client.post("/api/v1/memories", json={"name": "Restore Test",
+                                                     "slug": "restore-test", "body": "original"})
+    original_id = original.json()["id"]
+
+    filename = client.post("/api/v1/backup/create").json()["filename"]
+    client.put("/api/v1/memories/restore-test", json={"body": "changed later"})
+    assert client.get("/api/v1/memories/restore-test").json()["body"] == "changed later"
+
+    result = client.post(f"/api/v1/backup/backups/{filename}/restore")
+    assert result.status_code == 200, result.text
+
+    restored = client.get("/api/v1/memories/restore-test").json()
+    assert restored["body"] == "original"
+    # Ids come back verbatim from the backup — restoring never renumbers.
+    assert restored["id"] == original_id

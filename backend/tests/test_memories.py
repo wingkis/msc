@@ -109,3 +109,66 @@ def test_hard_delete_drops_the_file_index_entry(client, memory_dir):
     assert client.delete("/api/v1/memories/index-me?hard=true").status_code == 200
     assert not (memory_dir / "index-me.md").exists()
     assert "index-me" not in json.loads(index_path.read_text(encoding="utf-8"))["memories"]
+
+
+def test_hard_delete_keeps_other_ids_and_never_reuses(client):
+    """Ids are assigned once: purging a row neither renumbers the survivors
+    nor hands the freed id to a new memory (AUTOINCREMENT)."""
+    a = client.post("/api/v1/memories", json=_payload(name="Keep A")).json()
+    b = client.post("/api/v1/memories", json=_payload(name="Purge B")).json()
+    c = client.post("/api/v1/memories", json=_payload(name="Keep C")).json()
+
+    assert client.delete("/api/v1/memories/purge-b?hard=true").status_code == 200
+
+    assert client.get("/api/v1/memories/keep-a").json()["id"] == a["id"]
+    assert client.get("/api/v1/memories/keep-c").json()["id"] == c["id"]
+
+    fresh = client.post("/api/v1/memories", json=_payload(name="Fresh D")).json()
+    assert fresh["id"] not in (a["id"], b["id"], c["id"])
+
+
+def test_hard_delete_works_on_archived_memories(client):
+    created = client.post("/api/v1/memories", json=_payload(name="Archive Then Purge"))
+    slug = created.json()["slug"]
+    assert client.delete(f"/api/v1/memories/{slug}").status_code == 200  # soft
+    assert client.delete(f"/api/v1/memories/{slug}?hard=true").status_code == 200
+    assert client.get(f"/api/v1/memories/{slug}", params={"include_archived": True}).status_code == 404
+
+
+def test_batch_update_records_a_version_snapshot(client):
+    client.post("/api/v1/memories", json={"name": "Batch Versioned",
+                                          "slug": "batch-versioned", "body": "first"})
+    resp = client.post("/api/v1/memories/batch", json={
+        "memories": [{"name": "Batch Versioned", "slug": "batch-versioned", "body": "second"}],
+        "upsert": True,
+    })
+    assert resp.status_code in (200, 201), resp.text
+    versions = client.get("/api/v1/memories/versions/batch-versioned").json()
+    assert len(versions) == 1 and versions[0]["body"] == "first"
+
+
+def test_restore_accepts_fuzzy_references(client):
+    """The restore route resolves slugs like every other detail route."""
+    client.post("/api/v1/memories", json=_payload(name="Fuzzy Restore"))
+    assert client.delete("/api/v1/memories/fuzzy-restore").status_code == 200
+    revived = client.post("/api/v1/memories/fuzzy/restore")
+    assert revived.status_code == 200
+    assert revived.json()["archived"] == 0
+
+
+def test_purge_archived_hard_deletes_everything_soft_deleted(client):
+    slugs = []
+    for i in range(3):
+        resp = client.post("/api/v1/memories", json=_payload(name=f"Purge {i}"))
+        slugs.append(resp.json()["slug"])
+    for slug in slugs:
+        assert client.delete(f"/api/v1/memories/{slug}").status_code == 200  # soft
+
+    result = client.delete("/api/v1/memories/archived")
+    assert result.status_code == 200
+    assert result.json()["purged"] >= 3
+
+    assert client.get("/api/v1/memories", params={"archived": True}).json() == []
+    for slug in slugs:
+        assert client.get(f"/api/v1/memories/{slug}",
+                          params={"include_archived": True}).status_code == 404

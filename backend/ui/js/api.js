@@ -16,8 +16,18 @@ async function apiFetch(path, options = {}) {
       ...options,
       headers: { ...getHeaders(options.headers || {}), ...options.headers }
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    // Parse defensively: a plain-text 500 ("Internal Server Error") would
+    // otherwise surface as a raw JSON.parse SyntaxError in the UI.
+    const text = await res.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { detail: text.slice(0, 200) };
+      }
+    }
+    if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
     return data;
   } catch (e) {
     console.error('API error:', path, e);
@@ -57,6 +67,9 @@ const API = {
   },
   restoreMemory(slug) {
     return apiFetch(`/memories/${encodeURIComponent(slug)}/restore`, { method: 'POST' });
+  },
+  purgeArchived() {
+    return apiFetch('/memories/archived', { method: 'DELETE' });
   },
 
   // Versions
@@ -125,6 +138,9 @@ const API = {
   },
   deleteBackup(filename) {
     return apiFetch(`/backup/backups/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+  },
+  restoreBackup(filename) {
+    return apiFetch(`/backup/backups/${encodeURIComponent(filename)}/restore`, { method: 'POST' });
   },
   backupDownloadUrl(filename) {
     return `${API_BASE}/backup/backups/${encodeURIComponent(filename)}/download`;

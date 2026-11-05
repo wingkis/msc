@@ -9,7 +9,7 @@ from msc.database import get_db
 from msc.models import MemoryVersion
 from msc.schemas import VersionResponse
 from msc.api.memories import (
-    _actor, _apply_tags, _guard_write, _resolve_memory, _write_through, next_version_num,
+    _actor, _apply_tags, _guard_write, _resolve_memory, _write_through, snapshot_previous,
 )
 
 router = APIRouter()
@@ -62,38 +62,35 @@ def restore_version(slug: str, version_num: int, request: Request, db: Session =
     _guard_write()
     actor = _actor(request)
 
-    # Save current state as a version first, so the restore is itself undoable.
-    tag_names = [t.name for t in memory.tags]
-    db.add(MemoryVersion(
-        memory_id=memory.id,
-        version_num=next_version_num(db, memory.id),
-        name=memory.name,
-        description=memory.description,
-        body=memory.body,
-        priority=memory.priority,
-        category=memory.category,
-        tags_snapshot=json.dumps(tag_names),
-        change_summary=f"Restored to version {version_num}",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        created_by=actor,
-    ))
+    # Copy the target snapshot out before the history pass: snapshot_previous
+    # deletes every version row of this memory, including the one we are about
+    # to restore from.
+    target = {
+        "name": version.name, "description": version.description, "body": version.body,
+        "priority": version.priority, "category": version.category,
+        "tags_snapshot": version.tags_snapshot,
+    }
+
+    # Record the current state as the (single) new snapshot, so the restore
+    # itself is undoable.
+    snapshot_previous(db, memory, f"Restored to version {version_num}", actor)
 
     snapshot_tags = []
-    if version.tags_snapshot:
+    if target["tags_snapshot"]:
         try:
-            parsed = json.loads(version.tags_snapshot)
+            parsed = json.loads(target["tags_snapshot"])
             snapshot_tags = parsed if isinstance(parsed, list) else []
         except json.JSONDecodeError:
             snapshot_tags = []
 
-    memory.name = version.name
-    memory.description = version.description
-    memory.body = version.body
-    if version.priority:
-        memory.priority = version.priority
-    if version.category:
-        memory.category = version.category
-    if version.tags_snapshot:
+    memory.name = target["name"]
+    memory.description = target["description"]
+    memory.body = target["body"]
+    if target["priority"]:
+        memory.priority = target["priority"]
+    if target["category"]:
+        memory.category = target["category"]
+    if target["tags_snapshot"]:
         _apply_tags(db, memory, snapshot_tags)
     memory.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()

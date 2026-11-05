@@ -1,7 +1,7 @@
 """ORM models."""
 
 from sqlalchemy import (
-    Column, Integer, String, Text, ForeignKey, Boolean,
+    Column, Integer, String, Text, ForeignKey,
     CheckConstraint, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -12,7 +12,9 @@ from msc.database import Base
 class Memory(Base):
     __tablename__ = "memories"
 
-    id = Column(Integer, primary_key=True, index=True)
+    # AUTOINCREMENT so a hard-deleted id is never handed to a new memory;
+    # remaining memories keep their ids no matter what gets deleted.
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     slug = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(String, default="")

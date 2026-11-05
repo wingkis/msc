@@ -91,12 +91,17 @@ function renderRecentMemories(memories) {
 function renderMemoryCard(m) {
   const tagsHtml = (m.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const date = m.updated_at ? m.updated_at.substring(0, 10) : '';
+  const idLabel = m.id != null ? `#${m.id}` : '';
+  const actions = m.archived
+    ? `<button class="btn btn-sm restore-btn" onclick="event.stopPropagation();restoreMemoryUI('${escHtml(m.slug)}')">恢复</button>
+       <button class="btn btn-sm btn-hard" onclick="event.stopPropagation();hardDeleteMemoryUI('${escHtml(m.slug)}')">彻底删除</button>`
+    : '';
   return `
     <div class="memory-card" onclick="showMemoryDetail('${escHtml(m.slug)}')">
       <div class="memory-priority-dot priority-${escHtml(m.priority)}"></div>
       <div class="memory-content">
-        <div class="memory-name">${escHtml(m.name)}</div>
-        <div class="memory-desc">${escHtml(m.description || (m.body ? m.body.substring(0, 80) : ''))}</div>
+        <div class="memory-name"><span class="memory-id">${idLabel}</span>${escHtml(m.name)}</div>
+        <div class="memory-desc">${escHtml(m.description || (m.body ? m.body.substring(0, 200) : ''))}</div>
         <div class="memory-meta">
           <span class="category-badge category-${escHtml(m.category)}">${escHtml(m.category)}</span>
           ${tagsHtml}
@@ -104,7 +109,7 @@ function renderMemoryCard(m) {
           <span class="memory-date">${date}</span>
         </div>
       </div>
-      ${m.archived ? `<button class="btn btn-sm restore-btn" onclick="event.stopPropagation();restoreMemoryUI('${escHtml(m.slug)}')">恢复</button>` : ''}
+      ${actions}
     </div>
   `;
 }
@@ -154,11 +159,16 @@ function renderMemoriesList(memories) {
 }
 
 function filterMemories() {
-  const categories = [...document.querySelectorAll('.checkbox-list input[type="checkbox"]:checked')].map(c => c.value);
+  // Category and priority checkboxes live in separate containers: reading
+  // every .checkbox-list together used to feed priority values into the
+  // category filter and empty the list.
+  const categories = [...document.querySelectorAll('#filter-categories input:checked')].map(c => c.value);
+  const priorities = [...document.querySelectorAll('#filter-priorities input:checked')].map(c => c.value);
   const branch = document.getElementById('filter-branch').value;
 
   let filtered = allMemories;
   if (categories.length > 0) filtered = filtered.filter(m => categories.includes(m.category));
+  if (priorities.length > 0) filtered = filtered.filter(m => priorities.includes(m.priority));
   if (branch) filtered = filtered.filter(m => m.branch === branch);
 
   renderMemoriesList(filtered);
@@ -230,11 +240,12 @@ async function doSearch() {
 
 function renderSearchResult(r) {
   const tagsHtml = (r.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
+  const idLabel = r.id != null ? `#${r.id}` : '';
   return `
     <div class="memory-card" onclick="showMemoryDetail('${escHtml(r.slug)}')">
       <div class="memory-priority-dot priority-${escHtml(r.priority)}"></div>
       <div class="memory-content">
-        <div class="memory-name">${escHtml(r.name)}</div>
+        <div class="memory-name"><span class="memory-id">${idLabel}</span>${escHtml(r.name)}</div>
         <div class="memory-desc">${escHtml(r.description || '')}</div>
         <div class="memory-meta">
           <span class="category-badge category-${escHtml(r.category)}">${escHtml(r.category)}</span>
@@ -262,6 +273,7 @@ async function showMemoryDetail(slug) {
         ${m.archived ? '<span class="archived-badge">已归档</span>' : ''}
       </div>
       <div class="detail-facts">
+        <span>id: <code>#${m.id}</code></span>
         <span>slug: <code>${escHtml(m.slug)}</code></span>
         ${m.branch ? `<span>分支: <code>${escHtml(m.branch)}</code></span>` : ''}
         <span>${escHtml(when)}</span>
@@ -285,15 +297,16 @@ async function loadDetailExtra(slug) {
     const [versions, related] = await Promise.all([API.listVersions(slug), API.listRelations(slug)]);
     if (!document.body.contains(box)) return;  // the modal was replaced while loading
 
+    // Only the latest snapshot is kept per memory (undo of the last edit).
     const versionsHtml = versions.length
       ? versions.map(v => `
           <div class="version-item">
             <div class="version-info">
               <strong>v${escHtml(String(v.version_num))}</strong>
               <span class="version-when">${escHtml(fmtDate(v.created_at))}${v.created_by ? ' · ' + escHtml(v.created_by) : ''}</span>
-              <span class="version-summary">${escHtml((v.change_summary || '').substring(0, 60))}</span>
+              <span class="version-summary">${escHtml((v.change_summary || v.body || '').substring(0, 120))}</span>
             </div>
-            <button class="btn btn-sm" onclick="revertToVersion('${escHtml(slug)}', ${escHtml(String(v.version_num))})">回到此版本</button>
+            <button class="btn btn-sm" onclick="revertToVersion('${escHtml(slug)}', ${escHtml(String(v.version_num))})">撤销到此版本</button>
           </div>`).join('')
       : '<div class="empty-hint">还没有编辑历史</div>';
 
@@ -313,7 +326,7 @@ async function loadDetailExtra(slug) {
         <button class="btn btn-sm btn-ghost" onclick="relateFromDetail('${escHtml(slug)}')">关联</button>
       </div>
       <div class="detail-section">
-        <h4>编辑历史 (${versions.length})</h4>
+        <h4>上一版本快照 (${versions.length})</h4>
         <div class="version-list">${versionsHtml}</div>
       </div>
     `;
@@ -362,12 +375,32 @@ function editCurrentMemory() {
 function deleteCurrentMemory() {
   const slug = currentEditSlug;
   if (!slug) return;
-  if (!confirm(`删除「${slug}」？这是软删除，可以撤销。`)) return;
+  if (!confirm(`软删除「${slug}」？记忆和编辑历史都保留，可以撤销。`)) return;
   API.deleteMemory(slug).then(() => {
     closeDetailModal();
     reloadCurrentPage();
-    toast(`已删除 ${slug}`, 'info', { actionLabel: '撤销', action: () => restoreMemoryUI(slug) });
+    toast(`已软删除 ${slug}`, 'info', { actionLabel: '撤销', action: () => restoreMemoryUI(slug) });
   }).catch(e => toast('删除失败: ' + e.message, 'error'));
+}
+
+// Hard delete removes the row, its versions and its relations — no undo.
+// Ids of the remaining memories are untouched.
+function hardDeleteCurrentMemory() {
+  const slug = currentEditSlug;
+  if (!slug) return;
+  hardDeleteMemoryUI(slug);
+}
+
+async function hardDeleteMemoryUI(slug) {
+  if (!confirm(`彻底删除「${slug}」？\n会同时删除编辑历史与关联，不可撤销。`)) return;
+  try {
+    await API.deleteMemory(slug, true);
+    closeDetailModal();
+    reloadCurrentPage();
+    toast(`已彻底删除 ${slug}`, 'info');
+  } catch (e) {
+    toast('彻底删除失败: ' + e.message, 'error');
+  }
 }
 
 async function restoreMemoryUI(slug) {
@@ -575,6 +608,16 @@ async function loadSettings() {
     console.warn('sync logs failed:', e.message);
   }
 
+  const archivedBox = document.getElementById('archived-count');
+  if (archivedBox) {
+    try {
+      const stats = await API.getStats();
+      archivedBox.textContent = `已归档: ${stats.archived ?? 0} 条（活跃 ${stats.total ?? 0} 条）`;
+    } catch (e) {
+      archivedBox.textContent = '已归档: 读取失败';
+    }
+  }
+
   try {
     const backups = await API.listBackups();
     const container = document.getElementById('backup-list');
@@ -588,6 +631,7 @@ async function loadSettings() {
           <span class="backup-size">${(b.size / 1024).toFixed(0)}KB · ${escHtml((b.created_at || '').substring(0, 10))}</span>
           <span class="backup-actions">
             <a class="btn btn-sm" href="${API.backupDownloadUrl(b.filename)}" download>下载</a>
+            <button class="btn btn-sm" onclick="restoreBackupUI('${escHtml(b.filename)}')">恢复</button>
             <button class="btn btn-sm btn-danger" onclick="deleteBackupUI('${escHtml(b.filename)}')">删除</button>
           </span>
         </div>
@@ -606,6 +650,30 @@ async function deleteBackupUI(filename) {
     loadSettings();
   } catch (e) {
     toast('删除备份失败: ' + e.message, 'error');
+  }
+}
+
+async function purgeArchived() {
+  if (!confirm('彻底清除所有已归档记忆?\n会删除归档记忆的行、编辑历史和关联,不可撤销。')) return;
+  try {
+    const result = await API.purgeArchived();
+    toast(`已彻底删除 ${result.purged} 条归档记忆`);
+    reloadCurrentPage();
+    loadSettings();
+  } catch (e) {
+    toast('清除失败: ' + e.message, 'error');
+  }
+}
+
+async function restoreBackupUI(filename) {
+  if (!confirm(`恢复备份 ${filename}?\n当前数据库内容会被备份中的版本替换。`)) return;
+  try {
+    const result = await API.restoreBackup(filename);
+    toast(`已恢复: ${result.memories} 条记忆、${result.files} 个文件`);
+    reloadCurrentPage();
+    loadSettings();
+  } catch (e) {
+    toast('恢复失败: ' + e.message, 'error');
   }
 }
 
