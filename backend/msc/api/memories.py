@@ -117,13 +117,19 @@ def _actor(request: Request) -> str:
 
 
 def _resolve_memory(db: Session, ref: str, include_archived: bool = False) -> Memory:
-    """Find a memory by slug, then by exact name, then by a unique prefix.
+    """Find a memory by numeric id, then by slug, then by exact name, then by a unique prefix.
 
-    Agents rarely know the exact slug; they know roughly what it was called.
+    Agents rarely know the exact slug; they know roughly what it was called,
+    and hook context lines show the numeric id, so accept that too.
     """
     query = db.query(Memory)
     if not include_archived:
         query = query.filter(Memory.archived == 0)
+
+    if ref.isdigit():
+        mem = query.filter(Memory.id == int(ref)).first()
+        if mem:
+            return mem
 
     mem = query.filter(Memory.slug == ref).first()
     if mem:
