@@ -200,3 +200,7 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 ### 2.1.0
 
 - FTS5 全文搜索（触发器维护 + 查询消毒 + LIKE 兜底）、启动自愈迁移（补列 / 清洗标签 / 注册分支 / 修复索引）、软删除 + 撤销、版本历史与回滚、记忆图谱、备份、`/meta` `/help` `/llms.txt` 自描述接口，Web UI 与 `msc` CLI 全面重写。
+
+## License
+
+MIT — 见 [LICENSE](LICENSE)。可自由使用、修改、分发、商用，保留原版权声明即可。
