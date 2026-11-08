@@ -146,6 +146,44 @@ class SearchResult(BaseModel):
     score: float
 
 
+class ModelConfigUpdate(BaseModel):
+    """Partial update of the model card. Omitted fields keep their value.
+
+    ``api_key`` is the exception: sending "" clears it, sending nothing keeps it,
+    because the API never returns the stored key in full.
+    """
+    label: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    enabled: Optional[bool] = None
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(None, ge=64, le=16384)
+    timeout_seconds: Optional[int] = Field(None, ge=5, le=1800)
+    max_input_chars: Optional[int] = Field(None, ge=500, le=200000)
+    extra_json: Optional[str] = None
+    prompt_template: Optional[str] = None
+    auto_enabled: Optional[bool] = None
+    auto_time: Optional[str] = None
+    auto_timezone: Optional[str] = None
+    default_category: Optional[str] = None
+    default_priority: Optional[str] = None
+    archive_sources: Optional[bool] = None
+
+
+class SummarizeRequest(BaseModel):
+    """What the digest should cover. ``slugs`` for a manual pick, ``date`` for a day."""
+    slugs: List[str] = Field(default_factory=list, max_length=300)
+    date: Optional[str] = Field(None, description="YYYY-MM-DD in the card's timezone")
+    name: Optional[str] = Field(None, max_length=200)
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    tags: Optional[List[str]] = None
+    instruction: Optional[str] = Field(None, max_length=500)
+    archive_sources: Optional[bool] = Field(None, description="Soft-delete the source memories; omit = use the card default")
+    dry_run: bool = Field(False, description="Preview the digest without writing anything")
+
+
 class StatsResponse(BaseModel):
     total: int
     by_category: dict[str, int]

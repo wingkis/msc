@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from msc.config import VERSION, get_settings
 from msc.api import memories, search, versions, sync, backup, auth, api_keys, prefix_routes, branches, users, meta
+from msc.api import summarize
 from msc.filesystem.indexer import build_index
 from msc.models import Memory, User, ApiKey, PrefixRoute
 from msc.database import get_db
@@ -180,6 +181,8 @@ app.include_router(prefix_routes.router, prefix="/api/v1/prefix-routes", tags=["
 app.include_router(branches.router, prefix="/api/v1/branches", tags=["branches"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(meta.router, prefix="/api/v1", tags=["meta"])
+# Model card + digests: Web UI only, so they stay out of /help and /llms.txt.
+app.include_router(summarize.router, prefix="/api/v1", tags=["summarize"])
 
 
 # Agent-facing entry points: curl-able plain text, no HTML.

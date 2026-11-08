@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Bumped together by the CLI, the Web UI and /api/v1/health so a mismatch is
 # impossible to miss.
-VERSION = "2.1.7"
+VERSION = "2.2.0"
 
 
 class Settings(BaseSettings):
@@ -46,6 +46,27 @@ class Settings(BaseSettings):
 
     # Sync
     sync_interval_seconds: int = 60
+
+    # Model card — first-run defaults only. The Web UI writes the real values
+    # into the model_configs table, so switching models never needs a rebuild.
+    llm_base_url: str = ""
+    llm_model: str = ""
+    llm_api_key: str = ""
+    llm_temperature: float = 0.2
+    llm_max_tokens: int = 1500
+    llm_timeout_seconds: int = 180
+    # Small local models have short context windows; the prompt is trimmed to this.
+    llm_max_input_chars: int = 12000
+
+    # Daily digest — the automatic half of the model card.
+    summary_auto_enabled: bool = False
+    summary_auto_time: str = "23:30"
+    # Empty = the container's own timezone, which is UTC in the stock image.
+    summary_timezone: str = ""
+    summary_category: str = "project"
+    summary_priority: str = "medium"
+    # Whether the memories a digest was built from get soft-deleted afterwards.
+    summary_archive_sources: bool = False
 
     model_config = {"env_prefix": "MSC_", "env_file": ".env", "extra": "ignore"}
 

@@ -29,6 +29,20 @@ services:
       - MSC_HEALTH_DETAIL=${MSC_HEALTH_DETAIL:-true}
       - MSC_SYNC_INTERVAL_SECONDS=${MSC_SYNC_INTERVAL_SECONDS:-60}
       - MSC_BACKUP_KEEP=${MSC_BACKUP_KEEP:-14}
+      # Model card first-run defaults; the Web UI writes them into the DB afterwards.
+      - MSC_LLM_BASE_URL=${MSC_LLM_BASE_URL:-}
+      - MSC_LLM_MODEL=${MSC_LLM_MODEL:-}
+      - MSC_LLM_API_KEY=${MSC_LLM_API_KEY:-}
+      - MSC_LLM_TEMPERATURE=${MSC_LLM_TEMPERATURE:-0.2}
+      - MSC_LLM_MAX_TOKENS=${MSC_LLM_MAX_TOKENS:-1500}
+      - MSC_LLM_TIMEOUT_SECONDS=${MSC_LLM_TIMEOUT_SECONDS:-180}
+      - MSC_LLM_MAX_INPUT_CHARS=${MSC_LLM_MAX_INPUT_CHARS:-12000}
+      - MSC_SUMMARY_AUTO_ENABLED=${MSC_SUMMARY_AUTO_ENABLED:-false}
+      - MSC_SUMMARY_AUTO_TIME=${MSC_SUMMARY_AUTO_TIME:-23:30}
+      - MSC_SUMMARY_TIMEZONE=${MSC_SUMMARY_TIMEZONE:-}
+      - MSC_SUMMARY_CATEGORY=${MSC_SUMMARY_CATEGORY:-project}
+      - MSC_SUMMARY_PRIORITY=${MSC_SUMMARY_PRIORITY:-medium}
+      - MSC_SUMMARY_ARCHIVE_SOURCES=${MSC_SUMMARY_ARCHIVE_SOURCES:-false}
     restart: unless-stopped
     # The access log is the audit trail of a no-login service — keep it, but
     # cap it so it cannot fill the disk.

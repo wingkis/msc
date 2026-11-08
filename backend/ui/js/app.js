@@ -8,6 +8,12 @@ let currentDetailSlug = null;
 let allMemories = [];
 let graphData = null;
 let searchDebounce = null;
+// Digest feature state: which memories are ticked, and what the modal covers.
+let selectMode = false;
+let selectedSlugs = new Set();
+let modelCard = null;
+let summaryContext = null;
+let visibleMemories = [];
 
 // ── Init ────────────────────────────────────────────────────────────
 function initApp() {
@@ -41,7 +47,7 @@ function navTo(page, searchInputId) {
 
   // Load page data (always reload to ensure fresh data)
   switch (page) {
-    case 'dashboard': loadDashboard(); break;
+    case 'dashboard': loadDashboard(); loadDigestWidget(); break;
     case 'memories': loadMemories(); break;
     case 'search':
       populateTagFilter();
@@ -52,7 +58,9 @@ function navTo(page, searchInputId) {
       }
       break;
     case 'graph': loadGraph(); break;
-    case 'settings': loadSettings(); break;
+    // The digest half of the UI rides along: the card on settings, a short
+    // status + recent runs on the dashboard.
+    case 'settings': loadSettings(); loadModelCard(); break;
   }
 }
 
@@ -96,8 +104,17 @@ function renderMemoryCard(m) {
     ? `<button class="btn btn-sm restore-btn" onclick="event.stopPropagation();restoreMemoryUI('${escHtml(m.slug)}')">恢复</button>
        <button class="btn btn-sm btn-hard" onclick="event.stopPropagation();hardDeleteMemoryUI('${escHtml(m.slug)}')">彻底删除</button>`
     : '';
+  // Multi-select feeds the digest modal. Archived memories cannot be picked:
+  // the API only resolves live ones.
+  const selectBox = (selectMode && !m.archived)
+    ? `<input type="checkbox" class="memory-select" ${selectedSlugs.has(m.slug) ? 'checked' : ''}
+            onclick="event.stopPropagation();toggleSelectMemory('${escHtml(m.slug)}')"
+            title="选中后参与小结">`
+    : '';
   return `
-    <div class="memory-card" onclick="showMemoryDetail('${escHtml(m.slug)}')">
+    <div class="memory-card ${selectedSlugs.has(m.slug) ? 'memory-selected' : ''}"
+         onclick="showMemoryDetail('${escHtml(m.slug)}')">
+      ${selectBox}
       <div class="memory-priority-dot priority-${escHtml(m.priority)}"></div>
       <div class="memory-content">
         <div class="memory-name"><span class="memory-id">${idLabel}</span>${escHtml(m.name)}</div>
@@ -150,6 +167,7 @@ async function loadMemories() {
 
 function renderMemoriesList(memories) {
   const container = document.getElementById('memories-list');
+  visibleMemories = memories || [];
   document.getElementById('memories-count').textContent = `共 ${memories.length} 条记忆`;
   if (!memories.length) {
     container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">没有找到记忆</div></div>';
@@ -283,10 +301,20 @@ async function showMemoryDetail(slug) {
       <div id="detail-extra" class="detail-extra"><div class="loading-hint">加载历史与关联…</div></div>
     `;
     document.getElementById('detail-overlay').classList.add('active');
+    // An archived memory is read-only in this modal: editing it would silently
+    // revive it, so the footer swaps in 恢复 instead of 软删除/编辑.
+    setDetailFooter('detail-restore-btn', !!m.archived);
+    setDetailFooter('detail-delete-btn', !m.archived);
+    setDetailFooter('detail-edit-btn', !m.archived);
     loadDetailExtra(slug);
   } catch (e) {
     toast('加载失败: ' + e.message, 'error');
   }
+}
+
+function setDetailFooter(id, visible) {
+  const button = document.getElementById(id);
+  if (button) button.style.display = visible ? '' : 'none';
 }
 
 // Version history and linked memories load separately so the body shows first.
@@ -608,11 +636,17 @@ async function loadSettings() {
     console.warn('sync logs failed:', e.message);
   }
 
+  // The maintenance card is where a soft delete gets undone, so it lists them
+  // instead of only counting them. /stats has no "archived" field — the count
+  // comes from the same request.
   const archivedBox = document.getElementById('archived-count');
   if (archivedBox) {
     try {
-      const stats = await API.getStats();
-      archivedBox.textContent = `已归档: ${stats.archived ?? 0} 条（活跃 ${stats.total ?? 0} 条）`;
+      const [archived, stats] = await Promise.all([
+        API.listMemories({ archived: true, limit: 500 }), API.getStats(),
+      ]);
+      renderArchivedList(archived);
+      archivedBox.textContent = `已归档: ${archived.length} 条（活跃 ${stats.total ?? 0} 条）`;
     } catch (e) {
       archivedBox.textContent = '已归档: 读取失败';
     }
@@ -663,6 +697,42 @@ async function purgeArchived() {
   } catch (e) {
     toast('清除失败: ' + e.message, 'error');
   }
+}
+
+function renderArchivedList(memories) {
+  const box = document.getElementById('archived-list');
+  if (!box) return;
+  if (!memories.length) { box.innerHTML = '<div class="empty-hint">没有已归档的记忆</div>'; return; }
+  box.innerHTML = memories.map(m => `
+    <div class="archived-item">
+      <span class="memory-id">#${m.id}</span>
+      <span class="archived-name" onclick="showMemoryDetail('${escHtml(m.slug)}')"
+            title="${escHtml(m.slug)}">${escHtml(m.name)}</span>
+      <span class="archived-when">${escHtml((m.updated_at || '').substring(0, 16).replace('T', ' '))}</span>
+      <span class="archived-actions">
+        <button class="btn btn-sm" onclick="showMemoryDetail('${escHtml(m.slug)}')">详细</button>
+        <button class="btn btn-sm btn-primary" onclick="restoreArchived('${escHtml(m.slug)}')">恢复</button>
+      </span>
+    </div>`).join('');
+}
+
+async function restoreArchived(slug) {
+  try {
+    await API.restoreMemory(slug);
+    closeDetailModal();
+    toast(`已恢复 ${slug}`);
+    loadSettings();
+    const memoriesPage = document.getElementById('page-memories');
+    if (memoriesPage && memoriesPage.classList.contains('active')) loadMemories();
+  } catch (e) {
+    toast('恢复失败: ' + e.message, 'error');
+  }
+}
+
+// The detail modal's 恢复 button (archived memories only).
+function restoreCurrentMemory() {
+  const slug = currentDetailSlug || currentEditSlug;
+  if (slug) restoreArchived(slug);
 }
 
 async function restoreBackupUI(filename) {
@@ -736,4 +806,362 @@ function debouncedSearch() {
     );
     renderMemoriesList(filtered);
   }, 200);
+}
+
+// ── Model card ──────────────────────────────────────────────────────
+// Everything about which model to use lives in the database, so this card is
+// the only place a user needs to touch to switch to their own local endpoint.
+async function loadModelCard() {
+  try {
+    modelCard = await API.getModelConfig();
+    fillModelCard(modelCard);
+    renderModelStatus(modelCard);
+  } catch (e) {
+    const box = document.getElementById('model-status');
+    if (box) box.textContent = '模型卡片读取失败: ' + escHtml(e.message);
+  }
+  loadSummaryRuns();
+}
+
+function setFieldValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = (value === null || value === undefined) ? '' : value;
+}
+
+function setChecked(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.checked = !!value;
+}
+
+function fillModelCard(card) {
+  setFieldValue('model-label', card.label);
+  setFieldValue('model-base-url', card.base_url);
+  setFieldValue('model-name', card.model);
+  setFieldValue('model-temperature', card.temperature);
+  setFieldValue('model-max-tokens', card.max_tokens);
+  setFieldValue('model-timeout', card.timeout_seconds);
+  setFieldValue('model-max-input', card.max_input_chars);
+  setFieldValue('model-auto-time', card.auto_time);
+  setFieldValue('model-auto-tz', card.auto_timezone);
+  setFieldValue('model-default-category', card.default_category);
+  setFieldValue('model-default-priority', card.default_priority);
+  setFieldValue('model-prompt', card.prompt_template);
+  setFieldValue('model-extra', card.extra_json);
+  setChecked('model-auto-enabled', card.auto_enabled);
+  setChecked('model-archive-sources', card.archive_sources);
+  setChecked('model-key-clear', false);
+
+  const key = document.getElementById('model-key');
+  if (key) {
+    key.value = '';
+    key.placeholder = card.api_key_set ? `已保存 ${card.api_key_masked}，留空＝不修改` : '留空＝不修改';
+  }
+}
+
+function collectModelCard() {
+  const num = (id, fallback) => {
+    const raw = document.getElementById(id).value;
+    const parsed = Number(raw);
+    return raw !== '' && !isNaN(parsed) ? parsed : fallback;
+  };
+  const patch = {
+    label: document.getElementById('model-label').value.trim(),
+    base_url: document.getElementById('model-base-url').value.trim(),
+    model: document.getElementById('model-name').value.trim(),
+    temperature: num('model-temperature', 0.2),
+    max_tokens: num('model-max-tokens', 1500),
+    timeout_seconds: num('model-timeout', 180),
+    max_input_chars: num('model-max-input', 12000),
+    auto_time: document.getElementById('model-auto-time').value || '23:30',
+    auto_timezone: document.getElementById('model-auto-tz').value.trim(),
+    default_category: document.getElementById('model-default-category').value,
+    default_priority: document.getElementById('model-default-priority').value,
+    prompt_template: document.getElementById('model-prompt').value,
+    extra_json: document.getElementById('model-extra').value.trim(),
+    auto_enabled: document.getElementById('model-auto-enabled').checked,
+    archive_sources: document.getElementById('model-archive-sources').checked,
+  };
+  // An empty key field keeps the stored key; clearing is a deliberate checkbox.
+  const key = document.getElementById('model-key').value;
+  if (document.getElementById('model-key-clear').checked) {
+    patch.api_key = '';
+  } else if (key) {
+    patch.api_key = key;
+  }
+  return patch;
+}
+
+async function saveModelCard() {
+  const box = document.getElementById('model-status');
+  if (box) box.textContent = '保存中…';
+  try {
+    modelCard = await API.updateModelConfig(collectModelCard());
+    fillModelCard(modelCard);
+    renderModelStatus(modelCard);
+    toast('模型卡片已保存');
+  } catch (e) {
+    if (box) box.textContent = '保存失败: ' + escHtml(e.message);
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function testModelCard() {
+  const box = document.getElementById('model-status');
+  if (box) box.textContent = '正在连接…';
+  try {
+    const report = await API.testModelConfig();
+    const options = document.getElementById('model-options');
+    if (options && report.models && report.models.length) {
+      options.innerHTML = report.models.map(m => `<option value="${escHtml(m)}"></option>`).join('');
+    }
+    if (report.ok) {
+      const chat = report.chat || {};
+      if (box) box.innerHTML = `✅ 可用 · ${escHtml(chat.model || '')} · ${chat.latency_ms || 0}ms · 回复「${escHtml(chat.reply || '')}」`
+        + (report.models_error ? `<br>（${escHtml(report.models_error)}）` : '');
+    } else {
+      if (box) box.innerHTML = `❌ ${escHtml(report.error || '未知错误')}`;
+    }
+  } catch (e) {
+    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+  }
+  loadModelCard();
+}
+
+function renderModelStatus(card) {
+  const box = document.getElementById('model-status');
+  if (!box || box.textContent) return;
+  if (!card.ready) {
+    box.innerHTML = `未配置：填好 API 地址与模型名后，记忆页的「小结所选」就能用。<br>当前端点: <code>${escHtml(card.endpoint)}</code>`;
+  } else if (card.last_error) {
+    box.innerHTML = `⚠️ 上次失败: ${escHtml(card.last_error)}`;
+  } else if (card.last_ok_at) {
+    box.innerHTML = `✅ 上次成功: ${escHtml(fmtDate(card.last_ok_at))}`;
+  }
+}
+
+function renderSummaryRuns(runs, containerId, max) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+  const rows = (runs || []).slice(0, max || runs.length);
+  if (!rows.length) { box.innerHTML = '<div class="empty-hint">还没有小结记录</div>'; return; }
+  box.innerHTML = rows.map(run => `
+    <div class="log-item">
+      <span class="log-when">${escHtml(fmtDate(run.created_at))}</span>
+      <span>${run.kind === 'auto' ? '自动' : '手动'} · ${run.source_count} 条` +
+        (run.archived_count ? ` → 软删除 ${run.archived_count} 条` : '') + `
+        ${run.slug ? `<a href="javascript:void(0)" onclick="showMemoryDetail('${escHtml(run.slug)}')">${escHtml(run.slug)}</a>` : ''}</span>
+      ${run.ok ? '' : `<span class="digest-error">${escHtml(run.error || '失败')}</span>`}
+    </div>`).join('');
+}
+
+async function loadSummaryRuns() {
+  try {
+    renderSummaryRuns(await API.listSummaryRuns(10), 'summary-runs');
+  } catch (e) {
+    console.warn('summary runs failed:', e.message);
+  }
+}
+
+async function loadDigestWidget() {
+  const box = document.getElementById('digest-status');
+  try {
+    const [card, runs] = await Promise.all([API.getModelConfig(), API.listSummaryRuns(3)]);
+    modelCard = card;
+    if (box) {
+      box.innerHTML = card.ready
+        ? `模型 <code>${escHtml(card.model)}</code><br>` +
+          (card.auto_enabled ? `每日 ${escHtml(card.auto_time)} 自动小结（${escHtml(card.auto_timezone || '容器时区')}）`
+                             : '自动小结未开启') +
+          (card.last_error ? `<br>⚠️ ${escHtml(card.last_error)}` : '')
+        : '未配置模型，去设置里的「模型卡片」填地址和模型名。';
+    }
+    renderSummaryRuns(runs, 'digest-runs', 3);
+  } catch (e) {
+    if (box) box.textContent = '小结状态读取失败: ' + e.message;
+  }
+}
+
+// ── Multi-select for digests ────────────────────────────────────────
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  if (!selectMode) selectedSlugs.clear();
+  const btn = document.getElementById('select-mode-btn');
+  if (btn) btn.classList.toggle('btn-primary', selectMode);
+  const bar = document.getElementById('selection-bar');
+  if (bar) bar.style.display = selectMode ? 'flex' : 'none';
+  updateSelectionBar();
+  rerenderMemoriesPreservingFilter();
+}
+
+function rerenderMemoriesPreservingFilter() {
+  const input = document.getElementById('memories-search-input');
+  if (input && input.value.trim()) { renderMemoriesList(allMemories.filter(m =>
+      m.name.toLowerCase().includes(input.value.trim().toLowerCase()) ||
+      (m.description || '').toLowerCase().includes(input.value.trim().toLowerCase()) ||
+      (m.body || '').toLowerCase().includes(input.value.trim().toLowerCase())));
+  } else {
+    filterMemories();
+  }
+}
+
+function toggleSelectMemory(slug) {
+  if (selectedSlugs.has(slug)) selectedSlugs.delete(slug); else selectedSlugs.add(slug);
+  updateSelectionBar();
+  rerenderMemoriesPreservingFilter();
+}
+
+function selectAllVisible() {
+  visibleMemories.filter(m => !m.archived).forEach(m => selectedSlugs.add(m.slug));
+  updateSelectionBar();
+  rerenderMemoriesPreservingFilter();
+}
+
+function clearSelection() {
+  selectedSlugs.clear();
+  updateSelectionBar();
+  rerenderMemoriesPreservingFilter();
+}
+
+function updateSelectionBar() {
+  const box = document.getElementById('selection-count');
+  if (box) box.textContent = `已选 ${selectedSlugs.size} 条`;
+}
+
+// ── Digest modal ────────────────────────────────────────────────────
+async function openSummaryModal(mode) {
+  if (!modelCard) {
+    try { modelCard = await API.getModelConfig(); } catch (e) { /* status below handles it */ }
+  }
+  if (!modelCard || !modelCard.ready) {
+    toast('先在 设置 → 模型卡片 里填 API 地址和模型名', 'error');
+    navTo('settings');
+    return;
+  }
+  if (mode === 'selected' && selectedSlugs.size === 0) {
+    toast('先点「多选」勾选要合并的记忆', 'error');
+    navTo('memories');
+    return;
+  }
+
+  summaryContext = { mode, slugs: [...selectedSlugs], period: '' };
+  setFieldValue('summary-name', '');
+  setFieldValue('summary-category', modelCard.default_category);
+  setFieldValue('summary-priority', modelCard.default_priority);
+  setFieldValue('summary-tags', mode === 'daily' ? 'summary, daily' : 'summary');
+  setFieldValue('summary-instruction', '');
+  setChecked('summary-archive', modelCard.archive_sources);
+  const preview = document.getElementById('summary-preview');
+  if (preview) { preview.style.display = 'none'; preview.textContent = ''; }
+  document.getElementById('summary-title').textContent =
+    mode === 'daily' ? '生成当日小结' : `小结所选 ${summaryContext.slugs.length} 条记忆`;
+  document.getElementById('summary-overlay').classList.add('active');
+  loadSummaryScope();
+}
+
+function closeSummaryModal() {
+  document.getElementById('summary-overlay').classList.remove('active');
+  summaryContext = null;
+}
+
+async function loadSummaryScope() {
+  const box = document.getElementById('summary-scope');
+  if (!box || !summaryContext) return;
+  box.textContent = '正在统计范围…';
+  try {
+    if (summaryContext.mode === 'daily') {
+      const win = await API.summarizeWindow();
+      summaryContext.period = win.period;
+      const tz = win.timezone === 'container' ? '容器时区' : win.timezone;
+      box.textContent = `范围：${win.period}（${tz}）当天创建或更新的 ${win.count} 条记忆` +
+        (win.count === 0 ? ' —— 这天还没有记忆，换个日期或去记忆页手动勾选。' : '。');
+    } else {
+      box.textContent = `范围：手动勾选的 ${summaryContext.slugs.length} 条记忆。` +
+        `模型输入上限 ${modelCard.max_input_chars} 字符，超限时较旧的会被跳过。`;
+    }
+  } catch (e) {
+    box.textContent = '范围读取失败: ' + e.message;
+  }
+}
+
+function buildSummaryRequest(dryRun) {
+  return {
+    name: document.getElementById('summary-name').value.trim(),
+    category: document.getElementById('summary-category').value,
+    priority: document.getElementById('summary-priority').value,
+    tags: document.getElementById('summary-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    instruction: document.getElementById('summary-instruction').value.trim(),
+    archive_sources: document.getElementById('summary-archive').checked,
+    dry_run: dryRun,
+    slugs: summaryContext.slugs,
+  };
+}
+
+function setSummaryBusy(busy) {
+  ['summary-preview-btn', 'summary-run-btn'].forEach(id => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = busy;
+  });
+}
+
+async function previewSummary() {
+  if (!summaryContext) return;
+  const box = document.getElementById('summary-preview');
+  setSummaryBusy(true);
+  if (box) { box.style.display = 'block'; box.textContent = '模型正在生成…'; }
+  try {
+    const request = buildSummaryRequest(true);
+    const result = summaryContext.mode === 'daily'
+      ? await API.summarizeDaily(request) : await API.summarizeSelected(request);
+    if (box) box.textContent = (result.body || '（没有内容）') +
+      `\n\n— 模型 ${result.model || '?'} · ${result.latency_ms || 0}ms · 送入 ${(result.sources || []).length} 条` +
+      (result.dropped ? ` · 跳过 ${result.dropped} 条` : '');
+  } catch (e) {
+    if (box) box.textContent = '预览失败: ' + e.message;
+  } finally {
+    setSummaryBusy(false);
+  }
+}
+
+async function runSummary() {
+  if (!summaryContext) return;
+  const archive = document.getElementById('summary-archive').checked;
+  const scopeLabel = summaryContext.mode === 'daily' ? '当天' : `所选 ${summaryContext.slugs.length} 条`;
+  if (archive && !confirm(`写入小结后把${scopeLabel}记忆软删除？\n原始记忆和编辑历史都会保留，可以恢复。`)) return;
+
+  setSummaryBusy(true);
+  try {
+    const request = buildSummaryRequest(false);
+    const result = summaryContext.mode === 'daily'
+      ? await API.summarizeDaily(request) : await API.summarizeSelected(request);
+    closeSummaryModal();
+    if (!result.created) {
+      toast(result.message || '没有可总结的记忆', 'error');
+      return;
+    }
+    const slug = result.created.slug;
+    const archivedCount = (result.archived || []).length;
+    toast(`已写入「${result.created.name}」` + (archivedCount ? `，软删除 ${archivedCount} 条原始记忆` : ''),
+      'info', {
+        timeout: 9000,
+        actionLabel: archivedCount ? '恢复原始记忆' : '查看小结',
+        action: () => archivedCount ? restoreDigestSources(slug) : showMemoryDetail(slug),
+      });
+    selectedSlugs.clear();
+    updateSelectionBar();
+    reloadCurrentPage();
+  } catch (e) {
+    toast('小结失败: ' + e.message, 'error');
+  } finally {
+    setSummaryBusy(false);
+  }
+}
+
+async function restoreDigestSources(digestSlug) {
+  try {
+    const result = await API.restoreDigestSources(digestSlug);
+    toast(result.message);
+    reloadCurrentPage();
+  } catch (e) {
+    toast('恢复失败: ' + e.message, 'error');
+  }
 }

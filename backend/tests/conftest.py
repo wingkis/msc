@@ -28,6 +28,14 @@ os.environ.update({
     "MSC_READ_ONLY": "false",
     "MSC_ACCESS_LOG": "false",
     "MSC_SYNC_INTERVAL_SECONDS": "3600",
+    # The model card seeds itself from .env, which belongs to whoever runs the
+    # suite — pin it so the tests never inherit a real endpoint or schedule.
+    "MSC_LLM_BASE_URL": "",
+    "MSC_LLM_MODEL": "",
+    "MSC_LLM_API_KEY": "",
+    "MSC_SUMMARY_AUTO_ENABLED": "false",
+    "MSC_SUMMARY_TIMEZONE": "",
+    "MSC_SUMMARY_ARCHIVE_SOURCES": "false",
 })
 
 

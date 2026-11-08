@@ -2,7 +2,7 @@
 
 from sqlalchemy import (
     Column, Integer, String, Text, ForeignKey,
-    CheckConstraint, UniqueConstraint,
+    CheckConstraint, Float, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -160,7 +160,7 @@ class MemoryRelation(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "relation_type IN ('related','depends_on','supersedes','seealso','keyword')",
+            "relation_type IN ('related','depends_on','supersedes','seealso','keyword','summarizes')",
             name="ck_relation_type",
         ),
     )
@@ -194,4 +194,68 @@ class SyncConflict(Base):
 
     __table_args__ = (
         CheckConstraint("source IN ('db','filesystem','claude')", name="ck_source"),
+    )
+
+
+class ModelConfig(Base):
+    """The model card: one row (id=1) the Web UI edits in place.
+
+    .env only seeds the first row; after that the database wins, so pointing
+    MSC at a different local model is a page refresh rather than a rebuild.
+    """
+
+    __tablename__ = "model_configs"
+
+    id = Column(Integer, primary_key=True)
+    label = Column(String, default="本地模型")
+    base_url = Column(String, default="")
+    model = Column(String, default="")
+    api_key = Column(String, default="")
+    enabled = Column(Integer, default=1)
+
+    temperature = Column(Float, default=0.2)
+    max_tokens = Column(Integer, default=1500)
+    timeout_seconds = Column(Integer, default=180)
+    max_input_chars = Column(Integer, default=12000)
+    # Verbatim JSON merged into the chat request, for provider-specific switches
+    # (turning thinking off, reasoning effort, ...).
+    extra_json = Column(String, default="")
+    prompt_template = Column(String, default="")
+
+    auto_enabled = Column(Integer, default=0)
+    auto_time = Column(String, default="23:30")  # HH:MM, in auto_timezone
+    auto_timezone = Column(String, default="")   # empty = container local time
+    default_category = Column(String, default="project")
+    default_priority = Column(String, default="medium")
+    archive_sources = Column(Integer, default=0)
+
+    last_ok_at = Column(String)
+    last_error = Column(String)
+    updated_at = Column(String, nullable=False)
+
+
+class SummaryRun(Base):
+    """One row per digest attempt — the audit trail behind the model card.
+
+    Failed attempts are recorded too: that is what stops the daily worker from
+    hammering an unreachable model every minute.
+    """
+
+    __tablename__ = "summary_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String, nullable=False, default="manual")  # manual | auto
+    period = Column(String, default="")                      # YYYY-MM-DD for daily digests
+    slug = Column(String)                                    # memory created (NULL if none)
+    model = Column(String, default="")
+    source_count = Column(Integer, default=0)
+    archived_count = Column(Integer, default=0)
+    ok = Column(Integer, default=1)
+    error = Column(String)
+    duration_ms = Column(Integer, default=0)
+    created_by = Column(String, default="")
+    created_at = Column(String, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('manual','auto')", name="ck_summary_kind"),
     )

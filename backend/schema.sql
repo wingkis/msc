@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS memory_relations (
     memory_id_a     INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     memory_id_b     INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
     relation_type   TEXT NOT NULL DEFAULT 'related'
-                    CHECK(relation_type IN ('related','depends_on','supersedes','seealso')),
+                    CHECK(relation_type IN ('related','depends_on','supersedes','seealso','keyword','summarizes')),
     created_at      TEXT NOT NULL,
     PRIMARY KEY (memory_id_a, memory_id_b, relation_type)
 );

@@ -54,7 +54,9 @@ const API = {
     return apiFetch('/memories?' + qs);
   },
   getMemory(slug) {
-    return apiFetch(`/memories/${encodeURIComponent(slug)}`);
+    // include_archived widens resolution only: live memories are returned the
+    // same way, but soft-deleted ones stop 404-ing when the UI opens them.
+    return apiFetch(`/memories/${encodeURIComponent(slug)}?include_archived=true`);
   },
   createMemory(data) {
     return apiFetch('/memories', { method: 'POST', body: JSON.stringify(data) });
@@ -148,5 +150,32 @@ const API = {
   },
   backupDownloadUrl(filename) {
     return `${API_BASE}/backup/backups/${encodeURIComponent(filename)}/download`;
+  },
+
+  // Model card + digests — Web UI only, deliberately outside the agent contract
+  getModelConfig() {
+    return apiFetch('/model');
+  },
+  updateModelConfig(data) {
+    return apiFetch('/model', { method: 'PUT', body: JSON.stringify(data) });
+  },
+  testModelConfig() {
+    return apiFetch('/model/test', { method: 'POST' });
+  },
+  summarizeWindow(date) {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+    return apiFetch('/summarize/window' + qs);
+  },
+  summarizeSelected(data) {
+    return apiFetch('/summarize/selected', { method: 'POST', body: JSON.stringify(data) });
+  },
+  summarizeDaily(data) {
+    return apiFetch('/summarize/daily', { method: 'POST', body: JSON.stringify(data) });
+  },
+  listSummaryRuns(limit = 10) {
+    return apiFetch(`/summarize/runs?limit=${limit}`);
+  },
+  restoreDigestSources(slug) {
+    return apiFetch(`/summarize/${encodeURIComponent(slug)}/restore-sources`, { method: 'POST' });
   }
 };

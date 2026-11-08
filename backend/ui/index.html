@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.1.6">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.2.0-2">
 </head>
 <body>
   <!-- Header -->
@@ -75,6 +75,7 @@
           <div id="recent-memories" class="memory-list"></div>
         </div>
         <div class="dashboard-sidebar">
+          <h2>概览</h2>
           <div class="widget">
             <h3>快速搜索</h3>
             <div class="search-box">
@@ -93,6 +94,15 @@
               <div class="sync-indicator">● 就绪</div>
               <button class="btn btn-sm" onclick="doSync()">同步</button>
             </div>
+          </div>
+          <div class="widget">
+            <h3>记忆小结</h3>
+            <div id="digest-status" class="setting-hint">模型未配置</div>
+            <div class="sync-controls">
+              <button class="btn btn-sm btn-primary" onclick="openSummaryModal('daily')">📝 总结今日</button>
+              <button class="btn btn-sm btn-ghost" onclick="navTo('settings')">模型卡片</button>
+            </div>
+            <div id="digest-runs" class="log-list"></div>
           </div>
         </div>
       </div>
@@ -140,6 +150,16 @@
               <input type="text" placeholder="搜索记忆..." id="memories-search-input"
                      oninput="debouncedSearch()">
             </div>
+            <div class="memories-actions">
+              <button class="btn btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">☑ 多选</button>
+              <button class="btn btn-sm btn-primary" onclick="openSummaryModal('selected')"
+                      title="把勾选的记忆合并成一条小结">🧠 小结所选</button>
+            </div>
+          </div>
+          <div id="selection-bar" class="selection-bar" style="display:none">
+            <span id="selection-count">已选 0 条</span>
+            <button class="btn btn-sm btn-ghost" onclick="selectAllVisible()">全选当前</button>
+            <button class="btn btn-sm btn-ghost" onclick="clearSelection()">清空</button>
           </div>
           <div id="memories-list" class="memory-list"></div>
         </div>
@@ -229,6 +249,102 @@
             </div>
           </div>
           <div class="settings-card">
+            <h3>🤖 模型卡片（记忆小结）</h3>
+            <div class="setting-hint">
+              填任意 OpenAI 兼容的本地/局域网模型：地址、模型名、密钥都能在这里改，保存即生效，不用重启容器。<br>
+              小结由页面上的按钮触发（记忆页多选 → 小结所选），也可按下面的时间每天自动生成当日小结。
+            </div>
+            <div class="model-form">
+              <div class="form-group">
+                <label>卡片名称</label>
+                <input type="text" id="model-label" placeholder="本地小模型">
+              </div>
+              <div class="form-group">
+                <label>API 地址</label>
+                <input type="text" id="model-base-url" placeholder="http://192.168.29.100:1234">
+              </div>
+              <div class="form-group">
+                <label>模型名</label>
+                <input type="text" id="model-name" list="model-options" placeholder="openai/gpt-oss-20b">
+                <datalist id="model-options"></datalist>
+              </div>
+              <div class="form-group">
+                <label>API Key</label>
+                <input type="password" id="model-key" placeholder="留空＝不修改">
+              </div>
+              <div class="form-group">
+                <label>温度</label>
+                <input type="number" id="model-temperature" step="0.1" min="0" max="2">
+              </div>
+              <div class="form-group">
+                <label>最大输出 tokens</label>
+                <input type="number" id="model-max-tokens" step="64" min="64">
+              </div>
+              <div class="form-group">
+                <label>超时（秒）</label>
+                <input type="number" id="model-timeout" step="5" min="5">
+              </div>
+              <div class="form-group">
+                <label>输入上限（字符）</label>
+                <input type="number" id="model-max-input" step="500" min="500">
+              </div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="model-key-clear">
+              <label for="model-key-clear">清除已保存的密钥</label>
+            </div>
+            <h4>每日自动小结</h4>
+            <div class="setting-item">
+              <input type="checkbox" id="model-auto-enabled">
+              <label for="model-auto-enabled">开启</label>
+              <input type="time" id="model-auto-time" value="23:30" class="input-time">
+            </div>
+            <div class="form-group">
+              <label>时区（决定“当天”的边界）</label>
+              <input type="text" id="model-auto-tz" placeholder="Asia/Shanghai（留空＝容器本地时区）">
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>小结分类</label>
+                <select id="model-default-category">
+                  <option value="config">配置</option>
+                  <option value="project">项目</option>
+                  <option value="user">用户</option>
+                  <option value="knowledge">知识</option>
+                  <option value="reference">参考</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>小结优先级</label>
+                <select id="model-default-priority">
+                  <option value="critical">致命</option>
+                  <option value="high">高</option>
+                  <option value="medium">中</option>
+                  <option value="low">低</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="model-archive-sources">
+              <label for="model-archive-sources">默认软删除被小结的原始记忆（可随时恢复）</label>
+            </div>
+            <div class="form-group">
+              <label>自定义提示词（留空用内置；可用占位符 count / date_range / instruction / sources）</label>
+              <textarea id="model-prompt" rows="4" placeholder="内置模板已要求输出：摘要 / 要点 / 待办与风险"></textarea>
+            </div>
+            <div class="form-group">
+              <label>额外请求参数 JSON（可选，用于关闭思考等）</label>
+              <input type="text" id="model-extra" placeholder='{"reasoning": {"effort": "low"}}'>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveModelCard()">保存模型卡片</button>
+              <button class="btn" onclick="testModelCard()">测试连接</button>
+              <div id="model-status" class="sync-result"></div>
+            </div>
+            <h4>最近小结</h4>
+            <div id="summary-runs" class="log-list"></div>
+          </div>
+          <div class="settings-card">
             <h3>🔄 同步</h3>
             <div class="sync-controls">
               <button class="btn" onclick="doSync()">推送到文件</button>
@@ -255,6 +371,11 @@
             <h3>🧹 维护</h3>
             <div class="setting-item">
               <div id="archived-count" style="color:var(--text-muted)">已归档: -</div>
+            </div>
+            <div id="archived-list" class="archived-list"></div>
+            <div class="setting-hint">
+              点名称看正文,点「恢复」把这条软删除的记忆放回列表(编辑历史与文件一起回来)。<br>
+              「彻底清除所有已归档」才是不可撤销的删除。
             </div>
             <div class="sync-controls">
               <button class="btn btn-hard" onclick="purgeArchived()">彻底清除所有已归档</button>
@@ -346,10 +467,67 @@
       </div>
       <div class="modal-body" id="detail-body"></div>
       <div class="modal-footer">
-        <button class="btn btn-danger" onclick="deleteCurrentMemory()">软删除</button>
+        <button class="btn btn-primary" id="detail-restore-btn" style="display:none" onclick="restoreCurrentMemory()">恢复</button>
+        <button class="btn btn-danger" id="detail-delete-btn" onclick="deleteCurrentMemory()">软删除</button>
         <button class="btn btn-hard" onclick="hardDeleteCurrentMemory()">彻底删除</button>
         <button class="btn btn-ghost" onclick="closeDetailModal()">关闭</button>
-        <button class="btn btn-primary" onclick="editCurrentMemory()">编辑</button>
+        <button class="btn btn-primary" id="detail-edit-btn" onclick="editCurrentMemory()">编辑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Digest modal: model call first, writes only after it answered -->
+  <div id="summary-overlay" class="modal-overlay" onclick="if(event.target===this)closeSummaryModal()">
+    <div class="modal modal-lg" id="summary-content">
+      <div class="modal-header">
+        <h2 id="summary-title">生成记忆小结</h2>
+        <button class="modal-close" onclick="closeSummaryModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="summary-scope" class="setting-hint">正在统计范围…</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>小结标题（留空自动生成）</label>
+            <input type="text" id="summary-name" placeholder="每日小结 2026-11-09">
+          </div>
+          <div class="form-group">
+            <label>分类</label>
+            <select id="summary-category">
+              <option value="config">配置</option>
+              <option value="project">项目</option>
+              <option value="user">用户</option>
+              <option value="knowledge">知识</option>
+              <option value="reference">参考</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>优先级</label>
+            <select id="summary-priority">
+              <option value="critical">致命</option>
+              <option value="high">高</option>
+              <option value="medium">中</option>
+              <option value="low">低</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>标签</label>
+            <input type="text" id="summary-tags" placeholder="summary">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>额外要求（可选）</label>
+          <input type="text" id="summary-instruction" placeholder="重点记录故障与待办">
+        </div>
+        <div class="setting-item">
+          <input type="checkbox" id="summary-archive">
+          <label for="summary-archive">小结后软删除原始记忆（可在小结页一键恢复）</label>
+        </div>
+        <div id="summary-preview" class="summary-preview" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeSummaryModal()">取消</button>
+        <button class="btn" id="summary-preview-btn" onclick="previewSummary()">预览</button>
+        <button class="btn btn-primary" id="summary-run-btn" onclick="runSummary()">生成并写入</button>
       </div>
     </div>
   </div>
@@ -357,9 +535,9 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.1.6"></script>
-  <script src="/ui/js/app.js?v=2.1.6"></script>
-  <script src="/ui/js/graph.js?v=2.1.6"></script>
+  <script src="/ui/js/api.js?v=2.2.0-2"></script>
+  <script src="/ui/js/app.js?v=2.2.0-2"></script>
+  <script src="/ui/js/graph.js?v=2.2.0-2"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

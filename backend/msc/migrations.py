@@ -159,16 +159,19 @@ def clean_existing_bodies() -> list[str]:
 
 
 def ensure_relation_types() -> bool:
-    """Add 'keyword' to the relation_type CHECK constraint.
+    """Widen the relation_type CHECK constraint.
 
-    SQLite cannot ALTER a CHECK, so the table is rebuilt in place. Idempotent:
-    a no-op once the constraint already allows 'keyword'.
+    'keyword' came from auto-linking, 'summarizes' from the model card's
+    digests. SQLite cannot ALTER a CHECK, so the table is rebuilt in place.
+    Idempotent: a no-op once the constraint already allows every type.
     """
+    required = ("keyword", "summarizes")
     with engine.begin() as conn:
         row = conn.execute(text(
             "SELECT sql FROM sqlite_master WHERE name='memory_relations' AND type='table'"
         )).fetchone()
-        if row is None or "keyword" in (row[0] or ""):
+        existing = row[0] or ""
+        if row is None or all(need in existing for need in required):
             return False
         conn.execute(text("PRAGMA foreign_keys=OFF"))
         conn.execute(text("""
@@ -176,7 +179,7 @@ def ensure_relation_types() -> bool:
                 memory_id_a INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 memory_id_b INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 relation_type TEXT NOT NULL DEFAULT 'related'
-                    CHECK (relation_type IN ('related','depends_on','supersedes','seealso','keyword')),
+                    CHECK (relation_type IN ('related','depends_on','supersedes','seealso','keyword','summarizes')),
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (memory_id_a, memory_id_b)
             )
@@ -185,7 +188,7 @@ def ensure_relation_types() -> bool:
         conn.execute(text("DROP TABLE memory_relations"))
         conn.execute(text("ALTER TABLE memory_relations_new RENAME TO memory_relations"))
         conn.execute(text("PRAGMA foreign_keys=ON"))
-        _log.info("schema: memory_relations now allows the 'keyword' relation type")
+        _log.info("schema: memory_relations CHECK now allows %s", ", ".join(required))
         return True
 
 
