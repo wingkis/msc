@@ -91,7 +91,8 @@ const API = {
       { method: 'POST' });
   },
 
-  // Search
+  // Search. mode: keyword | semantic | hybrid — keyword keeps the 2.x shape,
+  // the others add a "match" field per result.
   search(q, params = {}) {
     params.q = q;
     const qs = new URLSearchParams(params).toString();
@@ -152,9 +153,64 @@ const API = {
     return `${API_BASE}/backup/backups/${encodeURIComponent(filename)}/download`;
   },
 
+  // Multipart upload: apiFetch would force JSON headers, whisper needs the
+  // browser to set the boundary, so this path skips the Content-Type default.
+  async apiUpload(path, formData) {
+    const res = await fetch(API_BASE + path, { method: 'POST', body: formData });
+    const text = await res.text();
+    let data = null;
+    if (text) { try { data = JSON.parse(text); } catch (e) { data = { detail: text.slice(0, 200) }; } }
+    if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    return data;
+  },
+
   // Model card + digests — Web UI only, deliberately outside the agent contract
   getModelConfig() {
     return apiFetch('/model');
+  },
+  listModelCards() {
+    return apiFetch('/model/cards');
+  },
+  getModelCard(purpose) {
+    return apiFetch('/model?purpose=' + encodeURIComponent(purpose));
+  },
+  updateModelCard(purpose, data) {
+    return apiFetch('/model?purpose=' + encodeURIComponent(purpose), { method: 'PUT', body: JSON.stringify(data) });
+  },
+  testModelCard(purpose) {
+    return apiFetch('/model/test?purpose=' + encodeURIComponent(purpose), { method: 'POST' });
+  },
+
+  // RAG — index status, hybrid search, voice, insights
+  ragStatus() {
+    return apiFetch('/rag/status');
+  },
+  ragReindex() {
+    return apiFetch('/rag/reindex', { method: 'POST' });
+  },
+  ragPurgeVectors(model) {
+    return apiFetch('/rag/vectors?model=' + encodeURIComponent(model), { method: 'DELETE' });
+  },
+  ragSearch(q, top = 10) {
+    return apiFetch(`/rag/search?q=${encodeURIComponent(q)}&top=${top}`);
+  },
+  ragTranscribe(formData) {
+    return this.apiUpload('/rag/transcribe', formData);
+  },
+  ragHealthReport() {
+    return apiFetch('/rag/health-report');
+  },
+  ragDailyPick(refresh = false) {
+    return apiFetch('/rag/daily-pick' + (refresh ? '?refresh=true' : ''));
+  },
+  ragEcho(data) {
+    return apiFetch('/rag/echo', { method: 'POST', body: JSON.stringify(data) });
+  },
+  ragHeatmap(days = 120) {
+    return apiFetch('/rag/heatmap?days=' + days);
+  },
+  ragUpdateSettings(data) {
+    return apiFetch('/rag/settings', { method: 'PUT', body: JSON.stringify(data) });
   },
   updateModelConfig(data) {
     return apiFetch('/model', { method: 'PUT', body: JSON.stringify(data) });

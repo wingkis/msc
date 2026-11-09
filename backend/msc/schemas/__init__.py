@@ -189,3 +189,34 @@ class StatsResponse(BaseModel):
     by_category: dict[str, int]
     by_priority: dict[str, int]
     by_source: dict[str, int]
+
+
+# ── RAG ──────────────────────────────────────────────────────────────
+
+class RagSettingsUpdate(BaseModel):
+    """Fusion tuning; omitted keys keep their value. All positive integers."""
+    recall_top: Optional[int] = Field(None, ge=1, le=500)
+    rerank_topn: Optional[int] = Field(None, ge=1, le=100)
+    rrf_k: Optional[int] = Field(None, ge=1, le=1000)
+    embed_batch: Optional[int] = Field(None, ge=1, le=64)
+
+
+class EchoRequest(BaseModel):
+    slug: str = Field(..., min_length=1)
+    instruction: Optional[str] = Field(None, max_length=300)
+
+
+class RagImportEntry(BaseModel):
+    # One of slug / memory_id identifies the target; vec is base64 little-
+    # endian float32, exactly dim*4 bytes.
+    slug: Optional[str] = None
+    memory_id: Optional[int] = None
+    dim: int = Field(..., ge=1, le=65536)
+    vec: str = Field(..., min_length=8)
+
+
+class RagImportRequest(BaseModel):
+    model: str = Field(..., min_length=1, max_length=200)
+    # Bounded so one admin POST cannot balloon into gigabytes of base64;
+    # a 50k-memory library imports in a handful of calls.
+    entries: List[RagImportEntry] = Field(..., max_length=5000)

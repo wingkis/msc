@@ -58,9 +58,11 @@ function navTo(page, searchInputId) {
       }
       break;
     case 'graph': loadGraph(); break;
+    case 'voice': initVoicePage(); break;
+    case 'insights': loadHeatmap(); break;
     // The digest half of the UI rides along: the card on settings, a short
     // status + recent runs on the dashboard.
-    case 'settings': loadSettings(); loadModelCard(); break;
+    case 'settings': loadSettings(); loadModelCard(); loadRagCards(); loadRagStatus(); break;
   }
 }
 
@@ -235,6 +237,8 @@ async function doSearch() {
   if (!q) return;
 
   const params = {};
+  const mode = document.getElementById('search-mode-select').value;
+  if (mode !== 'keyword') params.mode = mode;  // keyword is also the server default
   const tag = document.getElementById('search-tag-filter').value;
   const category = document.getElementById('search-category-filter').value;
   const priority = document.getElementById('search-priority-filter').value;
@@ -259,6 +263,12 @@ async function doSearch() {
 function renderSearchResult(r) {
   const tagsHtml = (r.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const idLabel = r.id != null ? `#${r.id}` : '';
+  // match 只在 semantic/hybrid 模式下出现：这条是被哪一路找到的。
+  const matchBadge = r.match
+    ? `<span class="match-badge match-${escHtml(r.match)}">${
+        r.match === 'both' ? '关键词+语义' : r.match === 'semantic' ? '语义' : '关键词'
+      }</span>`
+    : '';
   return `
     <div class="memory-card" onclick="showMemoryDetail('${escHtml(r.slug)}')">
       <div class="memory-priority-dot priority-${escHtml(r.priority)}"></div>
@@ -267,6 +277,7 @@ function renderSearchResult(r) {
         <div class="memory-desc">${escHtml(r.description || '')}</div>
         <div class="memory-meta">
           <span class="category-badge category-${escHtml(r.category)}">${escHtml(r.category)}</span>
+          ${matchBadge}
           ${tagsHtml}
         </div>
       </div>
@@ -1163,5 +1174,409 @@ async function restoreDigestSources(digestSlug) {
     reloadCurrentPage();
   } catch (e) {
     toast('恢复失败: ' + e.message, 'error');
+  }
+}
+
+// ── RAG provider cards ──────────────────────────────────────────────
+// Same fill/collect/save/test shape as the chat card, one prefix per purpose.
+const RAG_PURPOSES = ['embed', 'rerank', 'whisper'];
+const ragCards = {};
+
+function ragField(purpose, field) {
+  return document.getElementById(`rag-${purpose}-${field}`);
+}
+
+function fillRagCard(card) {
+  const p = card.purpose;
+  ragCards[p] = card;
+  setFieldValue(`rag-${p}-base-url`, card.base_url);
+  setFieldValue(`rag-${p}-name`, card.model);
+  setChecked(`rag-${p}-enabled`, card.enabled);
+  setChecked(`rag-${p}-key-clear`, false);
+  const key = ragField(p, 'key');
+  if (key) {
+    key.value = '';
+    key.placeholder = card.api_key_set ? `已保存 ${card.api_key_masked}，留空＝不修改` : '留空＝不修改';
+  }
+  if (p === 'embed') {
+    setFieldValue('rag-embed-max-input', card.max_input_chars);
+    setFieldValue('rag-embed-timeout', card.timeout_seconds);
+  }
+  const box = ragField(p, 'status');
+  if (box && !box.textContent) {
+    if (card.last_error) box.innerHTML = `⚠️ 上次失败: ${escHtml(card.last_error)}`;
+    else if (card.ready) {
+      box.innerHTML = `✅ 就绪${p === 'embed' && card.probed_dim ? ` · ${card.probed_dim} 维` : ''}`;
+    }
+  }
+}
+
+async function loadRagCards() {
+  try {
+    const cards = await API.listModelCards();
+    cards.filter(c => RAG_PURPOSES.includes(c.purpose)).forEach(fillRagCard);
+  } catch (e) {
+    console.warn('rag cards load failed:', e.message);
+  }
+}
+
+function collectRagCard(purpose) {
+  const patch = {
+    base_url: (ragField(purpose, 'base-url') || {}).value?.trim() || '',
+    model: (ragField(purpose, 'name') || {}).value?.trim() || '',
+    enabled: !!(ragField(purpose, 'enabled') || {}).checked,
+  };
+  if (purpose === 'embed') {
+    const mi = parseInt((ragField('embed', 'max-input') || {}).value, 10);
+    const to = parseInt((ragField('embed', 'timeout') || {}).value, 10);
+    if (mi > 0) patch.max_input_chars = mi;
+    if (to > 0) patch.timeout_seconds = to;
+  }
+  const key = (ragField(purpose, 'key') || {}).value;
+  if ((ragField(purpose, 'key-clear') || {}).checked) patch.api_key = '';
+  else if (key) patch.api_key = key;
+  return patch;
+}
+
+async function saveRagCard(purpose) {
+  const box = ragField(purpose, 'status');
+  if (box) box.textContent = '保存中…';
+  try {
+    fillRagCard(await API.updateModelCard(purpose, collectRagCard(purpose)));
+    if (box) box.textContent = '已保存';
+    loadRagStatus();
+  } catch (e) {
+    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+  }
+}
+
+async function testRagCard(purpose) {
+  const box = ragField(purpose, 'status');
+  if (box) box.textContent = '正在连接…';
+  try {
+    const report = await API.testModelCard(purpose);
+    if (report.ok) {
+      const extra = purpose === 'embed' && report.probe ? ` · 维度 ${report.probe.dim}` : '';
+      if (box) box.innerHTML = `✅ 可用${extra}`;
+    } else {
+      if (box) box.innerHTML = `❌ ${escHtml(report.error || '探针未通过')}`;
+    }
+  } catch (e) {
+    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+  }
+  loadRagCards();
+  loadRagStatus();
+}
+
+async function loadRagStatus() {
+  const box = document.getElementById('rag-status');
+  if (!box) return;
+  try {
+    const s = await API.ragStatus();
+    const vectors = Object.entries(s.vectors || {})
+      .map(([model, count]) => {
+        const active = model === s.active_model;
+        const del = active ? ''
+          : ` <button class="btn btn-sm btn-ghost" onclick="purgeRagVectors('${escHtml(model)}')">清理</button>`;
+        return `<div class="kv"><span>${escHtml(model)}</span><span>${count} 条向量${del}</span></div>`;
+      }).join('') || '<div class="empty-hint">还没有向量</div>';
+    box.innerHTML = `
+      <div class="kv"><span>RAG 开关</span><span>${s.enabled ? '开' : '关（MSC_RAG_ENABLED=false）'}</span></div>
+      <div class="kv"><span>当前 embed 模型</span><code>${escHtml(s.active_model || '未配置')}</code></div>
+      ${vectors}
+      <div class="kv"><span>嵌入队列</span><span>${s.dirty === 0 ? '已清空 ✓' : s.dirty + ' 条待嵌入'}</span></div>
+    `;
+    setFieldValue('rag-set-recall', s.settings?.recall_top);
+    setFieldValue('rag-set-rrf', s.settings?.rrf_k);
+    setFieldValue('rag-set-rerank', s.settings?.rerank_topn);
+    setFieldValue('rag-set-batch', s.settings?.embed_batch);
+  } catch (e) {
+    box.innerHTML = `<div class="empty-hint">RAG 状态读取失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+async function reindexRag() {
+  const box = document.getElementById('rag-status-result');
+  if (box) box.textContent = '排队中…';
+  try {
+    const result = await API.ragReindex();
+    if (box) box.textContent = result.message;
+    loadRagStatus();
+  } catch (e) {
+    if (box) box.textContent = '重建失败: ' + e.message;
+  }
+}
+
+async function purgeRagVectors(model) {
+  if (!confirm(`删除模型「${model}」的全部向量？\n当前 embed 卡片用的模型不能删；切回该模型前需要重新嵌入。`)) return;
+  try {
+    const result = await API.ragPurgeVectors(model);
+    toast(`已清理 ${result.removed} 条向量`);
+    loadRagStatus();
+  } catch (e) {
+    toast('清理失败: ' + e.message, 'error');
+  }
+}
+
+async function saveRagSettings() {
+  const num = (id) => parseInt((document.getElementById(id) || {}).value, 10) || undefined;
+  try {
+    await API.ragUpdateSettings({
+      recall_top: num('rag-set-recall'), rrf_k: num('rag-set-rrf'),
+      rerank_topn: num('rag-set-rerank'), embed_batch: num('rag-set-batch'),
+    });
+    toast('融合参数已保存');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// ── Voice page ──────────────────────────────────────────────────────
+// PCM from the mic → client-side WAV (16-bit mono 16k). whisper.cpp will not
+// decode webm, so the browser does the container work. Mic needs
+// https or localhost; plain http falls back to file upload.
+const voice = { ctx: null, stream: null, processor: null, samples: [], recording: false, source: null };
+
+function initVoicePage() {
+  const status = document.getElementById('voice-status');
+  const recordBtn = document.getElementById('voice-record-btn');
+  const secure = window.isSecureContext || location.hostname === 'localhost';
+  if (!secure || !navigator.mediaDevices) {
+    recordBtn.disabled = true;
+    if (status) status.textContent = '当前是 http 访问，麦克风不可用 — 用下面的文件上传代替';
+  } else if (status && !status.textContent) {
+    status.textContent = '就绪';
+  }
+}
+
+async function toggleVoiceRecord() {
+  if (voice.recording) { stopVoiceRecord(); return; }
+  const status = document.getElementById('voice-status');
+  try {
+    voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    if (status) status.textContent = '麦克风不可用: ' + e.message;
+    return;
+  }
+  voice.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const targetRate = 16000;
+  // ScriptProcessor is deprecated but universal; onaudioend fires inconsistently.
+  voice.source = voice.ctx.createMediaStreamSource(voice.stream);
+  voice.processor = voice.ctx.createScriptProcessor(4096, 1, 1);
+  voice.samples = [];
+  voice.processor.onaudioprocess = (ev) => {
+    voice.samples.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+  };
+  voice.source.connect(voice.processor);
+  voice.processor.connect(voice.ctx.destination);
+  voice.recording = true;
+  document.getElementById('voice-record-btn').textContent = '🎙️ 录音中…';
+  document.getElementById('voice-stop-btn').style.display = '';
+  if (status) status.textContent = '录音中，说完点停止';
+}
+
+function stopVoiceRecord() {
+  if (!voice.recording) return;
+  voice.recording = false;
+  try { voice.processor.disconnect(); voice.source.disconnect(); } catch (e) { /* already gone */ }
+  (voice.stream.getTracks() || []).forEach(t => t.stop());
+  const sampleRate = voice.ctx.sampleRate;
+  voice.ctx.close();
+
+  document.getElementById('voice-record-btn').textContent = '🎙️ 开始录音';
+  document.getElementById('voice-stop-btn').style.display = 'none';
+  const status = document.getElementById('voice-status');
+  if (status) status.textContent = '编码上传中…';
+  uploadWav(encodeWav(downsample(voice.samples, sampleRate, 16000), 16000), 'voice-note.wav');
+}
+
+function downsample(chunks, fromRate, toRate) {
+  const merged = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+  let off = 0;
+  for (const c of chunks) { merged.set(c, off); off += c.length; }
+  if (fromRate === toRate) return merged;
+  const ratio = fromRate / toRate;
+  const out = new Float32Array(Math.floor(merged.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const start = Math.floor(i * ratio), end = Math.min(Math.floor((i + 1) * ratio), merged.length);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += merged[j];
+    out[i] = sum / Math.max(1, end - start);
+  }
+  return out;
+}
+
+function encodeWav(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); writeStr(8, 'WAVE');
+  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  writeStr(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
+async function transcribeFile() {
+  const input = document.getElementById('voice-file');
+  if (!input.files || !input.files[0]) { toast('先选一个音频文件', 'error'); return; }
+  await uploadWav(input.files[0], input.files[0].name);
+}
+
+let voiceSimilar = [];
+
+async function uploadWav(blob, filename) {
+  const status = document.getElementById('voice-status');
+  const form = new FormData();
+  form.append('file', blob, filename);
+  try {
+    const result = await API.ragTranscribe(form);
+    document.getElementById('voice-text').value = result.text;
+    voiceSimilar = result.similar || [];
+    renderVoiceSimilar();
+    if (status) status.textContent = `转写完成（${result.latency_ms}ms）`;
+  } catch (e) {
+    if (status) status.textContent = '转写失败: ' + e.message;
+    toast('转写失败: ' + e.message, 'error');
+  }
+}
+
+function renderVoiceSimilar() {
+  const box = document.getElementById('voice-similar');
+  if (!voiceSimilar.length) {
+    box.innerHTML = '<div class="empty-hint">没有相似记忆（或未配置 embed），可以直接新建</div>';
+    return;
+  }
+  box.innerHTML = voiceSimilar.map(item => `
+    <div class="log-item">
+      <span>#${item.id} <a href="javascript:void(0)" onclick="showMemoryDetail('${escHtml(item.slug)}')">${escHtml(item.name)}</a></span>
+      <span>cos ${item.cos}</span>
+      <button class="btn btn-sm btn-ghost" onclick="appendVoiceToMemory('${escHtml(item.slug)}')">追加到这条</button>
+    </div>`).join('');
+}
+
+async function appendVoiceToMemory(slug) {
+  const text = document.getElementById('voice-text').value.trim();
+  if (!text) { toast('转写框是空的', 'error'); return; }
+  try {
+    const m = await API.getMemory(slug);
+    currentEditSlug = slug;
+    document.getElementById('modal-title').textContent = '编辑记忆: ' + m.name;
+    document.getElementById('form-name').value = m.name;
+    document.getElementById('form-description').value = m.description || '';
+    document.getElementById('form-body').value = (m.body || '') + '\n\n' + text;
+    document.getElementById('form-tags').value = (m.tags || []).map(t => t.name).join(', ');
+    document.getElementById('form-branch').value = m.branch || '';
+    document.getElementById('form-category').value = m.category;
+    document.getElementById('form-priority').value = m.priority;
+    document.getElementById('modal-overlay').classList.add('active');
+  } catch (e) {
+    toast('打开失败: ' + e.message, 'error');
+  }
+}
+
+function createMemoryFromVoice() {
+  const text = document.getElementById('voice-text').value.trim();
+  if (!text) { toast('转写框是空的', 'error'); return; }
+  currentEditSlug = null;
+  document.getElementById('modal-title').textContent = '新建记忆（语音）';
+  document.getElementById('form-name').value = text.split('\n')[0].slice(0, 40);
+  document.getElementById('form-description').value = '';
+  document.getElementById('form-body').value = text;
+  document.getElementById('form-tags').value = 'voice';
+  document.getElementById('form-branch').value = '';
+  document.getElementById('form-category').value = 'knowledge';
+  document.getElementById('form-priority').value = 'medium';
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+// ── Insights page ───────────────────────────────────────────────────
+async function loadDailyPick(refresh) {
+  const status = document.getElementById('pick-status');
+  const box = document.getElementById('daily-pick');
+  if (status) status.textContent = refresh ? '模型写作中（1-3 分钟）…' : '读取中…';
+  if (refresh) box.innerHTML = '';
+  try {
+    const result = await API.ragDailyPick(refresh);
+    box.innerHTML = `<div class="pick-meta">${escHtml(result.date)} · 模型 ${escHtml(result.model || '')}` +
+      ` · ${result.cached ? '今日缓存，秒开' : `刚写，${result.latency_ms || 0}ms`} · 取材 ${ (result.sources || []).length } 条</div>` +
+      `<div class="pick-text">${escHtml(result.body)}</div>`;
+    if (status) status.textContent = '';
+  } catch (e) {
+    if (status) status.textContent = '失败: ' + e.message;
+  }
+}
+
+async function runEcho() {
+  const slug = document.getElementById('echo-slug').value.trim();
+  if (!slug) { toast('先填要评注的 slug 或名称', 'error'); return; }
+  const status = document.getElementById('echo-status');
+  status.textContent = '模型阅读中（1-2 分钟）…';
+  try {
+    const result = await API.ragEcho({ slug, instruction: document.getElementById('echo-instruction').value.trim() });
+    document.getElementById('echo-result').innerHTML =
+      `<div class="pick-meta">${escHtml(result.name)} · 模型 ${escHtml(result.model)} · ${result.latency_ms}ms</div>` +
+      `<div class="pick-text">${escHtml(result.body)}</div>`;
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = '失败: ' + e.message;
+  }
+}
+
+async function loadHealthReport() {
+  const status = document.getElementById('health-status');
+  const box = document.getElementById('health-report');
+  status.textContent = '体检中…';
+  try {
+    const r = await API.ragHealthReport();
+    const dupHtml = (r.duplicates || []).map(p => `
+      <div class="log-item">
+        <span>cos ${p.cos}</span>
+        <a href="javascript:void(0)" onclick="showMemoryDetail('${escHtml(p.a.slug)}')">${escHtml(p.a.name)}</a> ↔
+        <a href="javascript:void(0)" onclick="showMemoryDetail('${escHtml(p.b.slug)}')">${escHtml(p.b.name)}</a>
+      </div>`).join('') || '<div class="empty-hint">没有近重复</div>';
+    const staleHtml = (r.stale_temporary || []).map(m => `
+      <div class="log-item">
+        <a href="javascript:void(0)" onclick="showMemoryDetail('${escHtml(m.slug)}')">${escHtml(m.name)}</a>
+        <span class="log-when">${escHtml((m.updated_at || '').substring(0, 10))}</span>
+      </div>`).join('') || '<div class="empty-hint">没有过期 temporary</div>';
+    box.innerHTML = `
+      <h4>近重复对（建议「小结所选」合并）</h4>${dupHtml}
+      ${r.duplicates_note ? `<div class="setting-hint">${escHtml(r.duplicates_note)}</div>` : ''}
+      ${r.duplicates_error ? `<div class="setting-hint">${escHtml(r.duplicates_error)}</div>` : ''}
+      <h4>过期 temporary（&gt;90 天，建议归档）</h4>${staleHtml}
+      <h4>归档</h4><div class="kv"><span>已归档 ${r.archived?.count ?? 0} 条</span><span>最旧 ${escHtml((r.archived?.oldest || '—').substring(0, 10))}</span></div>
+      <div class="setting-hint">${escHtml(r.suggestion || '')}</div>`;
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = '体检失败: ' + e.message;
+  }
+}
+
+async function loadHeatmap() {
+  const box = document.getElementById('rag-heatmap');
+  const days = parseInt(document.getElementById('heatmap-days').value, 10) || 120;
+  try {
+    const data = await API.ragHeatmap(days);
+    const counts = {};
+    (data.counts || []).forEach(c => { counts[c.day] = c.count; });
+    const max = Math.max(1, ...Object.values(counts));
+    const cells = [];
+    const today = new Date();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today.getTime() - i * 86400000);
+      const key = d.toISOString().substring(0, 10);
+      const n = counts[key] || 0;
+      const level = n === 0 ? 0 : Math.min(4, 1 + Math.floor((n / max) * 3));
+      cells.push(`<span class="heat-cell heat-${level}" title="${key}: ${n} 条"></span>`);
+    }
+    box.innerHTML = cells.join('');
+  } catch (e) {
+    box.innerHTML = `<div class="empty-hint">热力图失败: ${escHtml(e.message)}</div>`;
   }
 }

@@ -209,6 +209,60 @@ def prune_version_history() -> int:
     return removed
 
 
+def ensure_model_purpose() -> int:
+    """Give every card a purpose, then make purposes unique.
+
+    Databases from 2.2.0 have a single row (the chat card) and no purpose
+    column; add_missing_columns leaves it NULL, and the whole RAG layer keys
+    its cards by purpose, so NULL has to become 'chat' before anything else
+    looks at the table. The unique index is best-effort: it fails if someone
+    hand-inserted duplicate purposes, and that must not stop startup.
+    """
+    with engine.begin() as conn:
+        if "model_configs" not in set(inspect(engine).get_table_names()):
+            return 0
+        backfilled = conn.execute(text(
+            "UPDATE model_configs SET purpose = 'chat' "
+            "WHERE purpose IS NULL OR purpose = ''"
+        )).rowcount
+        try:
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_model_configs_purpose "
+                              "ON model_configs(purpose)"))
+        except Exception as exc:
+            _log.warning("could not enforce unique model purposes: %s", exc)
+        if backfilled:
+            _log.info("schema: backfilled purpose on %d model card(s)", backfilled)
+    return backfilled
+
+
+def prune_broken_embeddings() -> int:
+    """Drop malformed vectors and rows orphaned by hard deletes.
+
+    A half-written or hand-mangled blob would poison every cosine scan with
+    garbage, and SQLite foreign keys are not enabled on these connections
+    (see msc.database), so the ON DELETE CASCADE never fires — an embedding
+    or dirty mark for a purged memory has to be reaped here. Reindex brings
+    anything that should still be indexed back.
+    """
+    with engine.begin() as conn:
+        tables = set(inspect(engine).get_table_names())
+        if "embeddings" not in tables:
+            return 0
+        removed = conn.execute(text(
+            "DELETE FROM embeddings WHERE length(vec) <> dim * 4 OR dim <= 0"
+        )).rowcount
+        removed += conn.execute(text(
+            "DELETE FROM embeddings WHERE memory_id NOT IN (SELECT id FROM memories)"
+        )).rowcount
+        if "rag_dirty" in tables:
+            removed += conn.execute(text(
+                "DELETE FROM rag_dirty WHERE memory_id NOT IN (SELECT id FROM memories)"
+            )).rowcount
+    if removed:
+        _log.info("schema: pruned %d broken/orphaned embedding row(s)", removed)
+    return removed
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -221,6 +275,8 @@ def run_maintenance() -> dict:
         "bodies_cleaned": clean_existing_bodies(),
         "versions_pruned": prune_version_history(),
         "relation_types_updated": ensure_relation_types(),
+        "model_purpose_backfilled": ensure_model_purpose(),
+        "embeddings_pruned": prune_broken_embeddings(),
     }
     ensure_fts()
     desync = fts_desync_report()
@@ -239,10 +295,17 @@ def health_detail() -> dict:
         with engine.connect() as conn:
             memories = conn.execute(text("SELECT count(*) FROM memories WHERE archived = 0")).scalar() or 0
         index = fts_desync_report()
-        return {
+        detail = {
             "database": "ok",
             "memories": memories,
             "search_index": {"total": index["total"], "unindexed": index["missing"]},
         }
+        try:
+            with engine.connect() as conn:
+                detail["embeddings"] = conn.execute(text("SELECT count(*) FROM embeddings")).scalar() or 0
+                detail["embeddings_queued"] = conn.execute(text("SELECT count(*) FROM rag_dirty")).scalar() or 0
+        except Exception:
+            pass  # RAG tables absent (kill switch / brand-new db) — not a health failure
+        return detail
     except Exception as exc:  # never turn a health probe into a 500
         return {"database": f"error: {exc}"}

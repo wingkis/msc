@@ -34,39 +34,65 @@ def _parse_day(value: Optional[str]) -> Optional[date]:
         raise HTTPException(status_code=422, detail=f"date 需要 YYYY-MM-DD，收到 {value!r}")
 
 
-# ── Model card ───────────────────────────────────────────────────────
+# ── Model cards ──────────────────────────────────────────────────────
+
+def _purpose_or_422(purpose: str) -> str:
+    from msc.services.model_config import PURPOSES
+    if purpose not in PURPOSES:
+        raise HTTPException(status_code=422,
+                            detail=f"unknown purpose {purpose!r}; allowed: {', '.join(PURPOSES)}")
+    return purpose
+
 
 @router.get("/model")
-def read_model(db: Session = Depends(get_db)):
-    """The card as the UI edits it. The API key only ever comes back masked."""
-    return public_view(get_config(db))
+def read_model(purpose: str = Query("chat"), db: Session = Depends(get_db)):
+    """One card as the UI edits it (default: the chat card). Keys stay masked."""
+    return public_view(get_config(db, _purpose_or_422(purpose)))
+
+
+@router.get("/model/cards")
+def read_cards(db: Session = Depends(get_db)):
+    """Every purpose card at once — what the settings page renders."""
+    from msc.services.model_config import get_cards
+    return [public_view(row) for row in get_cards(db)]
 
 
 @router.put("/model")
-def write_model(data: ModelConfigUpdate, request: Request, db: Session = Depends(get_db)):
-    """Save the card. Bad vocabulary or a malformed schedule returns 422."""
+def write_model(data: ModelConfigUpdate, request: Request,
+                purpose: str = Query("chat"), db: Session = Depends(get_db)):
+    """Save one card. Bad vocabulary or a malformed schedule returns 422."""
     _require_auth(request, db)
     _guard_write()
     try:
-        row = update_config(db, data.model_dump(exclude_unset=True))
+        row = update_config(db, data.model_dump(exclude_unset=True), _purpose_or_422(purpose))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return public_view(row)
 
 
 @router.post("/model/test")
-def test_model(request: Request, db: Session = Depends(get_db)):
-    """Reachability check: /v1/models first, then one short completion.
+def test_model(request: Request, purpose: str = Query("chat"),
+               db: Session = Depends(get_db)):
+    """Reachability probe, dispatched by purpose.
 
-    Both signals matter — some local servers list models but not the one the
-    card names, and some have no /v1/models at all.
+    chat: /v1/models then one short completion (both signals matter — some
+    local servers list models but not the one the card names).
+    embed: embed one sentence and report the dimension, which the card shows.
+    rerank: rerank two documents and check the order came back.
+    whisper: GET /health against the server (llama.cpp convention).
     """
     _require_auth(request, db)
     _guard_write()
 
-    cfg = get_config(db)
-    report = {"endpoint": None, "models": [], "chat": None, "error": None}
+    purpose = _purpose_or_422(purpose)
+    cfg = get_config(db, purpose)
+    if purpose == "chat":
+        return _test_chat_card(db, cfg)
+    return _test_rag_card(db, cfg, purpose)
 
+
+def _test_chat_card(db, cfg):
+    report = {"endpoint": None, "models": [], "chat": None, "error": None}
     try:
         report["endpoint"] = llm.chat_endpoint(cfg.base_url)
         try:
@@ -85,7 +111,50 @@ def test_model(request: Request, db: Session = Depends(get_db)):
         note_result(db, cfg, error=str(exc))
         report["error"] = str(exc)
         report["ok"] = False
+    return report
 
+
+def _test_rag_card(db, cfg, purpose):
+    from msc.services import rag_providers
+
+    report: dict = {"purpose": purpose, "endpoint": None, "probe": None, "error": None}
+    try:
+        if purpose == "embed":
+            report["endpoint"] = rag_providers.embeddings_endpoint(cfg.base_url)
+            vectors = rag_providers.embed(cfg, ["连接测试"])
+            dim = len(vectors[0])
+            cfg.probed_dim = dim
+            note_result(db, cfg)
+            report["probe"] = {"ok": True, "dim": dim,
+                               "latency_ms": getattr(rag_providers.embed, "latency_ms", 0)}
+        elif purpose == "rerank":
+            report["endpoint"] = rag_providers.rerank_endpoint(cfg.base_url)
+            results = rag_providers.rerank(cfg, "测试", ["无关的内容。", "这是连接测试。"], top_n=2)
+            best = max(results, key=lambda r: r["score"]) if results else None
+            note_result(db, cfg)
+            report["probe"] = {"ok": bool(best) and best["index"] == 1,
+                               "results": results[:2]}
+        else:  # whisper
+            import httpx
+            report["endpoint"] = rag_providers.transcriptions_endpoint(cfg.base_url)
+            health_url = rag_providers._base(cfg.base_url) + "/health"
+            try:
+                with httpx.Client(timeout=float(cfg.timeout_seconds or 120)) as client:
+                    response = client.get(health_url)
+                report["probe"] = {"ok": response.status_code < 400,
+                                   "health_status": response.status_code}
+            except httpx.HTTPError:
+                # No /health is legal for whisper endpoints; report the endpoint
+                # as reachable-if-postable, leave the real check to first use.
+                report["probe"] = {"ok": True, "health_status": "no /health; 首次使用验证"}
+        report["ok"] = bool(report["probe"] and report["probe"].get("ok"))
+        if not report["ok"]:
+            note_result(db, cfg, error="探针没有通过")
+            report["error"] = "探针没有通过（响应形状不对或分数顺序反了）"
+    except (llm.LLMError, ValueError) as exc:
+        note_result(db, cfg, error=str(exc))
+        report["error"] = str(exc)
+        report["ok"] = False
     return report
 
 

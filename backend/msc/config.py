@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Bumped together by the CLI, the Web UI and /api/v1/health so a mismatch is
 # impossible to miss.
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
 class Settings(BaseSettings):
@@ -67,6 +67,26 @@ class Settings(BaseSettings):
     summary_priority: str = "medium"
     # Whether the memories a digest was built from get soft-deleted afterwards.
     summary_archive_sources: bool = False
+
+    # RAG — semantic search, voice capture, insights. Kill switch: with
+    # MSC_RAG_ENABLED=false the service behaves exactly as it did in 2.2.0.
+    # The cards below only seed the model_configs rows on first use; after
+    # that the database wins, same doctrine as the chat card.
+    rag_enabled: bool = True
+    embed_base_url: str = ""
+    embed_model: str = ""
+    embed_api_key: str = ""
+    rerank_base_url: str = ""
+    rerank_model: str = ""
+    rerank_api_key: str = ""
+    whisper_base_url: str = ""
+    whisper_model: str = ""
+    whisper_api_key: str = ""
+    # Fusion tuning, overridable per key in the rag_settings table.
+    rag_recall_top: int = 30
+    rag_rerank_topn: int = 10
+    rag_rrf_k: int = 60
+    rag_embed_batch: int = 16
 
     model_config = {"env_prefix": "MSC_", "env_file": ".env", "extra": "ignore"}
 

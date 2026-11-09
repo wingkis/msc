@@ -109,6 +109,9 @@ def delete_backup(filename: str):
 # Tables a backup can replay. Ids are copied verbatim, so a restored memory
 # keeps the id it had when the backup was taken.
 _RESTORE_TABLES = ("memories", "tags", "memory_tags", "memory_versions", "memory_relations")
+# Replayed when the archive happens to contain them: a 2.1.x backup restores
+# fine without embeddings — the rag_worker backfills the vectors afterwards.
+_RESTORE_OPTIONAL = ("embeddings",)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -138,7 +141,9 @@ def restore_backup(filename: str):
                 )
             live_tables = {row[0] for row in dst.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
-            for table in _RESTORE_TABLES:
+            for table in _RESTORE_TABLES + _RESTORE_OPTIONAL:
+                if table in _RESTORE_OPTIONAL and table not in src_tables:
+                    continue
                 if table not in live_tables:
                     continue  # created by startup maintenance before inserts land
                 columns = [c[1] for c in src.execute(f'PRAGMA table_info("{table}")')

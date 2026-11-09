@@ -11,3 +11,4 @@ python-multipart>=0.0.12
 aiofiles>=24.1.0
 rich>=13.0.0
 jieba>=0.42.1
+numpy>=1.26.0

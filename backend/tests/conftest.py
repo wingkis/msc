@@ -36,6 +36,13 @@ os.environ.update({
     "MSC_SUMMARY_AUTO_ENABLED": "false",
     "MSC_SUMMARY_TIMEZONE": "",
     "MSC_SUMMARY_ARCHIVE_SOURCES": "false",
+    # RAG provider cards seed themselves from .env too — pin them empty so
+    # the suite never embeds against a real endpoint. (MSC_RAG_ENABLED stays
+    # on: the queue, degradation paths and the worker are under test.)
+    "MSC_RAG_ENABLED": "true",
+    "MSC_EMBED_BASE_URL": "", "MSC_EMBED_MODEL": "", "MSC_EMBED_API_KEY": "",
+    "MSC_RERANK_BASE_URL": "", "MSC_RERANK_MODEL": "", "MSC_RERANK_API_KEY": "",
+    "MSC_WHISPER_BASE_URL": "", "MSC_WHISPER_MODEL": "", "MSC_WHISPER_API_KEY": "",
 })
 
 

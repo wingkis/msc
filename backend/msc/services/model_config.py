@@ -1,8 +1,9 @@
-"""Read/write the single model-card row.
+"""Read/write the model cards — one row per purpose (chat, embed, rerank,
+whisper).
 
-``.env`` only seeds the first row — after that the database is the source of
-truth, so a user on another machine can point MSC at their own model from the
-Web UI without touching a config file or rebuilding the image.
+``.env`` only seeds the first row of each purpose — after that the database is
+the source of truth, so a user on another machine can point MSC at their own
+model from the Web UI without touching a config file or rebuilding the image.
 """
 
 import re
@@ -17,6 +18,8 @@ AUTO_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CATEGORIES = ("config", "project", "user", "knowledge", "reference")
 PRIORITIES = ("low", "medium", "high", "critical")
 
+PURPOSES = ("chat", "embed", "rerank", "whisper")
+
 # Columns the API may write. api_key is handled separately: an omitted key keeps
 # the stored one, an empty string clears it.
 EDITABLE = (
@@ -27,47 +30,69 @@ EDITABLE = (
 )
 BOOL_FIELDS = ("enabled", "auto_enabled", "archive_sources")
 
+DEFAULT_LABELS = {"chat": "本地模型", "embed": "嵌入模型",
+                  "rerank": "重排模型", "whisper": "语音转写"}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def get_config(db) -> ModelConfig:
-    """The card, created from the environment on first use."""
-    row = db.query(ModelConfig).filter(ModelConfig.id == 1).first()
+def _env_seed(purpose: str) -> dict:
+    """First-run values for a purpose card, from .env (empty = unconfigured)."""
+    prefixes = {"embed": "embed_", "rerank": "rerank_", "whisper": "whisper_"}
+    prefix = prefixes.get(purpose)
+    if not prefix:
+        return dict(
+            base_url=settings.llm_base_url, model=settings.llm_model,
+            api_key=settings.llm_api_key, temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_input_chars=settings.llm_max_input_chars,
+            auto_enabled=1 if settings.summary_auto_enabled else 0,
+            auto_time=settings.summary_auto_time,
+            auto_timezone=settings.summary_timezone,
+            default_category=settings.summary_category,
+            default_priority=settings.summary_priority,
+            archive_sources=1 if settings.summary_archive_sources else 0,
+        )
+    return dict(
+        base_url=getattr(settings, prefix + "base_url", ""),
+        model=getattr(settings, prefix + "model", ""),
+        api_key=getattr(settings, prefix + "api_key", ""),
+        timeout_seconds=120,
+        max_input_chars=4000,
+    )
+
+
+def get_config(db, purpose: str = "chat") -> ModelConfig:
+    """The card for one purpose, created from the environment on first use."""
+    if purpose not in PURPOSES:
+        raise ValueError(f"unknown model purpose {purpose!r}")
+    row = db.query(ModelConfig).filter(ModelConfig.purpose == purpose).first()
     if row is not None:
         return row
 
     row = ModelConfig(
-        id=1,
-        label="本地模型",
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        enabled=1,
-        temperature=settings.llm_temperature,
-        max_tokens=settings.llm_max_tokens,
-        timeout_seconds=settings.llm_timeout_seconds,
-        max_input_chars=settings.llm_max_input_chars,
-        auto_enabled=1 if settings.summary_auto_enabled else 0,
-        auto_time=settings.summary_auto_time,
-        auto_timezone=settings.summary_timezone,
-        default_category=settings.summary_category,
-        default_priority=settings.summary_priority,
-        archive_sources=1 if settings.summary_archive_sources else 0,
-        updated_at=_now(),
+        purpose=purpose, label=DEFAULT_LABELS.get(purpose, purpose),
+        enabled=1, updated_at=_now(), **_env_seed(purpose),
     )
     db.add(row)
     db.commit()
     return row
 
 
-def update_config(db, patch: dict) -> ModelConfig:
+def get_cards(db) -> list:
+    """All purpose cards, seeding the missing ones — what GET /model/cards returns."""
+    return [get_config(db, purpose) for purpose in PURPOSES]
+
+
+def update_config(db, patch: dict, purpose: str = "chat") -> ModelConfig:
     """Apply a partial update, rejecting values the rest of the app cannot use.
 
     Raises ValueError so the API can turn it into a 422 that names the problem.
     """
-    row = get_config(db)
+    row = get_config(db, purpose)
 
     if "api_key" in patch:
         row.api_key = (patch.get("api_key") or "").strip()
@@ -121,16 +146,25 @@ def mask_key(api_key: str) -> str:
 
 
 def public_view(row: ModelConfig) -> dict:
-    """The card as the UI sees it: the API key is never sent back in full."""
-    from msc.services import llm
+    """A card as the UI sees it: the API key is never sent back in full."""
+    from msc.services import llm, rag_providers
 
-    try:
-        endpoint = llm.chat_endpoint(row.base_url)
-    except llm.LLMError as exc:
-        endpoint = str(exc)
+    purpose = row.purpose or "chat"
+    if purpose == "embed":
+        endpoint = rag_providers.embeddings_endpoint(row.base_url) if row.base_url else "未填地址"
+    elif purpose == "rerank":
+        endpoint = rag_providers.rerank_endpoint(row.base_url) if row.base_url else "未填地址"
+    elif purpose == "whisper":
+        endpoint = rag_providers.transcriptions_endpoint(row.base_url) if row.base_url else "未填地址"
+    else:
+        try:
+            endpoint = llm.chat_endpoint(row.base_url)
+        except llm.LLMError as exc:
+            endpoint = str(exc)
 
     return {
         "id": row.id,
+        "purpose": purpose,
         "label": row.label or "",
         "base_url": row.base_url or "",
         "model": row.model or "",
@@ -149,6 +183,7 @@ def public_view(row: ModelConfig) -> dict:
         "default_category": row.default_category or "project",
         "default_priority": row.default_priority or "medium",
         "archive_sources": bool(row.archive_sources),
+        "probed_dim": row.probed_dim or 0,
         "endpoint": endpoint,
         "ready": bool(row.base_url and row.model and row.enabled),
         "last_ok_at": row.last_ok_at,

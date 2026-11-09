@@ -214,6 +214,16 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.3.0（rag 分支）
+
+- **混合搜索** — `GET /api/v1/search?mode=keyword|semantic|hybrid`（默认 keyword，行为与 2.2.0 完全一致）。语义路由是 embeddings 余弦，hybrid 用 Reciprocal Rank Fusion 融合两路，结果带 `match` 徽标（关键词/语义/两者）。未配置 embed provider 时一切自动退回关键词，embed 挂了也在 `X-Semantic-Error` 头里说明原因。
+- **多模型卡** — `model_configs` 新增 `purpose`（chat/embed/rerank/whisper），每类一张卡，`GET /api/v1/model/cards`、`PUT /api/v1/model?purpose=embed`、测试探针按 purpose 分派（embed 探针自动回报维度并存 `probed_dim`）。老库自动补列、把现有卡回填成 chat，并加 purpose 唯一索引。
+- **向量索引** — 新表 `embeddings`（按 (memory_id, model) 存 float32，换模型写新行、切回零成本）、`rag_dirty` 队列（API 写/sync 拉/小结写入统一经 `write_through` 打点）、`rag_cache`、`rag_settings`。`rag_worker` 每 15s 消费一批 16 条，provider 离线保留队列。检索为 numpy 全扫描（10k×1024 维 ≈0.05s），`prune_broken_embeddings` 启动时清畸形行。
+- **语音记忆页** — 浏览器 PCM → 16-bit WAV → whisper 转写 + cos>0.6 查重，一键新建或追加到相似记忆；http 访问自动降级为文件上传。
+- **洞察页** — 记忆健康（cos>0.92 近重复对、>90 天 temporary、归档统计，只出建议）、今日奇遇（700-900 字长文，按日缓存）、记忆评注（只读不回写）、创建热力图。
+- **运维** — `MSC_RAG_ENABLED=false` 一键回到 2.2.0 行为；`POST /rag/reindex`、`DELETE /rag/vectors?model=旧模型`、`POST /rag/import`（sidecar index.db 向量 base64 直灌免重嵌）；备份恢复新增可选 `embeddings` 表（旧备份缺表也能恢复）；`/health` 带向量与队列计数；依赖新增 `numpy>=1.26`。llama.cpp 嵌入需 `-ub 4096`。
+- 测试 94 个（新增 `backend/tests/test_rag.py` 20 项：卡片隔离、队列/worker/断连重试、语义召回与降级、kill switch、导入/清理/调参、语音、洞察；迁移测试补 purpose 回填与畸形向量清理）。
+
 ### 2.2.0
 
 - **模型卡片** — 设置页新增 🤖 卡片：API 地址 / 模型名 / 密钥 / 温度 / 最大输出 / 超时 / 输入上限 / 额外参数 JSON / 自定义提示词，全部存数据库，保存即生效；密钥只回显掩码，`api_key` 省略＝保留、传空＝清除。

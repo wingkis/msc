@@ -70,6 +70,7 @@ def run_sync_cycle() -> dict:
     """One filesystem -> DB pass. Returns what it found."""
     db = SessionLocal()
     created, updated, skipped = [], [], []
+    touched_ids: list[int] = []
     try:
         for slug in list_memory_files():
             data = read_memory_file(slug)
@@ -81,8 +82,10 @@ def run_sync_cycle() -> dict:
             memory = db.query(Memory).filter(Memory.slug == slug).first()
 
             if memory is None:
-                _from_file(db, slug, data)
+                memory = _from_file(db, slug, data)
                 created.append(slug)
+                db.flush()
+                touched_ids.append(memory.id)
                 continue
 
             if digest == memory.last_sync_hash:
@@ -96,8 +99,18 @@ def run_sync_cycle() -> dict:
 
             _from_file(db, slug, data, memory)
             updated.append(slug)
+            db.flush()
+            touched_ids.append(memory.id)
 
         db.commit()
+
+        # File-side writes bypass the API's write_through hook, so the pull
+        # queues its own re-embeddings.
+        if settings.rag_enabled and touched_ids:
+            from msc.services.rag import mark_dirty
+            for memory_id in touched_ids:
+                mark_dirty(db, memory_id)
+
         return {"created": created, "updated": updated, "skipped_newer_db": skipped}
     except Exception:
         db.rollback()

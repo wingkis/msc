@@ -33,6 +33,37 @@ def _get_tags_for_memory(mem_id: int, db: Session) -> list:
     return [{"id": t[0], "name": t[1]} for t in rows]
 
 
+def _keyword_candidates(q: str, fetch: int, include_archived: bool) -> List[tuple]:
+    """FTS5 ranking with a LIKE backstop — the (memory_id, score) list that
+    both the keyword mode and the hybrid fusion start from."""
+    match = sanitize_match(q)
+    active = "" if include_archived else " AND m.archived = 0"
+    active_like = "" if include_archived else " AND archived = 0"
+    candidates: List[tuple] = []
+    try:
+        rows = _raw_exec(
+            "SELECT m.id, -f.rank FROM memories m "
+            "JOIN memories_fts f ON f.rowid = m.id "
+            "WHERE memories_fts MATCH :p0" + active + " "
+            "ORDER BY f.rank LIMIT :p1",
+            [match, fetch],
+        )
+        candidates = [(r[0], round(min(1.0, max(0.0, float(r[1]))), 4)) for r in rows]
+    except Exception:
+        candidates = []  # never let a weird query turn into a 500
+
+    if not candidates:
+        like = f"%{q}%"
+        rows = _raw_exec(
+            "SELECT id FROM memories WHERE (name LIKE :p0 OR description LIKE :p1 "
+            "OR body LIKE :p2 OR slug LIKE :p3)" + active_like +
+            " ORDER BY updated_at DESC LIMIT :p4",
+            [like, like, like, like, fetch],
+        )
+        candidates = [(r[0], 0.5) for r in rows]
+    return candidates
+
+
 @router.get("")
 def search_memories(
     q: str = Query("", description="Full-text search query"),
@@ -41,45 +72,63 @@ def search_memories(
     priorities: Optional[str] = Query(None, description="Comma-separated priority filter"),
     branches: Optional[str] = Query(None, description="Comma-separated branch filter"),
     include_archived: bool = Query(False, description="Include soft-deleted memories"),
+    mode: str = Query("keyword", pattern="^(keyword|semantic|hybrid)$",
+                      description="keyword = FTS only (default, 2.x behaviour); "
+                                  "semantic = embeddings; hybrid = RRF fusion. "
+                                  "Both degrade to keyword when no embed provider is set."),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
     response: Response = None,
     request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """Full-text + filtered search. No auth: open on the LAN (see MSC_AUTH_ENABLED).
+    """Search: full text, semantic, or both. No auth: open on the LAN (see MSC_AUTH_ENABLED).
 
-    Ranking comes from FTS5; arbitrary input is quoted first so operators and
-    punctuation can't break the query, and a LIKE pass covers what FTS misses.
-    Filters combine with the text query rather than replacing it.
+    keyword ranking comes from FTS5 (arbitrary input is quoted first so
+    operators and punctuation can't break the query, and a LIKE pass covers
+    what FTS misses); semantic ranking from embedding cosine; hybrid fuses the
+    two with Reciprocal Rank Fusion. Filters combine with the text query
+    rather than replacing it.
     """
+    from msc.config import get_settings
+    from msc.services.rag import rrf_fusion, semantic_ids, setting
+
+    settings = get_settings()
     candidates: List[tuple] = []  # (memory_id, score)
+    match_by_id: dict = {}       # memory_id -> keyword|semantic|both (non-keyword modes)
 
     if q:
-        match = sanitize_match(q)
-        active = "" if include_archived else " AND m.archived = 0"
-        active_like = "" if include_archived else " AND archived = 0"
-        try:
-            rows = _raw_exec(
-                "SELECT m.id, -f.rank FROM memories m "
-                "JOIN memories_fts f ON f.rowid = m.id "
-                "WHERE memories_fts MATCH :p0" + active + " "
-                "ORDER BY f.rank LIMIT :p1",
-                [match, max(limit * 4, 40)],
-            )
-            candidates = [(r[0], round(min(1.0, max(0.0, float(r[1]))), 4)) for r in rows]
-        except Exception:
-            candidates = []  # never let a weird query turn into a 500
+        fetch = max(limit * 4, 40)
+        if mode == "keyword" or not settings.rag_enabled:
+            candidates = _keyword_candidates(q, fetch, include_archived)
+        else:
+            keyword = _keyword_candidates(q, fetch, include_archived)
+            sem_ids, sem_cos, sem_error = ([], {}, None)
+            if settings.rag_enabled:
+                sem_ids, sem_cos, sem_error = semantic_ids(
+                    db, q, max(setting(db, "recall_top"), limit), include_archived)
 
-        if not candidates:
-            like = f"%{q}%"
-            rows = _raw_exec(
-                "SELECT id FROM memories WHERE (name LIKE :p0 OR description LIKE :p1 "
-                "OR body LIKE :p2 OR slug LIKE :p3)" + active_like +
-                " ORDER BY updated_at DESC LIMIT :p4",
-                [like, like, like, like, max(limit * 4, 40)],
-            )
-            candidates = [(r[0], 0.5) for r in rows]
+            if mode == "semantic" and sem_ids:
+                candidates = [(mid, round(sem_cos.get(mid, 0.0), 4)) for mid in sem_ids]
+                match_by_id = {mid: "semantic" for mid in sem_ids}
+            elif mode == "hybrid" and sem_ids:
+                fused = rrf_fusion([cid for cid, _ in keyword], sem_ids,
+                                   rrf_k=setting(db, "rrf_k"))
+                candidates = [(mid, score) for mid, score, _ in fused]
+                match_by_id = {mid: m for mid, _, m in fused}
+            else:
+                # semantic without vectors, or hybrid without a working embed
+                # provider: keyword is the honest fallback.
+                candidates = keyword
+                if mode == "semantic":
+                    candidates = []
+            if sem_error and response is not None:
+                # A configured-but-broken embed provider is worth surfacing;
+                # the results themselves just fell back to keyword. Headers
+                # are latin-1, so the (often Chinese) message is quoted —
+                # decodeURIComponent on the UI side.
+                from urllib.parse import quote
+                response.headers["X-Semantic-Error"] = quote(sem_error)[:200]
 
     query = db.query(Memory)
     if not include_archived:
@@ -88,8 +137,10 @@ def search_memories(
     if candidates:
         query = query.filter(Memory.id.in_([cid for cid, _ in candidates]))
 
-    if q and not candidates:
+    if q and mode == "keyword" and not candidates:
         # A text query that matched nothing should not fall through to "everything".
+        return []
+    if q and mode != "keyword" and not candidates:
         return []
 
     if tags:
@@ -121,7 +172,7 @@ def search_memories(
     results = []
     for m in memories:
         score = next((s for cid, s in candidates if cid == m.id), 1.0)
-        results.append({
+        entry = {
             "id": m.id,
             "slug": m.slug,
             "name": m.name,
@@ -130,7 +181,10 @@ def search_memories(
             "priority": m.priority,
             "tags": [{"id": t.id, "name": t.name} for t in m.tags],
             "score": score,
-        })
+        }
+        if mode != "keyword":
+            entry["match"] = match_by_id.get(m.id, "keyword")
+        results.append(entry)
 
     if response is not None:
         response.headers["X-Total-Count"] = str(total)

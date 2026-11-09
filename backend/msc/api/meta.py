@@ -78,6 +78,10 @@ READ
                                       limit<=500, offset; X-Total-Count header)
   GET  /memories/{{slug}}             one memory; slug, exact name, or unique fragment
   GET  /search?q=...                  full-text (safe with any characters) + filters
+                                      mode=keyword|semantic|hybrid (default keyword;
+                                      semantic modes need an embed provider, otherwise
+                                      they degrade to keyword; hybrid results carry
+                                      a "match" field)
   GET  /meta                          vocabularies, tags, counts
   GET  /tags                          tag names + usage counts
   GET  /stats                         counts by category/priority/source

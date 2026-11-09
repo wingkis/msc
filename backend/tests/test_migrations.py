@@ -28,6 +28,15 @@ CREATE TABLE sync_conflicts (
     reason TEXT, resolved INTEGER NOT NULL DEFAULT 0, resolved_at TEXT, resolved_by TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE model_configs (
+    id INTEGER PRIMARY KEY, label TEXT, base_url TEXT, model TEXT, api_key TEXT,
+    enabled INTEGER, temperature REAL, max_tokens INTEGER, timeout_seconds INTEGER,
+    max_input_chars INTEGER, extra_json TEXT, prompt_template TEXT, auto_enabled INTEGER,
+    auto_time TEXT, auto_timezone TEXT, default_category TEXT, default_priority TEXT,
+    archive_sources INTEGER, last_ok_at TEXT, last_error TEXT, updated_at TEXT NOT NULL
+);
+INSERT INTO model_configs (id, label, base_url, model, enabled, updated_at)
+VALUES (1, '2.2 chat card', '', '', 1, '2026-01-01');
 INSERT INTO memories (slug, name, priority, category, branch, created_at, updated_at)
 VALUES ('branchy', 'Branchy', 'medium', 'reference', 'work', '2026-01-01', '2026-01-01');
 INSERT INTO tags (id, name) VALUES (1, '[''codex'), (2, 'sandbox'']'), (3, 'codex'''), (4, '''');
@@ -84,6 +93,57 @@ def test_branches_in_use_become_registered(legacy_engine):
     assert migrations.ensure_branch_records() == ["work"]
     assert migrations.branch_counts() == {"work": 1}
     assert migrations.ensure_branch_records() == []
+
+
+def test_rag_tables_exist_on_a_fresh_database(client):
+    """create_all picks up embeddings/rag_dirty/rag_cache/rag_settings (no Alembic)."""
+    from sqlalchemy import inspect
+
+    from msc.database import engine
+
+    tables = set(inspect(engine).get_table_names())
+    assert {"embeddings", "rag_dirty", "rag_cache", "rag_settings"} <= tables
+    columns = {c["name"] for c in inspect(engine).get_columns("model_configs")}
+    assert {"purpose", "probed_dim"} <= columns
+
+
+def test_a_2_2_card_gets_a_purpose_and_purposes_go_unique(legacy_engine):
+    added = migrations.add_missing_columns()
+    assert "model_configs.purpose" in added and "model_configs.probed_dim" in added
+
+    backfilled = migrations.ensure_model_purpose()
+    assert backfilled == 1  # the lone 2.2 card becomes the chat card
+    purposes = [r[0] for r in _rows(legacy_engine, "SELECT purpose FROM model_configs WHERE id = 1")]
+    assert purposes == ["chat"]
+
+    index_names = {i["name"] for i in inspect_engine(legacy_engine).get_indexes("model_configs")}
+    assert "uq_model_configs_purpose" in index_names
+    # Idempotent: nothing NULL left, index already there.
+    assert migrations.ensure_model_purpose() == 0
+
+
+def inspect_engine(engine):
+    from sqlalchemy import inspect
+    return inspect(engine)
+
+
+def test_malformed_embedding_rows_are_pruned(legacy_engine):
+    from sqlalchemy import text
+
+    migrations.add_missing_columns()
+    with legacy_engine.begin() as conn:
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS embeddings (
+            memory_id INTEGER NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+            vec BLOB NOT NULL, embedded_at TEXT NOT NULL,
+            PRIMARY KEY (memory_id, model))"""))
+        conn.execute(text("INSERT INTO embeddings VALUES (1, 'm', 2, x'0000000000000000', 'now')"))  # ok: 2*4 bytes
+        conn.execute(text("INSERT INTO embeddings VALUES (2, 'm', 3, x'000000000000', 'now')"))      # broken: 6 != 12
+        conn.execute(text("INSERT INTO embeddings VALUES (3, 'm', 0, x'', 'now')"))                  # broken: dim 0
+
+    assert migrations.prune_broken_embeddings() == 2
+    assert migrations.prune_broken_embeddings() == 0
+    kept = [r[0] for r in _rows(legacy_engine, "SELECT memory_id FROM embeddings")]
+    assert kept == [1]
 
 
 def test_bodies_with_leaked_frontmatter_are_repaired(client, db, memory_dir):

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.2.0-2">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.3.0-1">
 </head>
 <body>
   <!-- Header -->
@@ -27,6 +27,12 @@
         </a>
         <a href="javascript:void(0)" data-page="graph" onclick="navTo('graph')" class="nav-link">
           <span class="nav-icon">🔗</span> 图谱
+        </a>
+        <a href="javascript:void(0)" data-page="voice" onclick="navTo('voice')" class="nav-link">
+          <span class="nav-icon">🎙️</span> 语音
+        </a>
+        <a href="javascript:void(0)" data-page="insights" onclick="navTo('insights')" class="nav-link">
+          <span class="nav-icon">✨</span> 洞察
         </a>
         <a href="javascript:void(0)" data-page="settings" onclick="navTo('settings')" class="nav-link">
           <span class="nav-icon">⚙️</span> 设置
@@ -177,6 +183,11 @@
             <button class="btn btn-primary btn-lg" onclick="doSearch()">搜索</button>
           </div>
           <div class="search-filters">
+            <select id="search-mode-select" title="keyword＝FTS；semantic＝向量；hybrid＝两路 RRF 融合（未配置 embed 时自动退回 keyword）">
+              <option value="hybrid">混合搜索</option>
+              <option value="keyword">仅关键词</option>
+              <option value="semantic">仅语义</option>
+            </select>
             <select id="search-tag-filter">
               <option value="">所有标签</option>
             </select>
@@ -229,6 +240,95 @@
         <div id="graph-container" class="graph-container"></div>
         <div id="graph-detail" class="graph-detail">
           <p class="graph-detail-hint">点击节点查看详情</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Voice: 录音 → whisper → 查重 → 写入记忆 -->
+    <section id="page-voice" class="page">
+      <div class="voice-page">
+        <h1>语音记忆</h1>
+        <div class="settings-card">
+          <div class="setting-hint" id="voice-env-hint">
+            麦克风需要 https 或 localhost；不满足时可直接上传音频文件（wav/mp3/m4a/ogg/webm/flac）。<br>
+            录音在浏览器里转成 16-bit PCM WAV 再上传，whisper.cpp 不解 webm。
+          </div>
+          <div class="sync-controls">
+            <button class="btn btn-primary" id="voice-record-btn" onclick="toggleVoiceRecord()">🎙️ 开始录音</button>
+            <button class="btn btn-ghost" id="voice-stop-btn" style="display:none" onclick="stopVoiceRecord()">⏹ 停止</button>
+            <span id="voice-status" class="sync-result"></span>
+          </div>
+          <div class="sync-controls">
+            <input type="file" id="voice-file" accept=".wav,.mp3,.m4a,.ogg,.webm,.flac,audio/*">
+            <button class="btn" onclick="transcribeFile()">转写文件</button>
+          </div>
+          <div class="form-group">
+            <label>转写结果（可直接编辑后再写入）</label>
+            <textarea id="voice-text" rows="6" placeholder="录音或上传后，文字出现在这里…"></textarea>
+          </div>
+          <h4>相似记忆（cos &gt; 0.6）</h4>
+          <div id="voice-similar" class="log-list"><div class="empty-hint">还没有转写结果</div></div>
+          <div class="sync-controls">
+            <button class="btn btn-primary" onclick="createMemoryFromVoice()">➕ 新建记忆</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Insights: 健康报告 / 奇遇长文 / 评注 / 热力图 -->
+    <section id="page-insights" class="page">
+      <div class="settings-page">
+        <h1>洞察</h1>
+        <div class="settings-grid">
+          <div class="settings-card">
+            <h3>📅 今日奇遇</h3>
+            <div class="setting-hint">按最近记忆编织一篇 700-900 字的长文，每天一篇、按日缓存（需要 chat 模型卡片）。</div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" id="pick-btn" onclick="loadDailyPick(false)">生成/查看今日</button>
+              <button class="btn btn-ghost" onclick="loadDailyPick(true)">重新生成</button>
+              <span id="pick-status" class="sync-result"></span>
+            </div>
+            <div id="daily-pick" class="pick-body"></div>
+          </div>
+          <div class="settings-card">
+            <h3>🪞 记忆评注</h3>
+            <div class="setting-hint">挑一条记忆，让模型写 500-800 字的评注；只读不回写。</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>slug / 名称</label>
+                <input type="text" id="echo-slug" placeholder="dgx-central-server">
+              </div>
+              <div class="form-group">
+                <label>特别想听（可选）</label>
+                <input type="text" id="echo-instruction" placeholder="当时的取舍现在还成立吗">
+              </div>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" id="echo-btn" onclick="runEcho()">写评注</button>
+              <span id="echo-status" class="sync-result"></span>
+            </div>
+            <div id="echo-result" class="pick-body"></div>
+          </div>
+          <div class="settings-card">
+            <h3>🩺 记忆健康</h3>
+            <div class="setting-hint">近重复对（cos &gt; 0.92）、过期 temporary、归档统计。只出建议，合并走「小结所选」。</div>
+            <div class="sync-controls">
+              <button class="btn" onclick="loadHealthReport()">体检</button>
+              <span id="health-status" class="sync-result"></span>
+            </div>
+            <div id="health-report"></div>
+          </div>
+          <div class="settings-card">
+            <h3>🔥 创建热力</h3>
+            <div class="sync-controls">
+              <select id="heatmap-days" onchange="loadHeatmap()">
+                <option value="30">30 天</option>
+                <option value="120" selected>120 天</option>
+                <option value="365">365 天</option>
+              </select>
+            </div>
+            <div id="rag-heatmap" class="heatmap"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -343,6 +443,84 @@
             </div>
             <h4>最近小结</h4>
             <div id="summary-runs" class="log-list"></div>
+          </div>
+          <div class="settings-card">
+            <h3>🧬 嵌入模型（语义搜索）</h3>
+            <div class="setting-hint">
+              任意 OpenAI 兼容 embeddings（llama.cpp / LM Studio / Ollama / OpenAI）。测试按钮会嵌入一句话并回报维度。<br>
+              llama.cpp 提供嵌入时需 <code>-ub 4096</code>，否则长记忆会失败。未配置时搜索自动退回关键词。
+            </div>
+            <div class="model-form">
+              <div class="form-group"><label>API 地址</label><input type="text" id="rag-embed-base-url" placeholder="http://192.168.29.11:8081"></div>
+              <div class="form-group"><label>模型名</label><input type="text" id="rag-embed-name" placeholder="qwen3-embedding-0.6b"></div>
+              <div class="form-group"><label>API Key</label><input type="password" id="rag-embed-key" placeholder="留空＝不修改"></div>
+              <div class="form-group"><label>输入上限（字符）</label><input type="number" id="rag-embed-max-input" step="500" min="500"></div>
+              <div class="form-group"><label>超时（秒）</label><input type="number" id="rag-embed-timeout" step="5" min="5"></div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="rag-embed-enabled"><label for="rag-embed-enabled">启用</label>
+              <input type="checkbox" id="rag-embed-key-clear"><label for="rag-embed-key-clear">清除密钥</label>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveRagCard('embed')">保存</button>
+              <button class="btn" onclick="testRagCard('embed')">测试并探测维度</button>
+              <div id="rag-embed-status" class="sync-result"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>🎯 重排模型（可选）</h3>
+            <div class="setting-hint">llama.cpp <code>/v1/rerank</code>（--rerank）或 Cohere 方言；未配置时混合搜索只用余弦排序。</div>
+            <div class="model-form">
+              <div class="form-group"><label>API 地址</label><input type="text" id="rag-rerank-base-url"></div>
+              <div class="form-group"><label>模型名</label><input type="text" id="rag-rerank-name"></div>
+              <div class="form-group"><label>API Key</label><input type="password" id="rag-rerank-key" placeholder="留空＝不修改"></div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="rag-rerank-enabled"><label for="rag-rerank-enabled">启用</label>
+              <input type="checkbox" id="rag-rerank-key-clear"><label for="rag-rerank-key-clear">清除密钥</label>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveRagCard('rerank')">保存</button>
+              <button class="btn" onclick="testRagCard('rerank')">测试</button>
+              <div id="rag-rerank-status" class="sync-result"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>👂 语音转写（whisper）</h3>
+            <div class="setting-hint">llama-server 的 whisper 端点（<code>--model ggml-*.bin</code>）或其他 /v1/audio/transcriptions 服务。语音页用它。</div>
+            <div class="model-form">
+              <div class="form-group"><label>API 地址</label><input type="text" id="rag-whisper-base-url"></div>
+              <div class="form-group"><label>模型名</label><input type="text" id="rag-whisper-name" placeholder="whisper-large-v3-turbo"></div>
+              <div class="form-group"><label>API Key</label><input type="password" id="rag-whisper-key" placeholder="留空＝不修改"></div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="rag-whisper-enabled"><label for="rag-whisper-enabled">启用</label>
+              <input type="checkbox" id="rag-whisper-key-clear"><label for="rag-whisper-key-clear">清除密钥</label>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveRagCard('whisper')">保存</button>
+              <button class="btn" onclick="testRagCard('whisper')">测试</button>
+              <div id="rag-whisper-status" class="sync-result"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>🧭 RAG 索引状态</h3>
+            <div id="rag-status" class="kv-list"></div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="reindexRag()">全量重建向量</button>
+              <button class="btn btn-ghost" onclick="loadRagStatus()">刷新</button>
+              <div id="rag-status-result" class="sync-result"></div>
+            </div>
+            <h4>融合参数（DB 覆盖 .env）</h4>
+            <div class="form-row">
+              <div class="form-group"><label>recall top</label><input type="number" id="rag-set-recall" min="1" max="500"></div>
+              <div class="form-group"><label>rrf k</label><input type="number" id="rag-set-rrf" min="1" max="1000"></div>
+              <div class="form-group"><label>rerank topn</label><input type="number" id="rag-set-rerank" min="1" max="100"></div>
+              <div class="form-group"><label>embed 批量</label><input type="number" id="rag-set-batch" min="1" max="64"></div>
+            </div>
+            <div class="sync-controls">
+              <button class="btn" onclick="saveRagSettings()">保存融合参数</button>
+            </div>
           </div>
           <div class="settings-card">
             <h3>🔄 同步</h3>
@@ -535,9 +713,9 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.2.0-2"></script>
-  <script src="/ui/js/app.js?v=2.2.0-2"></script>
-  <script src="/ui/js/graph.js?v=2.2.0-2"></script>
+  <script src="/ui/js/api.js?v=2.3.0-1"></script>
+  <script src="/ui/js/app.js?v=2.3.0-1"></script>
+  <script src="/ui/js/graph.js?v=2.3.0-1"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

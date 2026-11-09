@@ -1,7 +1,7 @@
 """ORM models."""
 
 from sqlalchemy import (
-    Column, Integer, String, Text, ForeignKey,
+    Column, Integer, String, Text, ForeignKey, LargeBinary,
     CheckConstraint, Float, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -198,15 +198,21 @@ class SyncConflict(Base):
 
 
 class ModelConfig(Base):
-    """The model card: one row (id=1) the Web UI edits in place.
+    """The model cards: one row per purpose, edited in place from the Web UI.
 
-    .env only seeds the first row; after that the database wins, so pointing
-    MSC at a different local model is a page refresh rather than a rebuild.
+    .env only seeds the first row of each purpose; after that the database
+    wins, so pointing MSC at a different local model is a page refresh rather
+    than a rebuild. ``chat`` digests memories, ``embed``/``rerank`` power
+    semantic search, ``whisper`` transcribes voice notes.
     """
 
     __tablename__ = "model_configs"
 
     id = Column(Integer, primary_key=True)
+    # chat | embed | rerank | whisper — enforced in the service layer because
+    # SQLite cannot ALTER a CHECK onto an existing table. The migration adds a
+    # UNIQUE index so each purpose has at most one card.
+    purpose = Column(String, default="chat")
     label = Column(String, default="本地模型")
     base_url = Column(String, default="")
     model = Column(String, default="")
@@ -229,8 +235,61 @@ class ModelConfig(Base):
     default_priority = Column(String, default="medium")
     archive_sources = Column(Integer, default=0)
 
+    # Embedding cards: dimension reported by the probe button, so the UI can
+    # show "1024 维" before anything is indexed.
+    probed_dim = Column(Integer, default=0)
+
     last_ok_at = Column(String)
     last_error = Column(String)
+    updated_at = Column(String, nullable=False)
+
+
+class Embedding(Base):
+    """One vector per (memory, model). Keying by model name means switching
+    embedding providers writes new rows instead of overwriting old ones —
+    switching back costs nothing, and a reindex can prune the old model after.
+    """
+
+    __tablename__ = "embeddings"
+
+    memory_id = Column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True)
+    model = Column(String, primary_key=True)
+    dim = Column(Integer, nullable=False)
+    vec = Column(LargeBinary, nullable=False)  # float32 little-endian, dim*4 bytes
+    embedded_at = Column(String, nullable=False)
+
+
+class RagDirty(Base):
+    """Memories whose text changed and need (re)embedding.
+
+    Written by the same code paths that write the memory itself, consumed by
+    rag_worker. INSERT OR IGNORE keeps marking free; the FK cascade drops a
+    mark when the memory is hard-deleted.
+    """
+
+    __tablename__ = "rag_dirty"
+
+    memory_id = Column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True)
+    marked_at = Column(String, nullable=False)
+
+
+class RagCache(Base):
+    """Day-scoped results that cost a model call (the daily pick)."""
+
+    __tablename__ = "rag_cache"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)  # JSON
+    created_at = Column(String, nullable=False)
+
+
+class RagSetting(Base):
+    """Fusion tuning (recall_top, rrf_k, ...) — env seeds, DB wins, same as cards."""
+
+    __tablename__ = "rag_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
 
 

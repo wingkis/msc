@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from msc.config import VERSION, get_settings
 from msc.api import memories, search, versions, sync, backup, auth, api_keys, prefix_routes, branches, users, meta
-from msc.api import summarize
+from msc.api import summarize, rag
 from msc.filesystem.indexer import build_index
 from msc.models import Memory, User, ApiKey, PrefixRoute
 from msc.database import get_db
@@ -25,7 +25,8 @@ settings = get_settings()
 # leftovers from the old importer (malformed tags, stale search index).
 _maintenance = run_maintenance()
 if any(_maintenance[k] for k in
-       ("columns_added", "tags_normalized", "branches_registered", "bodies_cleaned")
+       ("columns_added", "tags_normalized", "branches_registered", "bodies_cleaned",
+        "model_purpose_backfilled", "embeddings_pruned")
        ) or _maintenance["search_index"]["missing"]:
     print(f"Startup maintenance: {_maintenance}")
 
@@ -183,6 +184,8 @@ app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(meta.router, prefix="/api/v1", tags=["meta"])
 # Model card + digests: Web UI only, so they stay out of /help and /llms.txt.
 app.include_router(summarize.router, prefix="/api/v1", tags=["summarize"])
+# RAG (semantic search index, providers, voice, insights): same Web-UI-only rule.
+app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
 
 
 # Agent-facing entry points: curl-able plain text, no HTML.
