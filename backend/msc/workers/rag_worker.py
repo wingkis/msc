@@ -43,10 +43,23 @@ def run_once() -> dict | None:
         model_name = cfg.model.strip()
 
         # Marks for archived or hard-deleted memories can never be embedded;
-        # drop them so the queue can actually reach zero.
+        # drop them so the queue can actually reach zero. FK cascades are off
+        # on these connections, and hard deletes remove no vectors either, so
+        # embeddings for purged memories are reaped here too.
         db.execute(sql_text(
             "DELETE FROM rag_dirty WHERE memory_id NOT IN "
-            "(SELECT id FROM memories WHERE archived = 0)"))  # FK cascades are off; reap here
+            "(SELECT id FROM memories WHERE archived = 0)"))
+        db.execute(sql_text(
+            "DELETE FROM embeddings WHERE memory_id NOT IN (SELECT id FROM memories)"))
+
+        # The self-heal the docstrings promise: anything live without a vector
+        # for the active model gets queued — pre-existing memories on upgrade,
+        # lost marks, or a provider that was configured after the fact.
+        db.execute(sql_text(
+            "INSERT OR IGNORE INTO rag_dirty (memory_id, marked_at) "
+            "SELECT id, :p1 FROM memories WHERE archived = 0 AND id NOT IN "
+            "(SELECT memory_id FROM embeddings WHERE model = :p0)"),
+            {"p0": model_name, "p1": datetime.now(timezone.utc).isoformat()})
         db.commit()
 
         report = {"embedded": 0, "skipped": 0, "errors": []}

@@ -175,6 +175,40 @@ def test_worker_survives_an_outage_and_retries(client, monkeypatch):
 
 # ── Search modes ─────────────────────────────────────────────────────
 
+def test_worker_self_heals_missing_vectors(client, monkeypatch):
+    """A deleted vector (or an upgrade with no marks at all) is requeued by
+    the worker itself — the backfill the docstrings promise."""
+    _embed_card(client)
+    monkeypatch.setattr(rag_providers, "embed", _fake_embed)
+    slug = _make(client, "Self Heal Memo", body="qorax heal probe")
+    rag_worker.run_once()
+
+    from msc.database import SessionLocal
+    from msc.models import Embedding, Memory, RagDirty
+    db = SessionLocal()
+    try:
+        memory_id = db.query(Memory).filter_by(slug=slug).first().id
+        deleted = db.query(Embedding).filter(Embedding.memory_id == memory_id).delete()
+        db.commit()
+        assert deleted >= 1
+        assert db.query(RagDirty).filter(RagDirty.memory_id == memory_id).count() == 0
+    finally:
+        db.close()
+
+    report = rag_worker.run_once()
+    assert report and report["embedded"] >= 1
+    assert _fetch_vectors(client, client.get(f"/api/v1/memories/{slug}").json()["id"]), \
+        "the missing vector came back without any manual reindex"
+
+
+def test_unknown_search_mode_never_422s(client):
+    """2.x clients that already send a foreign mode= keep working."""
+    slug = _make(client, "Mode Fallback Memo", body="qorax mode fallback")
+    response = client.get("/api/v1/search", params={"q": "qorax mode fallback", "mode": "raw"})
+    assert response.status_code == 200
+    assert slug in {r["slug"] for r in response.json()}
+
+
 def test_search_modes_and_semantic_recall(client, monkeypatch):
     monkeypatch.setattr(rag_providers, "embed", _fake_embed)
     # A memory only reachable semantically: the query shares no keywords with
@@ -217,6 +251,25 @@ def test_semantic_search_degrades_without_a_provider(client, monkeypatch):
     results = response.json()
     assert "embedding-refusal-check" in {r["slug"] for r in results}
     assert "refused" in response.headers.get("X-Semantic-Error", "")
+
+    # semantic mode degrades the same way — an agent that trusts the
+    # documented contract must not get an empty list here.
+    sem_only = client.get("/api/v1/search", params={"q": "embedding", "mode": "semantic"}).json()
+    assert "embedding-refusal-check" in {r["slug"] for r in sem_only}
+
+
+def test_hard_delete_orphan_vectors_are_reaped(client, monkeypatch):
+    """FK cascades are off, so the worker reaps embeddings of purged memories."""
+    _embed_card(client)
+    monkeypatch.setattr(rag_providers, "embed", _fake_embed)
+    slug = _make(client, "Orphan Vector Memo", body="qorax orphan")
+    memory_id = client.get(f"/api/v1/memories/{slug}").json()["id"]
+    rag_worker.run_once()
+    assert _fetch_vectors(client, memory_id)
+
+    assert client.delete(f"/api/v1/memories/{slug}?hard=true").status_code == 200
+    rag_worker.run_once()  # the orphan sweep runs at the top of every cycle
+    assert not _fetch_vectors(client, memory_id)
 
 
 def test_kill_switch_reverts_to_2_x_behaviour(client, monkeypatch):

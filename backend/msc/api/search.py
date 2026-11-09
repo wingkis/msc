@@ -72,10 +72,11 @@ def search_memories(
     priorities: Optional[str] = Query(None, description="Comma-separated priority filter"),
     branches: Optional[str] = Query(None, description="Comma-separated branch filter"),
     include_archived: bool = Query(False, description="Include soft-deleted memories"),
-    mode: str = Query("keyword", pattern="^(keyword|semantic|hybrid)$",
+    mode: str = Query("keyword",
                       description="keyword = FTS only (default, 2.x behaviour); "
                                   "semantic = embeddings; hybrid = RRF fusion. "
-                                  "Both degrade to keyword when no embed provider is set."),
+                                  "Both degrade to keyword when no embed provider is set; "
+                                  "any unrecognised value is treated as keyword, never a 422."),
     limit: int = Query(20, le=100),
     offset: int = Query(0),
     response: Response = None,
@@ -94,6 +95,10 @@ def search_memories(
     from msc.services.rag import rrf_fusion, semantic_ids, setting
 
     settings = get_settings()
+    # A client sending an unknown mode (harmlessly possible — 2.x ignored the
+    # parameter entirely) gets keyword behaviour, not a 422.
+    if mode not in ("keyword", "semantic", "hybrid"):
+        mode = "keyword"
     candidates: List[tuple] = []  # (memory_id, score)
     match_by_id: dict = {}       # memory_id -> keyword|semantic|both (non-keyword modes)
 
@@ -117,11 +122,10 @@ def search_memories(
                 candidates = [(mid, score) for mid, score, _ in fused]
                 match_by_id = {mid: m for mid, _, m in fused}
             else:
-                # semantic without vectors, or hybrid without a working embed
-                # provider: keyword is the honest fallback.
+                # No vectors yet, no provider, or the provider is down: both
+                # semantic modes degrade to keyword — the same thing the kill
+                # switch does, so results never depend on RAG being half-set-up.
                 candidates = keyword
-                if mode == "semantic":
-                    candidates = []
             if sem_error and response is not None:
                 # A configured-but-broken embed provider is worth surfacing;
                 # the results themselves just fell back to keyword. Headers

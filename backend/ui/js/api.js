@@ -93,10 +93,24 @@ const API = {
 
   // Search. mode: keyword | semantic | hybrid — keyword keeps the 2.x shape,
   // the others add a "match" field per result.
+  //
+  // This path goes through raw fetch (not apiFetch) so it can read the
+  // X-Semantic-Error header: a configured-but-broken embed provider degrades
+  // to keyword results and says why. apiFetch discards headers, so the UI
+  // would otherwise never see the reason. Exposed as a window global because
+  // the API-method gate in test_ui.py reserves API.* names for methods.
   search(q, params = {}) {
     params.q = q;
     const qs = new URLSearchParams(params).toString();
-    return apiFetch('/search?' + qs);
+    return fetch(API_BASE + '/search?' + qs).then(async res => {
+      const text = await res.text();
+      let data = null;
+      if (text) { try { data = JSON.parse(text); } catch (e) { data = { detail: text.slice(0, 200) }; } }
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      const header = res.headers.get('X-Semantic-Error');
+      window.mscLastSemanticError = header ? decodeURIComponent(header) : null;
+      return data;
+    });
   },
   recommend(slug) {
     return apiFetch(`/search/recommend/${encodeURIComponent(slug)}`);

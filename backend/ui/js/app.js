@@ -252,6 +252,10 @@ async function doSearch() {
       results.map(r => renderSearchResult(r)).join('');
     document.getElementById('search-results').style.display = 'flex';
     document.getElementById('search-empty').style.display = 'none';
+    // Semantic asked for but the provider failed: results are keyword-only.
+    if (mode !== 'keyword' && window.mscLastSemanticError) {
+      toast('语义搜索不可用，已退回关键词: ' + window.mscLastSemanticError, 'error');
+    }
   } catch (e) {
     document.getElementById('search-results').innerHTML =
       `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">搜索失败: ${escHtml(e.message)}</div></div>`;
@@ -805,6 +809,15 @@ function escHtml(str) {
   return div.innerHTML;
 }
 
+// For values interpolated into double-quoted HTML attributes. escHtml misses
+// quotes, which is how an attacker-controlled model name could escape an
+// attribute; this closes the quote holes too.
+function escAttr(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function debouncedSearch() {
   if (searchDebounce) clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
@@ -1276,8 +1289,11 @@ async function loadRagStatus() {
     const vectors = Object.entries(s.vectors || {})
       .map(([model, count]) => {
         const active = model === s.active_model;
+        // Model names are free text from any provider card or /rag/import —
+        // never interpolate them into a JS string inside onclick. The button
+        // hands over itself and reads its data-model attribute instead.
         const del = active ? ''
-          : ` <button class="btn btn-sm btn-ghost" onclick="purgeRagVectors('${escHtml(model)}')">清理</button>`;
+          : ` <button class="btn btn-sm btn-ghost" data-model="${escAttr(model)}" onclick="purgeRagVectors(this)">清理</button>`;
         return `<div class="kv"><span>${escHtml(model)}</span><span>${count} 条向量${del}</span></div>`;
       }).join('') || '<div class="empty-hint">还没有向量</div>';
     box.innerHTML = `
@@ -1307,7 +1323,8 @@ async function reindexRag() {
   }
 }
 
-async function purgeRagVectors(model) {
+async function purgeRagVectors(button) {
+  const model = button.dataset.model || '';
   if (!confirm(`删除模型「${model}」的全部向量？\n当前 embed 卡片用的模型不能删；切回该模型前需要重新嵌入。`)) return;
   try {
     const result = await API.ragPurgeVectors(model);
@@ -1367,8 +1384,13 @@ async function toggleVoiceRecord() {
   voice.processor.onaudioprocess = (ev) => {
     voice.samples.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
   };
+  // A zero-gain node keeps the processor alive without routing the live mic
+  // into the speakers (the callback fires without an audible howl).
+  const sink = voice.ctx.createGain();
+  sink.gain.value = 0;
   voice.source.connect(voice.processor);
-  voice.processor.connect(voice.ctx.destination);
+  voice.processor.connect(sink);
+  sink.connect(voice.ctx.destination);
   voice.recording = true;
   document.getElementById('voice-record-btn').textContent = '🎙️ 录音中…';
   document.getElementById('voice-stop-btn').style.display = '';

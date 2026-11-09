@@ -272,28 +272,25 @@ def health_report(db: Session = Depends(get_db)):
             dim = rows[0][2] if rows else 0
             matrix = numpy.empty((len(rows), dim), dtype=numpy.float32)
             ids = []
-            for i, (mid, blob, row_dim) in enumerate(rows):
+            for mid, blob, row_dim in rows:
                 if row_dim != dim or len(blob) != dim * 4:
                     continue  # mixed-dim leftovers from a model switch: skip row
-                matrix[i] = numpy.frombuffer(blob, dtype=numpy.float32)
-                ids.append(mid)
+                matrix[len(ids)] = numpy.frombuffer(blob, dtype=numpy.float32)
+                ids.append(mid)  # ids and matrix rows must advance together
             matrix = matrix[:len(ids)]
             if ids and dim > 0:
                 norms = numpy.linalg.norm(matrix, axis=1)
                 norms = numpy.where(norms == 0, 1.0, norms)
                 unit = matrix / norms[:, None]
                 sims = unit @ unit.T
-                pairs = []
-                for i in range(len(ids)):
-                    for j in range(i + 1, len(ids)):
-                        if sims[i][j] > 0.92:
-                            pairs.append({
-                                "a": {"id": ids[i], "slug": live[ids[i]].slug,
-                                      "name": live[ids[i]].name},
-                                "b": {"id": ids[j], "slug": live[ids[j]].slug,
-                                      "name": live[ids[j]].name},
-                                "cos": round(float(sims[i][j]), 4),
-                            })
+                # Vectorised upper-triangle extraction: 3000 vectors -> one
+                # mask, not 4.5M Python-level numpy scalar lookups.
+                i_idx, j_idx = numpy.where(numpy.triu(sims, 1) > 0.92)
+                pairs = [{
+                    "a": {"id": ids[i], "slug": live[ids[i]].slug, "name": live[ids[i]].name},
+                    "b": {"id": ids[j], "slug": live[ids[j]].slug, "name": live[ids[j]].name},
+                    "cos": round(float(sims[i][j]), 4),
+                } for i, j in zip(i_idx, j_idx)]
                 report["duplicates"] = pairs[:50]
                 if len(pairs) > 50:
                     report["duplicates_note"] = f"共 {len(pairs)} 对，只列出前 50"
