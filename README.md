@@ -214,6 +214,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.3.1（rag 分支）
+
+- **回响评注独立化** — 新增 `echo` purpose 模型卡（设置页第四张 provider 卡）：评注可指定与 chat 不同的模型 API，未配置时自动回退 chat 卡，`POST /api/v1/model/test?purpose=echo` 走 chat 式探针。
+- **评注存 md** — `POST /rag/echo` 新增 `save`（默认关，Web UI 默认开）与 `save_path`（base 内相对文件名，默认 `{slug}-回响`；绝对路径/`..`/slug 冲突 422）。保存 base 默认＝记忆目录，下个同步周期评注被 sync 吸收成普通记忆（category reference、tag echo）；`MSC_ECHO_DIR` 可改 base。`_save_echo` 复用 `md_writer` 格式。
+- **搜索页回响按钮** — 每条搜索结果悬停出现 🪞 回响按钮，一键跳洞察页评注面板并生成（对齐 n1 sidecar 的交互）。
+
 ### 2.3.0（rag 分支）
 
 - **混合搜索** — `GET /api/v1/search?mode=keyword|semantic|hybrid`（默认 keyword，行为与 2.2.0 完全一致）。语义路由是 embeddings 余弦，hybrid 用 Reciprocal Rank Fusion 融合两路，结果带 `match` 徽标（关键词/语义/两者）。未配置 embed provider 时一切自动退回关键词，embed 挂了也在 `X-Semantic-Error` 头里说明原因。
