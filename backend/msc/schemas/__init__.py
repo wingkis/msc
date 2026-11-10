@@ -264,3 +264,19 @@ class PicSettingsUpdate(BaseModel):
     thumb_batch: Optional[int] = Field(None, ge=1, le=200)
     rescan_hours: Optional[int] = Field(None, ge=1, le=8760)
     thumb_px: Optional[int] = Field(None, ge=64, le=2048)
+    caption_batch: Optional[int] = Field(None, ge=1, le=32)
+    embed_batch: Optional[int] = Field(None, ge=1, le=64)
+
+
+class PicItemsBatch(BaseModel):
+    """Bulk gallery actions. archive/restore are soft (never touch the
+    originals); retry re-queues failed photos into the pipeline."""
+    ids: List[int] = Field(..., min_length=1, max_length=500)
+    action: str = Field(..., pattern="^(archive|restore|retry)$")
+
+
+class PicItemsPurge(BaseModel):
+    """The one truly destructive call: deletes the ORIGINAL files. confirm
+    is a hard gate — the UI additionally makes the human type DELETE."""
+    ids: List[int] = Field(..., min_length=1, max_length=200)
+    confirm: bool = False

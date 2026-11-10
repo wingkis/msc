@@ -11,11 +11,12 @@ and the trash bin land on later passes of the same branch.
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
@@ -24,7 +25,9 @@ from msc.config import get_settings
 from msc.database import get_db
 from msc.models import PicItem, PicSource, PicVector
 from msc.picsources import SourceError, build_source
-from msc.schemas import PicSettingsUpdate, PicSourceCreate, PicSourceUpdate
+from msc.schemas import (
+    PicItemsBatch, PicItemsPurge, PicSettingsUpdate, PicSourceCreate, PicSourceUpdate,
+)
 from msc.services.model_config import get_config, public_view
 from msc.services.pic_index import (
     PIC_TUNABLES, pic_semantic_ids, pic_setting, set_pic_setting,
@@ -378,6 +381,7 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
                kind: str = Query(None), q: str = Query("", max_length=200),
                taken_from: str = Query("", max_length=10), taken_to: str = Query("", max_length=10),
                include_archived: bool = Query(False),
+               trash: bool = Query(False, description="回收站视图：只看软删除的"),
                limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
                db: Session = Depends(get_db)):
     """Gallery page: placeholders and finished tiles together, newest-first
@@ -386,7 +390,9 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
     query = (db.query(PicItem, PicSource.name)
              .join(PicSource, PicSource.id == PicItem.source_id))
     conditions = []
-    if not include_archived:
+    if trash:
+        conditions.append(PicItem.archived == 1)
+    elif not include_archived:
         conditions.append(PicItem.archived == 0)
     if source_id is not None:
         conditions.append(PicItem.source_id == source_id)
@@ -510,3 +516,158 @@ def item_thumb(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="缩略图文件缺失（重新扫描可补齐）")
     return FileResponse(str(target), media_type="image/webp",
                         headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ── Original images (streamed from wherever they live) ───────────────
+
+_MEDIA = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+          "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp",
+          "tif": "image/tiff", "tiff": "image/tiff",
+          "heic": "image/heic", "heif": "image/heif"}
+
+
+@router.get("/item/{item_id}/original")
+def item_original(item_id: int, db: Session = Depends(get_db)):
+    """The untouched original, streamed through the source adapter — local
+    file, SMB share or WebDAV alike. MSC never copies it to disk."""
+    _require_pic()
+    row = db.get(PicItem, item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"照片 {item_id} 不存在")
+    source = db.get(PicSource, row.source_id)
+    if source is None:
+        raise HTTPException(status_code=410, detail="这张照片的源卡片已被删除，原图位置未知")
+    cap = settings.pic_max_original_mb * (1 << 20) if settings.pic_max_original_mb > 0 else 0
+    try:
+        adapter = build_source(source)
+        inner = adapter.stream(row.rel_path, max_bytes=cap)
+    except SourceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    def guarded():
+        try:
+            yield from inner
+        except (SourceError, OSError) as exc:
+            _log.warning("original stream aborted for %s: %s", row.origin_uri, exc)
+        finally:
+            adapter.close()
+
+    safe = re.sub(r'[^\w.\-]', "_", row.name or "photo")[:100]
+    return StreamingResponse(
+        guarded(),
+        media_type=_MEDIA.get(row.ext, "application/octet-stream"),
+        headers={"Content-Disposition": f'inline; filename="{safe}"',
+                 "Cache-Control": "private, max-age=3600"},
+    )
+
+
+# ── Trash, bulk, purge ───────────────────────────────────────────────
+
+def _set_archived(items: list, archived: int) -> int:
+    now = _now_iso()
+    for item in items:
+        item.archived = archived
+        item.deleted_at = now if archived else None
+        item.updated_at = now
+    return len(items)
+
+
+@router.delete("/item/{item_id}")
+def soft_delete_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    """Trash-bin an item: gallery/search hide it, the file is untouched."""
+    _require_auth(request, db)
+    _guard_write()
+    _require_pic()
+    row = db.get(PicItem, item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"照片 {item_id} 不存在")
+    _set_archived([row], 1)
+    db.commit()
+    return {"id": item_id, "archived": True, "by": _actor(request),
+            "note": "已进回收站，原图未动，可随时恢复"}
+
+
+@router.post("/item/{item_id}/restore")
+def restore_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    _require_auth(request, db)
+    _guard_write()
+    _require_pic()
+    row = db.get(PicItem, item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"照片 {item_id} 不存在")
+    _set_archived([row], 0)
+    db.commit()
+    return {"id": item_id, "archived": False}
+
+
+@router.post("/items/batch")
+def batch_items(data: PicItemsBatch, request: Request, db: Session = Depends(get_db)):
+    """Multi-select gallery actions: archive / restore / retry."""
+    _require_auth(request, db)
+    _guard_write()
+    _require_pic()
+    rows = db.query(PicItem).filter(PicItem.id.in_(data.ids)).all()
+    changed = 0
+    if data.action in ("archive", "restore"):
+        changed = _set_archived(rows, 1 if data.action == "archive" else 0)
+    elif data.action == "retry":
+        now = _now_iso()
+        for row in rows:
+            if row.state != "failed":
+                continue
+            row.state, row.error_count, row.retry_at, row.last_error = \
+                "discovered", 0, None, None
+            row.updated_at = now
+            changed += 1
+    db.commit()
+    return {"action": data.action, "changed": changed}
+
+
+@router.post("/items/purge")
+def purge_items(data: PicItemsPurge, request: Request, db: Session = Depends(get_db)):
+    """彻底删除: remove the ORIGINAL files, then the derived rows.
+
+    The only photo endpoint that touches real photos. confirm=true is a hard
+    gate (the UI makes the user type DELETE); a failed original delete keeps
+    the row so nothing silently disappears — the error names the item.
+    """
+    _require_auth(request, db)
+    _guard_write()
+    _require_pic()
+    if not data.confirm:
+        raise HTTPException(status_code=422,
+                            detail="彻底删除会移除磁盘上的原图，需要 confirm=true 才执行")
+
+    adapters: dict = {}
+    purged, kept, errors = 0, 0, []
+    for item_id in data.ids:
+        item = db.get(PicItem, item_id)
+        if item is None:
+            kept += 1
+            continue
+        try:
+            source = db.get(PicSource, item.source_id)
+            if source is None:
+                raise SourceError("源卡片已删除，无法定位原图")
+            adapter = adapters.setdefault(item.source_id, build_source(source))
+            adapter.delete(item.rel_path)
+        except (SourceError, OSError) as exc:
+            errors.append(f"{item_id}: {exc}")
+            kept += 1
+            continue
+        if item.thumb_path:
+            thumb = Path(settings.pic_dir) / item.thumb_path
+            try:
+                thumb.unlink()
+            except FileNotFoundError:
+                pass
+        db.query(PicVector).filter(PicVector.pic_id == item.id).delete(synchronize_session=False)
+        db.delete(item)
+        purged += 1
+    db.commit()
+    for adapter in adapters.values():
+        try:
+            adapter.close()
+        except Exception:
+            pass
+    return {"purged": purged, "kept": kept, "errors": errors[:10], "by": _actor(request)}

@@ -11,6 +11,9 @@ const PIC_PAGE = 200;
 let picObserver = null;
 let picPollTimer = null;
 let picSearchMode = false;   // grid shows search hits, not the gallery page
+let picTrashMode = false;    // grid shows the trash bin
+let picCurrentId = null;     // detail modal target
+const picSelected = new Set();
 
 function picFilterParams() {
   const params = { limit: PIC_PAGE, offset: picOffset };
@@ -22,12 +25,15 @@ function picFilterParams() {
   if (month) { params.taken_from = month; params.taken_to = month; }
   const q = document.getElementById('pic-search').value.trim();
   if (q) params.q = q;
+  if (picTrashMode) params.trash = 1;
   return params;
 }
 
 async function loadPics() {
   picOffset = 0;
   picSearchMode = false;
+  picSelected.clear();
+  updatePicActions();
   const back = document.getElementById('pic-back-btn');
   if (back) back.style.display = 'none';
   try {
@@ -83,9 +89,17 @@ function picTileHtml(item) {
     ? `<img data-src="${item.thumb_url}" alt="${escHtml(item.name)}">`
     : '<div class="pic-placeholder">⏳</div>';
   const cap = item.caption ? `<div class="pic-tile-cap">${escHtml(item.caption)}</div>` : '';
+  const check = '<label class="pic-check" onclick="event.stopPropagation()">' +
+    `<input type="checkbox" onchange="picToggleSelect(${item.id})" ` +
+    `${picSelected.has(item.id) ? 'checked' : ''}></label>`;
+  const trashBtns = picTrashMode
+    ? `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
+      `<button class="btn" onclick="picRestoreOne(${item.id})">恢复</button>` +
+      `<button class="btn btn-danger" onclick="picPurgeOne(${item.id})">彻底删除</button></div>`
+    : '';
   return `<div class="pic-tile state-${state}" title="${escHtml(item.rel_path)}" ` +
-    `onclick="picOpenDetail(${item.id})">${badge}${match}${media}` +
-    `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}</div>`;
+    `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${media}` +
+    `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${trashBtns}</div>`;
 }
 
 function renderPicGrid(items, append) {
@@ -167,11 +181,78 @@ function picBackToGallery() {
   loadPics();
 }
 
+// ── selection, trash, purge ─────────────────────────────────────────
+
+function picToggleSelect(id) {
+  if (picSelected.has(id)) picSelected.delete(id); else picSelected.add(id);
+  updatePicActions();
+}
+
+function picClearSelection() {
+  picSelected.clear();
+  updatePicActions();
+  const grid = document.getElementById('pic-grid');
+  grid.querySelectorAll('.pic-check input').forEach(cb => { cb.checked = false; });
+}
+
+function updatePicActions() {
+  const bar = document.getElementById('pic-actions');
+  if (!bar) return;
+  bar.style.display = picSelected.size ? '' : 'none';
+  document.getElementById('pic-sel-count').textContent = picSelected.size;
+  document.getElementById('pic-archive-btn').style.display = picTrashMode ? 'none' : '';
+  document.getElementById('pic-restore-btn').style.display = picTrashMode ? '' : 'none';
+  document.getElementById('pic-purge-btn').style.display = picTrashMode ? '' : 'none';
+}
+
+function picToggleTrash() {
+  picTrashMode = !picTrashMode;
+  const btn = document.getElementById('pic-trash-btn');
+  btn.textContent = picTrashMode ? '🖼 回到相册' : '🗑 回收站';
+  btn.classList.toggle('btn-primary', picTrashMode);
+  loadPics();
+}
+
+async function picArchiveSelected() {
+  const r = await API.picBatch([...picSelected], 'archive');
+  toast(`${r.changed} 张已移入回收站（原图未动）`, 'success');
+  loadPics();
+}
+
+async function picRestoreSelected() {
+  const r = await API.picBatch([...picSelected], 'restore');
+  toast(`已恢复 ${r.changed} 张`, 'success');
+  loadPics();
+}
+
+async function picPurgeSelected() {
+  if (prompt(`彻底删除 ${picSelected.size} 张：磁盘上的原图也会被删，不可恢复。输入 DELETE 确认：`) !== 'DELETE') return;
+  const r = await API.picPurge([...picSelected], true);
+  toast(`彻底删除 ${r.purged} 张` + (r.errors.length ? `，${r.errors.length} 张失败` : ''),
+        r.errors.length ? 'error' : 'success');
+  loadPics();
+}
+
+async function picRestoreOne(id) {
+  await API.picBatch([id], 'restore');
+  toast('已恢复', 'success');
+  loadPics();
+}
+
+async function picPurgeOne(id) {
+  if (prompt('彻底删除这张：磁盘上的原图也会被删，不可恢复。输入 DELETE 确认：') !== 'DELETE') return;
+  const r = await API.picPurge([id], true);
+  toast(r.purged ? '原图与索引已彻底删除' : `删除失败：${(r.errors || [])[0] || ''}`,
+        r.purged ? 'success' : 'error');
+  loadPics();
+}
+
 // ── detail modal ─────────────────────────────────────────────────────
 
 async function picOpenDetail(id) {
   try {
     const it = await API.picItem(id);
+    picCurrentId = id;
     document.getElementById('pic-detail-title').textContent = it.name;
     const img = document.getElementById('pic-detail-img');
     img.src = it.thumb_url || '';
@@ -191,6 +272,14 @@ function closePicDetail() {
   document.getElementById('pic-detail-overlay').classList.remove('active');
 }
 
+function picShowOriginal() {
+  if (!picCurrentId) return;
+  const img = document.getElementById('pic-detail-img');
+  img.src = API.picOriginalUrl(picCurrentId);
+  img.style.display = '';
+  img.onerror = () => toast('原图读取失败（源不可达或超过大小上限）', 'error');
+}
+
 function startPicPoll() {
   if (picPollTimer) return;
   picPollTimer = setInterval(async () => {
@@ -200,7 +289,7 @@ function startPicPoll() {
       const status = await API.picStatus();
       renderPicStatusLine(status);
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
-      if (pending && !picSearchMode) {
+      if (pending && !picSearchMode && !picTrashMode) {
         const first = await API.picItems(picFilterParams());
         picOffset = 0;
         renderPicGrid(first.items || [], false);

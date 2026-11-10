@@ -295,7 +295,15 @@
         <button class="btn btn-primary" onclick="picSemantic()">🔎 语义搜索</button>
         <button class="btn" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 相册</button>
         <button class="btn" onclick="loadPics()">刷新</button>
+        <button class="btn" id="pic-trash-btn" onclick="picToggleTrash()">🗑 回收站</button>
         <span id="pic-counts" class="sync-result"></span>
+      </div>
+      <div id="pic-actions" class="pic-toolbar" style="display:none">
+        已选 <b id="pic-sel-count">0</b> 张
+        <button class="btn" id="pic-archive-btn" onclick="picArchiveSelected()">移入回收站</button>
+        <button class="btn" id="pic-restore-btn" style="display:none" onclick="picRestoreSelected()">恢复所选</button>
+        <button class="btn btn-danger" id="pic-purge-btn" style="display:none" onclick="picPurgeSelected()">彻底删除所选</button>
+        <button class="btn btn-ghost" onclick="picClearSelection()">清空选择</button>
       </div>
       <div id="pic-note" class="setting-hint"></div>
       <div id="pic-grid" class="pic-grid"></div>
@@ -844,6 +852,7 @@
         <div id="pic-detail-meta" class="setting-hint" style="margin-top:10px"></div>
       </div>
       <div class="modal-footer">
+        <button class="btn" onclick="picShowOriginal()">查看原图</button>
         <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
       </div>
     </div>

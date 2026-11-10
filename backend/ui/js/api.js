@@ -293,6 +293,15 @@ const API = {
   picSearch(q, top = 24) {
     return apiFetch(`/pic/search?q=${encodeURIComponent(q)}&top=${top}`);
   },
+  picBatch(ids, action) {
+    return apiFetch('/pic/items/batch', { method: 'POST', body: JSON.stringify({ ids, action }) });
+  },
+  picPurge(ids, confirm = true) {
+    return apiFetch('/pic/items/purge', { method: 'POST', body: JSON.stringify({ ids, confirm }) });
+  },
+  picOriginalUrl(id) {
+    return `${API_BASE}/pic/item/${id}/original`;
+  },
   picThumbUrl(id) {
     return `${API_BASE}/pic/item/${id}/thumb`;
   }

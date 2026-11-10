@@ -251,6 +251,7 @@ def _embeds(db, report: dict) -> None:
     # to captioned and get re-embedded below (card switch, lost write).
     db.execute(sql_text(
         "UPDATE pic_items SET state = 'captioned' WHERE state = 'embedded' "
+        "AND archived = 0 "
         "AND id NOT IN (SELECT pic_id FROM pic_vectors WHERE model = :p0)"),
         {"p0": model_name})
     db.commit()

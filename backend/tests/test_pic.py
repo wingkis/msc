@@ -573,3 +573,144 @@ def test_stage2_leaves_shared_cards_clean(client):
         cleared = client.put(f"/api/v1/model?purpose={purpose}",
                              json={"base_url": "", "model": ""})
         assert cleared.status_code == 200 and cleared.json()["base_url"] == ""
+
+
+# ── stage 3: originals, trash, bulk, purge, remote adapters ──────────
+
+def test_original_streams_from_source(client, photos_dir):
+    items = client.get("/api/v1/pic/items", params={"q": "alpha.jpg"}).json()["items"]
+    alpha = next(i for i in items if i["rel_path"] == "alpha.jpg")
+    r = client.get(f"/api/v1/pic/item/{alpha['id']}/original")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    assert "inline" in r.headers["content-disposition"]
+    assert r.content == (photos_dir / "alpha.jpg").read_bytes()
+    assert client.get("/api/v1/pic/item/999999/original").status_code == 404
+
+
+def test_trash_restore_and_purge_touches_original(client, db, photos_dir):
+    from msc.models import PicItem, PicVector
+    from msc.workers import pic_worker
+
+    sid = client.get("/api/v1/pic/sources").json()[0]["id"]
+    victim = photos_dir / "purge_me.jpg"
+    Image.new("RGB", (20, 20), "orange").save(victim, "JPEG")
+    assert client.post(f"/api/v1/pic/sources/{sid}/scan").status_code == 200
+    pic_worker.run_once()
+
+    found = client.get("/api/v1/pic/items", params={"q": "purge_me"}).json()["items"]
+    assert found, "purge_me.jpg should be discovered and thumbnailed"
+    item_id = found[0]["id"]
+
+    # Soft delete: out of the gallery, into the trash; the file stays.
+    assert client.delete(f"/api/v1/pic/item/{item_id}").status_code == 200
+    assert not client.get("/api/v1/pic/items", params={"q": "purge_me"}).json()["items"]
+    trashed = client.get("/api/v1/pic/items", params={"trash": True}).json()["items"]
+    assert item_id in [i["id"] for i in trashed]
+    assert victim.is_file()
+
+    # Bulk restore brings it back.
+    restored = client.post("/api/v1/pic/items/batch",
+                           json={"ids": [item_id], "action": "restore"}).json()
+    assert restored["changed"] == 1
+    assert client.get("/api/v1/pic/items", params={"q": "purge_me"}).json()["items"]
+
+    # Purge refuses without the confirm gate, then really deletes the file.
+    refused = client.post("/api/v1/pic/items/purge",
+                          json={"ids": [item_id], "confirm": False})
+    assert refused.status_code == 422
+    assert victim.is_file()
+    done = client.post("/api/v1/pic/items/purge",
+                       json={"ids": [item_id], "confirm": True}).json()
+    assert done["purged"] == 1 and not done["errors"]
+    assert not victim.exists()
+    db.expire_all()
+    assert db.get(PicItem, item_id) is None
+    assert db.query(PicVector).filter(PicVector.pic_id == item_id).count() == 0
+
+
+def test_bulk_archive_retry_actions(client, db):
+    from msc.models import PicItem
+
+    items = client.get("/api/v1/pic/items").json()["items"]
+    two = [i["id"] for i in items if i["state"] != "failed"][:2]
+    r = client.post("/api/v1/pic/items/batch", json={"ids": two, "action": "archive"})
+    assert r.json()["changed"] == 2
+    db.expire_all()
+    assert all(db.get(PicItem, i).archived == 1 for i in two)
+    client.post("/api/v1/pic/items/batch", json={"ids": two, "action": "restore"})
+
+    failed = db.query(PicItem).filter(PicItem.state == "failed").first()
+    if failed is not None:
+        r = client.post("/api/v1/pic/items/batch",
+                        json={"ids": [failed.id], "action": "retry"}).json()
+        assert r["changed"] == 1
+        db.expire_all()
+        assert db.get(PicItem, failed.id).state == "discovered"
+        assert client.post("/api/v1/pic/items/batch",
+                           json={"ids": [10 ** 9], "action": "bogus"}).status_code == 422
+
+
+def test_webdav_propfind_parser():
+    from msc.picsources.webdav import parse_propfind
+
+    body = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://apache.org/dav/propset/fs/1">
+ <d:response>
+  <d:href>/dav/photos/</d:href>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/dav/photos/2024/</d:href>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/dav/photos/2024/beach.jpg</d:href>
+  <d:propstat><d:prop>
+    <d:resourcetype/><d:getcontentlength>12345</d:getcontentlength>
+    <d:getlastmodified>Tue, 01 May 2024 10:00:00 GMT</d:getlastmodified>
+   </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/dav/photos/private.png</d:href>
+  <d:propstat><d:prop><d:resourcetype/></d:prop>
+   <d:status>HTTP/1.1 403 Forbidden</d:status></d:propstat>
+ </d:response>
+</d:multistatus>"""
+    dirs, files = parse_propfind(body, "/dav/photos")
+    assert dirs == [("2024", 0, "")]
+    assert files == [("2024/beach.jpg", 12345, "Tue, 01 May 2024 10:00:00 GMT")]
+
+
+def test_remote_source_construction_and_probe(client):
+    """Remote cards construct adapters lazily; probe must never raise —
+    a missing smbprotocol wheel comes back as a readable error line."""
+    created = client.post("/api/v1/pic/sources", json={
+        "name": "nas", "kind": "smb", "host": "nas.invalid", "share": "photos"}).json()
+    assert created["state"] == "idle"
+
+    try:
+        import smbclient  # noqa: F401
+        has_lib = True
+    except ImportError:
+        has_lib = False
+    probe = client.post(f"/api/v1/pic/sources/{created['id']}/probe").json()
+    assert probe["ok"] is False and probe["error"]
+    if not has_lib:
+        assert "smbprotocol" in probe["error"]
+
+    wd = client.post("/api/v1/pic/sources", json={
+        "name": "云盘", "kind": "webdav", "url": "https://wd.invalid/dav/photos"}).json()
+    assert wd["url"].startswith("https://")
+
+    # One worker tick against two unreachable remote sources must degrade
+    # into error lines on the cards, not an exception through the loop.
+    from msc.workers import pic_worker
+    report = pic_worker.run_once()
+    assert report is None or "error" not in report
+
+    # cleanup so nothing else sees these two dead cards
+    client.delete(f"/api/v1/pic/sources/{created['id']}")
+    client.delete(f"/api/v1/pic/sources/{wd['id']}")
