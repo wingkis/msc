@@ -81,13 +81,15 @@ class SmbSource(ImageSource):
     # -- ImageSource --------------------------------------------------
 
     def probe(self) -> dict:
+        import stat as statlib
         import time
         started = time.perf_counter()
         try:
             smbclient = self._connect()
             st = smbclient.stat(self._uri())
-            ok = True
-            error = None if st.is_dir() else "共享里找不到该子目录"
+            # SMBStatResult is stat-result shaped: st_mode/st_size/st_mtime,
+            # not the Windows file-info names.
+            error = None if statlib.S_ISDIR(st.st_mode) else "共享里找不到该子目录"
         except SourceError as exc:
             self._drop()
             return {"reachable": False, "root_ok": False, "error": str(exc),
@@ -96,7 +98,7 @@ class SmbSource(ImageSource):
             self._drop()
             return {"reachable": True, "root_ok": False, "error": str(exc)[:300],
                     "latency_ms": int((time.perf_counter() - started) * 1000)}
-        return {"reachable": True, "root_ok": ok and error is None,
+        return {"reachable": True, "root_ok": error is None,
                 "error": error, "latency_ms": int((time.perf_counter() - started) * 1000)}
 
     def iter_entries(self, since: Optional[str] = None) -> Iterator[PicEntry]:
@@ -134,7 +136,7 @@ class SmbSource(ImageSource):
                 except OSError:
                     continue
                 yield PicEntry(rel_path=rel, name=entry.name, size=st.st_size or 0,
-                               mtime_iso=mtime_iso(st.last_write_time or 0))
+                               mtime_iso=mtime_iso(st.st_mtime or 0))
 
     def get_bytes(self, rel_path: str, max_bytes: Optional[int] = None) -> bytes:
         uri = self._uri(self._jail(rel_path))
