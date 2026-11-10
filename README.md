@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.4.7（msc-pic 分支）
+
+- **Web UI 去表情** — 导航/按钮/标题里的 emoji 全部清掉，换成一套线性描边图标（`index.html` 顶部内联 `<symbol>` sprite，`<svg class="icon"><use href="#i-name"/></svg>`，`stroke: currentColor`，随文字颜色走，与 192.168.29.50:8080 那套控制台的做法一致）。新增图标只在 sprite 里加一个 `<symbol>`。
+- **状态改成色块文字** — 探针结果与自检里的 ✅/❌/⚠️/✓ 改成 `.status-ok` / `.status-warn` / `.status-bad`（绿/琥珀/红），空状态用 `#i-alert` / `#i-inbox` / `#i-link` 线性图标，待处理缩略图的 ⏳ 改成 CSS 旋转弧 `.pic-spin`（`prefers-reduced-motion` 下静止）。
+- **同步指示灯修复** — 原来 `updateSyncStatus` 写的是 `sync-syncing`/`sync-error`，CSS 里却是 `.syncing`/`.error`：同步失败时灯一直是绿的。改 `.is-ready`/`.is-syncing`/`.is-error`，灯也从文本 `●` 换成真正的 CSS 圆点（同步中呼吸），并把三对类名写进测试防止再错位。
+- **回归闸门** — `test_no_emoji_anywhere_in_the_ui` 扫 html/js/css（emoji、杂项符号、几何图形、变体选择符四段码位；`←` `→` 这类排版箭头放行），`test_every_icon_reference_resolves_to_a_symbol` 保证每个 `<use href="#…">` 都有对应 `<symbol>`（漏定义只会渲染成空白方块，正是过去 id 打错那类静默故障）。
+
 ### 2.4.6（msc-pic 分支）
 
 - **照片页翻页修复** — `picLoadMore` 自写下起就没人调用，画廊实际只能看到前 200 张（2.4.6 起 `#pic-sentinel` 挂 IntersectionObserver 滚动续页，并显示「已显示全部 N 张」/载入失败提示）。
