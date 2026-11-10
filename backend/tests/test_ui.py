@@ -229,3 +229,29 @@ def test_graph_relation_filter_reads_one_kind_of_collection(client):
     # fetch errors fall back; drawing/summary errors must not
     assert "renderGraphFallback(allGraphData" in js
     assert "Graph summary error" in js
+
+
+def test_memory_cards_fit_three_across_without_widening_the_page(client):
+    """The excerpt was white-space: nowrap, so a 200-character body gave the
+    card a huge min-content width; the sidebar grid's bare 1fr track takes its
+    minimum from the content, so the page grew past the window and 多选 /
+    小结所选 sat off-screen to the right. Both halves are pinned: the excerpt is
+    clamped, and every card track is minmax(0, 1fr)."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    section = html.split('<section id="page-memories"', 1)[1].split('</section>')[0]
+    assert 'filters-sidebar' not in html and 'memories-layout' not in html + css
+    assert '<div class="memories-filters">' in section
+    assert section.index('memories-filters') < section.index('id="memories-list"'), \
+        "the filter bar must sit above the cards"
+    assert 'id="memories-list" class="memory-list memory-grid"' in section
+    assert 'repeat(3, minmax(0, 1fr))' in css
+    declarations = re.sub(r"/\*.*?\*/", "", css, flags=re.S)   # comments are free text
+    desc = re.search(r"\.memory-desc \{[^}]*\}", declarations).group(0)
+    assert "white-space" not in desc, "the excerpt can widen the page again"
+    assert "-webkit-line-clamp: 2" in desc
+    # app.js reads these ids to build the query; renaming one breaks filtering
+    # silently, which is exactly what the 2.4.7 sync-indicator bug was.
+    for marker in ('id="filter-categories"', 'id="filter-priorities"', 'id="filter-branch"',
+                   'id="filter-archived"', 'id="select-mode-btn"', 'id="memories-count"'):
+        assert marker in section, marker

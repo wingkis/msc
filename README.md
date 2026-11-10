@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.7（msc-pic 分支）
+
+- **修：记忆页横向溢出，「多选」「小结所选」看不见** — 卡片摘要 `.memory-desc` 之前是 `white-space: nowrap`（内容取 body 前 200 字），它的 min-content 宽度会顺着 `.memory-content` → `.memory-card` → `.memories-main` 传给 `.memories-layout { grid-template-columns: 200px 1fr }` 里的 `1fr`（`1fr` 的最小值是 `auto`＝内容的 min-content），于是整页比窗口还宽，页头右侧的两个按钮落在视口外，只能横向拖动才看到。图谱/仪表盘没事，是因为它们的轨道写的是 `minmax(0, 1fr)`。
+- **两处一起修** — 摘要改成两行截断（`-webkit-line-clamp: 2` + `overflow-wrap: anywhere`，窄卡片里反而比一行 nowrap 看得多）；卡片网格轨道一律 `minmax(0, 1fr)`，长 token 只会撑破卡片内部而不会撑破页面。
+- **一行三个卡片 + 筛选移到上面** — `#memories-list` 加 `.memory-grid`：`repeat(3, minmax(0, 1fr))`，≤1000px 两列、≤600px 单列；空状态 `grid-column: 1 / -1`。原来的 sticky 左侧筛选栏（占掉 200px 宽度，还把列表整体往下推）换成列表上方的一条筛选带：分类/优先级复选框横排、分支下拉、显示已归档、清除筛选靠右。`#filter-categories` / `#filter-priorities` / `#filter-branch` / `#filter-archived` / `#select-mode-btn` 等 id 一个没动，`filterMemories()` 与 `clearFilters()` 照旧。搜索页与仪表盘的 `.memory-list` 仍是单列，不受影响。
+- 测试 158 个（新增 `test_memory_cards_fit_three_across_without_widening_the_page`：钉住"筛选在列表之上"、`.memory-desc` 不得再有 `nowrap`、轨道必须是 `minmax(0, 1fr)`、以及 app.js 依赖的那批 id 仍在）。
+
 ### 2.5.6（msc-pic 分支）
 
 - **修：取消勾选后图谱退化成列表** — `graphRelationsParam()` 给查询串用的是数组，`graphNoteText()` 却按 Set 调 `wanted.has(type)`，抛出后被 `loadGraph()` 的 catch 接住，于是把画好的图换成「图形库未能加载（wanted.has is not a function）」的列表。现在只有 `graphRelationHidden(type)` 这一个谓词读 Set，勾选框与说明文字都走它。
