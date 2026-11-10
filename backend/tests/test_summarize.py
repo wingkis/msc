@@ -374,4 +374,7 @@ def test_search_digest_allows_thought_out_but_labels_it(client, monkeypatch):
     assert "可以把这些记忆放在一起观察、对照、归纳后再作答" in prompt
     assert "综合推断" in prompt and "直接记载" in prompt
     assert "结论 ← 出处 slug（直接记载 或 综合推断）" in prompt
+    # Live runs put the label before the conclusion, which makes the line
+    # unreadable; the structural example is what pins the shape down.
+    assert "照抄这个结构" in prompt and "slug-甲, slug-乙（综合推断）" in prompt
     assert "但依据只能是上面列出的记忆" in prompt        # the leash, right after
