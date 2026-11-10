@@ -66,7 +66,10 @@ class SmbSource(ImageSource):
                 smbclient.register_session(self.host, username=self.username,
                                            password=self.password)
             else:
-                smbclient.register_session(self.host, guest=True)
+                # No guest= kwarg across smbprotocol versions: an empty
+                # session is what NAS/Mac guest shares answer to; servers
+                # that demand credentials raise and the card shows it.
+                smbclient.register_session(self.host)
         except Exception as exc:
             raise SourceError(f"连接 {self.host} 失败：{exc}") from exc
         self._session = True
