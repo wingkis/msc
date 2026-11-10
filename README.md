@@ -15,6 +15,7 @@
 - **备份** — 定时（24h）+ 手动，tar.gz，自动保留最近 `MSC_BACKUP_KEEP` 份
 - **CLI** — `msc`，走 HTTP，可与服务器不同机
 - **记忆小结（模型卡片）** — 在 Web UI 里填一个 OpenAI 兼容的本地/局域网模型，把多条记忆合并成一条小结记忆：手动勾选或每天定点自动当日小结；原记忆可选软删除（可一键恢复）
+- **照片 RAG（msc-pic，2.4.0）** — 照片源卡片（本机目录 / SMB / WebDAV）渐进摄入：先占位、逐张出 512px 缩略图、多模态模型（`vision` 卡片）写中文描述、描述进 bge-m3 向量。照片页按月浏览缩略图墙，语义搜索命中缩略图，勾选看原图（流式透传，原图不入库）；回收站软删可恢复，「彻底删除」带确认才动磁盘原图。扫描/摄入随时可暂停、中断自动续传（游标 + 状态机队列），详见 `.env.example` 的 `MSC_PIC_*` 与 `MSC_VISION_*`
 
 ## 快速开始
 
@@ -213,6 +214,14 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | `.msc_index.json` 里有已删除条目 | `msc sync reindex`（同时重建 FTS 和文件索引） |
 
 ## 更新记录
+
+### 2.4.0（msc-pic 分支）
+
+- **照片源卡片** — Web UI 添加/编辑/暂停/删除照片源：本机目录（白名单 `MSC_PIC_ROOTS` 内，浏览点选免手敲）、SMB（smbprotocol，NTLM/访客）、WebDAV（httpx PROPFIND）。凭证掩码与模型卡同策略。
+- **渐进摄入 worker** — `pic_worker` 15s tick：scan（时间预算 + 游标续传）→ 缩略图（webp 512px，逐张落库）→ 中文描述（`vision` 卡默认批量 1，GPU 与 chat 共享）→ 描述嵌入（复用 embed 卡）。可打断可续传：kill 容器不丢进度；瞬时故障 retry_at 指数退避，坏文件标 failed 不堵队。相同 content_hash 的连拍/副本直接继承描述（连拍只花一次模型调用），画廊带 ⧉ 副本角标。
+- **照片页** — 月分组缩略图墙（占位格 → 缩略图 → 描述逐态可见，5s 轮询），语义搜索（描述向量 + 关键词 RRF，与记忆语料完全隔离），详情弹窗（描述/EXIF/来源/查看原图流式透传），回收站（软删/恢复/彻底删除需输入 DELETE + `confirm=true` 双闸，只此一处会删磁盘原图）。
+- **新模型卡 purpose** — `vision`：探针真发一张 16×16 PNG，拒图的文本模型当场暴露而不是 caption 时才失败。
+- **运维** — `MSC_PIC_ENABLED=false` 关照片全链路；`/health` 带 `photos`/`photos_pending`；启动自检修剪坏/孤儿照片向量并清扫孤儿缩略图；docker-compose 需挂载照片根（`/home/astro/photos`，:rw 仅彻底删除功能需要）。
 
 ### 2.3.1（rag 分支）
 

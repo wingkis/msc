@@ -92,13 +92,14 @@ function picTileHtml(item) {
   const check = '<label class="pic-check" onclick="event.stopPropagation()">' +
     `<input type="checkbox" onchange="picToggleSelect(${item.id})" ` +
     `${picSelected.has(item.id) ? 'checked' : ''}></label>`;
+  const dup = item.dup ? '<span class="pic-dup" title="与别的照片内容相同（连拍/副本）">⧉ 副本</span>' : '';
   const trashBtns = picTrashMode
     ? `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
       `<button class="btn" onclick="picRestoreOne(${item.id})">恢复</button>` +
       `<button class="btn btn-danger" onclick="picPurgeOne(${item.id})">彻底删除</button></div>`
     : '';
   return `<div class="pic-tile state-${state}" title="${escHtml(item.rel_path)}" ` +
-    `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${media}` +
+    `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${dup}${media}` +
     `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${trashBtns}</div>`;
 }
 

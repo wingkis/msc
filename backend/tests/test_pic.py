@@ -714,3 +714,45 @@ def test_remote_source_construction_and_probe(client):
     # cleanup so nothing else sees these two dead cards
     client.delete(f"/api/v1/pic/sources/{created['id']}")
     client.delete(f"/api/v1/pic/sources/{wd['id']}")
+
+
+# ── stage 4: maintenance reaps, duplicate badge ──────────────────────
+
+def test_duplicate_badge_marks_identical_content(client, photos_dir):
+    items = client.get("/api/v1/pic/items", params={"q": "alpha"}).json()["items"]
+    by_rel = {i["rel_path"]: i for i in items}
+    assert "alpha.jpg" in by_rel and "alpha_copy.jpg" in by_rel  # created by the reuse test
+    assert by_rel["alpha.jpg"]["dup"] is True
+    assert by_rel["alpha_copy.jpg"]["dup"] is True
+    single = client.get("/api/v1/pic/items", params={"q": "gamma"}).json()["items"]
+    assert single[0]["dup"] is False
+
+
+def test_maintenance_prunes_pic_vectors_and_sweeps_thumbs(client, db):
+    from msc.config import get_settings
+    from msc.migrations import prune_broken_pic_vectors, sweep_orphan_thumbs
+    from msc.models import PicItem, PicVector
+
+    alpha = db.query(PicItem).filter_by(rel_path="alpha.jpg").first()
+    assert alpha is not None
+    db.add(PicVector(pic_id=alpha.id, model="broken-v", dim=4,
+                     vec=b"\x00\x00", embedded_at="2026-01-01T00:00:00"))  # len != dim*4
+    db.add(PicVector(pic_id=987654, model="orphan-v", dim=2,
+                     vec=b"\x00" * 8, embedded_at="2026-01-01T00:00:00"))  # no such item
+    db.commit()
+    assert prune_broken_pic_vectors() == 2
+    db.expire_all()
+    assert db.query(PicVector).filter(PicVector.model.in_(["broken-v", "orphan-v"])).count() == 0
+
+    orphan_dir = Path(get_settings().pic_dir) / "thumbs" / "424242"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    orphan = orphan_dir / "999999.webp"
+    orphan.write_bytes(b"stale tile")
+    live_thumb = None
+    if alpha.thumb_path:
+        live_thumb = Path(get_settings().pic_dir) / alpha.thumb_path
+        assert live_thumb.is_file()
+    swept = sweep_orphan_thumbs()
+    assert swept >= 1 and not orphan.exists()
+    if live_thumb:
+        assert live_thumb.is_file()  # the live tile of a real item survives

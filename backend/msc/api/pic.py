@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, text as sql_text
 from sqlalchemy.orm import Session
 
 from msc.api.memories import _actor, _guard_write, _require_auth
@@ -116,7 +116,7 @@ def _get_source(db: Session, source_id: int) -> PicSource:
     return row
 
 
-def _item_view(item: PicItem, source_name: str = "") -> dict:
+def _item_view(item: PicItem, source_name: str = "", dup: bool = False) -> dict:
     return {
         "id": item.id,
         "source_id": item.source_id,
@@ -137,6 +137,7 @@ def _item_view(item: PicItem, source_name: str = "") -> dict:
         "thumb_available": bool(item.thumb_path),
         "thumb_url": f"/api/v1/pic/item/{item.id}/thumb" if item.thumb_path else None,
         "content_hash": item.content_hash,
+        "dup": dup,
         "origin_uri": item.origin_uri,
         "archived": bool(item.archived),
         "error_count": item.error_count,
@@ -420,8 +421,15 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
     rows = (query.order_by(PicItem.taken_at.isnot(None).desc(), PicItem.taken_at.desc(),
                            PicItem.id.desc())
             .limit(limit).offset(offset).all())
+    # Duplicate badge: same content hash appearing more than once (burst
+    # shots, re-saved copies). content_hash is indexed; one grouped query
+    # per page is cheap well past 10k photos.
+    dup_hashes = {row[0] for row in db.execute(sql_text(
+        "SELECT content_hash FROM pic_items WHERE archived = 0 AND content_hash <> '' "
+        "GROUP BY content_hash HAVING count(*) > 1"))}
     return {"total": total, "limit": limit, "offset": offset,
-            "items": [_item_view(item, name) for item, name in rows]}
+            "items": [_item_view(item, name, item.content_hash in dup_hashes)
+                      for item, name in rows]}
 
 
 def taken_at_prefix(value: str, end: bool = False) -> str:

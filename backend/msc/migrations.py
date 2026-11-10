@@ -263,6 +263,57 @@ def prune_broken_embeddings() -> int:
     return removed
 
 
+def prune_broken_pic_vectors() -> int:
+    """Malformed or orphaned photo vectors — same reap as embeddings.
+
+    photo ids are per-table, so a PicVector whose pic_id vanished (purged or
+    source-deleted) must not linger in the cosine scan.
+    """
+    with engine.begin() as conn:
+        if "pic_vectors" not in set(inspect(engine).get_table_names()):
+            return 0
+        removed = conn.execute(text(
+            "DELETE FROM pic_vectors WHERE length(vec) <> dim * 4 OR dim <= 0"
+        )).rowcount
+        removed += conn.execute(text(
+            "DELETE FROM pic_vectors WHERE pic_id NOT IN (SELECT id FROM pic_items)"
+        )).rowcount
+    if removed:
+        _log.info("schema: pruned %d broken/orphaned pic vector(s)", removed)
+    return removed
+
+
+def sweep_orphan_thumbs() -> int:
+    """webp tiles on disk whose pic_items row is gone (purged items, hard
+    deletes). The row is the truth; the tile dir is a cache."""
+    from pathlib import Path
+
+    from msc.config import get_settings
+
+    root = Path(get_settings().pic_dir) / "thumbs"
+    if not root.is_dir():
+        return 0
+    with engine.connect() as conn:
+        if "pic_items" not in set(inspect(engine).get_table_names()):
+            return 0
+        known = {f"{row[0]}.webp"
+                 for row in conn.execute(text("SELECT id FROM pic_items"))}
+    removed = 0
+    for sid_dir in root.iterdir():
+        if not sid_dir.is_dir():
+            continue
+        for tile in sid_dir.iterdir():
+            if tile.suffix == ".webp" and tile.name not in known:
+                try:
+                    tile.unlink()
+                    removed += 1
+                except OSError:
+                    continue
+    if removed:
+        _log.info("schema: swept %d orphaned thumbnail file(s)", removed)
+    return removed
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -277,6 +328,8 @@ def run_maintenance() -> dict:
         "relation_types_updated": ensure_relation_types(),
         "model_purpose_backfilled": ensure_model_purpose(),
         "embeddings_pruned": prune_broken_embeddings(),
+        "pic_vectors_pruned": prune_broken_pic_vectors(),
+        "pic_thumbs_swept": sweep_orphan_thumbs(),
     }
     ensure_fts()
     desync = fts_desync_report()
@@ -306,6 +359,15 @@ def health_detail() -> dict:
                 detail["embeddings_queued"] = conn.execute(text("SELECT count(*) FROM rag_dirty")).scalar() or 0
         except Exception:
             pass  # RAG tables absent (kill switch / brand-new db) — not a health failure
+        try:
+            with engine.connect() as conn:
+                detail["photos"] = conn.execute(text(
+                    "SELECT count(*) FROM pic_items WHERE archived = 0")).scalar() or 0
+                detail["photos_pending"] = conn.execute(text(
+                    "SELECT count(*) FROM pic_items WHERE archived = 0 "
+                    "AND state IN ('discovered','thumb_ready','captioned')")).scalar() or 0
+        except Exception:
+            pass  # photo tables absent (kill switch / brand-new db) — same pass
         return detail
     except Exception as exc:  # never turn a health probe into a 500
         return {"database": f"error: {exc}"}
