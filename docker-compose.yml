@@ -43,6 +43,22 @@ services:
       - MSC_SUMMARY_CATEGORY=${MSC_SUMMARY_CATEGORY:-project}
       - MSC_SUMMARY_PRIORITY=${MSC_SUMMARY_PRIORITY:-medium}
       - MSC_SUMMARY_ARCHIVE_SOURCES=${MSC_SUMMARY_ARCHIVE_SOURCES:-false}
+      # RAG kill switch + provider first-run seeds; same doctrine as the
+      # chat card: .env seeds once, the database wins afterwards.
+      - MSC_RAG_ENABLED=${MSC_RAG_ENABLED:-true}
+      - MSC_EMBED_BASE_URL=${MSC_EMBED_BASE_URL:-}
+      - MSC_EMBED_MODEL=${MSC_EMBED_MODEL:-}
+      - MSC_EMBED_API_KEY=${MSC_EMBED_API_KEY:-}
+      - MSC_RERANK_BASE_URL=${MSC_RERANK_BASE_URL:-}
+      - MSC_RERANK_MODEL=${MSC_RERANK_MODEL:-}
+      - MSC_RERANK_API_KEY=${MSC_RERANK_API_KEY:-}
+      - MSC_WHISPER_BASE_URL=${MSC_WHISPER_BASE_URL:-}
+      - MSC_WHISPER_MODEL=${MSC_WHISPER_MODEL:-}
+      - MSC_WHISPER_API_KEY=${MSC_WHISPER_API_KEY:-}
+      - MSC_RAG_RECALL_TOP=${MSC_RAG_RECALL_TOP:-30}
+      - MSC_RAG_RERANK_TOPN=${MSC_RAG_RERANK_TOPN:-10}
+      - MSC_RAG_RRF_K=${MSC_RAG_RRF_K:-60}
+      - MSC_RAG_EMBED_BATCH=${MSC_RAG_EMBED_BATCH:-16}
     restart: unless-stopped
     # The access log is the audit trail of a no-login service — keep it, but
     # cap it so it cannot fill the disk.
