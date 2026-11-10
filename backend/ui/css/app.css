@@ -62,6 +62,19 @@ html, body {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
+/* Bare <a>s (the summarise run log, the near-duplicate pairs, search hits) had
+   no rule at all, so the browser's blue/purple showed through. A link here is
+   plain text with a hairline underline; hovering darkens the rule, hue never
+   enters. Classed links (.nav-link/.btn/.logo) keep their own colours. */
+a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--text-dim);
+}
+a:visited { color: var(--text); }
+a:hover { text-decoration-color: currentColor; }
+
 /* ── Header ─────────────────────────────────────── */
 /* ── Icons ──────────────────────────────────────── */
 /* One stroke-only line-icon set, defined once as a <symbol> sprite in

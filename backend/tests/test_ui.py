@@ -156,3 +156,11 @@ def test_graph_canvas_labels_use_the_same_one_size(client):
     js = (UI / "js" / "graph.js").read_text(encoding="utf-8")
     assert "const GRAPH_FONT_SIZE = 13;" in js
     assert not re.search(r"font:\s*{[^}]*size:\s*\d", js)   # no per-label px
+
+
+def test_bare_links_stay_greyscale(client):
+    """An <a> with no rule at all paints in the browser's blue/purple: that was
+    the one way hue still reached the page (the summarise run log's slug)."""
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"^a \{\n  color: var\(--text\);", css, re.M), "no base link colour"
+    assert "a:visited { color: var(--text); }" in css
