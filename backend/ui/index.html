@@ -291,11 +291,20 @@
         </select>
         <input type="text" id="pic-month" placeholder="2024-05（按月）" onchange="picFilterChanged()">
         <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
+        <select id="pic-view" onchange="picViewChanged()">
+          <option value="">相册</option>
+          <option value="trash">回收站</option>
+          <option value="missing">缺失</option>
+        </select>
+        <select id="pic-folder" onchange="picFilterChanged()">
+          <option value="">全部目录</option>
+        </select>
         <input type="text" id="pic-semantic" placeholder="语义找图：海边吃西瓜的人…" onchange="picSemantic()">
         <button class="btn btn-primary" onclick="picSemantic()">🔎 语义搜索</button>
         <button class="btn" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 相册</button>
+        <button class="btn" onclick="picSelectAll()">全选</button>
         <button class="btn" onclick="loadPics()">刷新</button>
-        <button class="btn" id="pic-trash-btn" onclick="picToggleTrash()">🗑 回收站</button>
+        <button class="btn btn-danger" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()">🗑 清空回收站</button>
         <span id="pic-counts" class="sync-result"></span>
       </div>
       <div id="pic-actions" class="pic-toolbar" style="display:none">
@@ -303,6 +312,8 @@
         <button class="btn" id="pic-archive-btn" onclick="picArchiveSelected()">移入回收站</button>
         <button class="btn" id="pic-restore-btn" style="display:none" onclick="picRestoreSelected()">恢复所选</button>
         <button class="btn btn-danger" id="pic-purge-btn" style="display:none" onclick="picPurgeSelected()">彻底删除所选</button>
+        <button class="btn" id="pic-keep-btn" style="display:none" onclick="picKeepSelected()">保留缩略图</button>
+        <button class="btn btn-danger" id="pic-forget-btn" style="display:none" onclick="picForgetSelected()">清除衍生</button>
         <button class="btn btn-ghost" onclick="picClearSelection()">清空选择</button>
       </div>
       <div id="pic-note" class="setting-hint"></div>

@@ -149,7 +149,8 @@ def pic_semantic_ids(db: Session, q: str, top: int):
     vec, model, error = embed_query(db, q)
     if vec is None:
         return [], {}, error
-    live = {row[0] for row in db.query(PicItem.id).filter(PicItem.archived == 0).all()}
+    live = {row[0] for row in db.query(PicItem.id).filter(
+        PicItem.archived == 0, PicItem.missing == 0).all()}
     scored = scan_vector_table(db, PicVector, PicVector.pic_id, PicVector.model,
                                vec, model, top, live)
     return [pic_id for pic_id, _ in scored], dict(scored), None

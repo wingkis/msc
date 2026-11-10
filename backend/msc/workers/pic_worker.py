@@ -57,10 +57,16 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
         return
 
     src.state = "scanning"
+    # Walk-session clock: a fresh walk (no cursor) starts a new one; a
+    # resumed walk keeps the original stamp so the GC cutoff spans the whole
+    # session even when it stretches across many ticks.
+    now_iso = _now().isoformat()
+    if src.scan_cursor is None:
+        src.scan_started_at = now_iso
+    walk_start = src.scan_started_at or now_iso
     db.commit()
     budget = pic_setting(db, "scan_seconds")
     started = time.monotonic()
-    now_iso = _now().isoformat()
     walked = inserted = 0
     completed = False
     try:
@@ -78,6 +84,15 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
                  "p5": entry.size, "p6": entry.mtime_iso,
                  "p7": guess_kind(entry.name), "p8": now_iso})
             inserted += result.rowcount
+            # Touch (or revive): the original is there RIGHT NOW. Size/mtime
+            # refresh too, so replaced files carry fresh metadata even when
+            # the row predates them.
+            db.execute(sql_text(
+                "UPDATE pic_items SET last_seen_at = :p8, missing = 0, "
+                "size_bytes = :p5, mtime = :p6, updated_at = :p8 "
+                "WHERE source_id = :p0 AND rel_path = :p1"),
+                {"p0": src.id, "p1": entry.rel_path, "p5": entry.size,
+                 "p6": entry.mtime_iso, "p8": now_iso})
             walked += 1
             src.scan_cursor = entry.rel_path
             if walked % 200 == 0:
@@ -93,6 +108,17 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
         return
 
     if completed:
+        # GC — only after a COMPLETED walk: originals that vanished from the
+        # source get missing=1 (hidden, never auto-deleted: the user decides
+        # keep / forget / resync in the 缺失 view). An interrupted walk has
+        # seen only part of the tree and must not judge the rest.
+        gone = db.execute(sql_text(
+            "UPDATE pic_items SET missing = 1, updated_at = :p1 WHERE source_id = :p0 "
+            "AND archived = 0 AND missing = 0 "
+            "AND (last_seen_at IS NULL OR last_seen_at < :p2)"),
+            {"p0": src.id, "p1": now_iso, "p2": walk_start}).rowcount
+        if gone:
+            report["missing"] = report.get("missing", 0) + gone
         src.scan_cursor = None
         src.last_scan_at = now_iso
         src.state = "idle"
@@ -109,7 +135,7 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
     now_iso = _now().isoformat()
     rows = (db.query(PicItem)
             .filter(PicItem.source_id == src.id, PicItem.state == "discovered",
-                    PicItem.archived == 0,
+                    PicItem.archived == 0, PicItem.missing == 0,
                     or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
             .order_by(PicItem.id).limit(batch).all())
     if not rows:
@@ -206,6 +232,7 @@ def _captions(db, report: dict) -> None:
     now_iso = _now().isoformat()
     rows = (db.query(PicItem)
             .filter(PicItem.state == "thumb_ready", PicItem.archived == 0,
+                    PicItem.missing == 0,
                     or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
             .order_by(PicItem.id).limit(batch).all())
     for item in rows:
@@ -260,7 +287,8 @@ def _embeds(db, report: dict) -> None:
     db.commit()
 
     batch = max(1, pic_setting(db, "embed_batch"))
-    rows = (db.query(PicItem).filter(PicItem.state == "captioned", PicItem.archived == 0)
+    rows = (db.query(PicItem).filter(PicItem.state == "captioned", PicItem.archived == 0,
+                                     PicItem.missing == 0)
             .order_by(PicItem.id).limit(batch).all())
     if not rows:
         return

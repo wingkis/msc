@@ -719,7 +719,10 @@ def test_remote_source_construction_and_probe(client):
 # ── stage 4: maintenance reaps, duplicate badge ──────────────────────
 
 def test_duplicate_badge_marks_identical_content(client, photos_dir):
-    items = client.get("/api/v1/pic/items", params={"q": "alpha"}).json()["items"]
+    # include_missing: the copy's FILE was unlinked by the reuse test, so a
+    # completed walk may have marked it missing — the dup grouping still counts it.
+    items = client.get("/api/v1/pic/items",
+                       params={"q": "alpha", "include_missing": True}).json()["items"]
     by_rel = {i["rel_path"]: i for i in items}
     assert "alpha.jpg" in by_rel and "alpha_copy.jpg" in by_rel  # created by the reuse test
     assert by_rel["alpha.jpg"]["dup"] is True
@@ -756,3 +759,93 @@ def test_maintenance_prunes_pic_vectors_and_sweeps_thumbs(client, db):
     assert swept >= 1 and not orphan.exists()
     if live_thumb:
         assert live_thumb.is_file()  # the live tile of a real item survives
+
+
+# ── stage 5: missing GC, folder filter, ids_only, keep/forget ────────
+
+def _live_sid(client, photos_dir):
+    """A local source over the shared fixture dir — create one when earlier
+    tests have cleaned the table away, so these tests never inherit order."""
+    rows = client.get("/api/v1/pic/sources").json()
+    if rows:
+        return rows[0]["id"]
+    return client.post("/api/v1/pic/sources", json={
+        "name": "阶段5源", "kind": "local", "root_path": str(photos_dir)}).json()["id"]
+
+
+def test_missing_gc_hides_recovers_and_forget_keeps_original(client, db, photos_dir):
+    from msc.models import PicItem
+    from msc.workers import pic_worker
+
+    sid = _live_sid(client, photos_dir)
+    ghost = photos_dir / "ghost.jpg"
+    Image.new("RGB", (12, 12), "gray").save(ghost, "JPEG")
+    client.post(f"/api/v1/pic/sources/{sid}/scan")
+    pic_worker.run_once()
+    db.expire_all()
+    item = db.query(PicItem).filter_by(rel_path="ghost.jpg").first()
+    assert item is not None and item.missing == 0 and item.last_seen_at
+
+    # original deleted behind MSC's back → completed walk marks it missing
+    ghost.unlink()
+    client.post(f"/api/v1/pic/sources/{sid}/scan")
+    pic_worker.run_once()
+    db.expire_all()
+    assert db.get(PicItem, item.id).missing == 1
+    assert client.get("/api/v1/pic/items", params={"q": "ghost"}).json()["items"] == []
+    miss_view = client.get("/api/v1/pic/items", params={"view": "missing"}).json()["items"]
+    assert item.id in [i["id"] for i in miss_view]
+
+    # the file reappears → the next walk revives the row in place
+    Image.new("RGB", (12, 12), "gray").save(ghost, "JPEG")
+    client.post(f"/api/v1/pic/sources/{sid}/scan")
+    pic_worker.run_once()
+    db.expire_all()
+    revived = db.get(PicItem, item.id)
+    assert revived is not None and revived.missing == 0
+
+    # keep (unmissing) is a user-side visibility toggle
+    client.post(f"/api/v1/pic/sources/{sid}/scan")
+    pic_worker.run_once()
+    db.expire_all()
+    if db.get(PicItem, item.id).missing:
+        client.post("/api/v1/pic/items/batch", json={"ids": [item.id], "action": "unmissing"})
+        db.expire_all()
+        assert db.get(PicItem, item.id).missing == 0
+        client.post(f"/api/v1/pic/sources/{sid}/scan")
+        pic_worker.run_once()
+        db.expire_all()
+        assert db.get(PicItem, item.id).missing == 1
+
+    # forget deletes ONLY derived data — an untouched original stays on disk
+    keeper = photos_dir / "keepme.jpg"
+    Image.new("RGB", (10, 10), "green").save(keeper, "JPEG")
+    client.post(f"/api/v1/pic/sources/{sid}/scan")
+    pic_worker.run_once()
+    db.expire_all()
+    keep_item = db.query(PicItem).filter_by(rel_path="keepme.jpg").first()
+    assert keep_item is not None
+    keep_id = keep_item.id  # plain int up front: after the delete the ORM
+    # instance is a trap — any attribute touch raises ObjectDeletedError.
+    r = client.post("/api/v1/pic/items/batch",
+                    json={"ids": [keep_id], "action": "forget"}).json()
+    assert r["changed"] == 1
+    db.expire_all()
+    assert db.query(PicItem).filter(PicItem.id == keep_id).count() == 0
+    assert keeper.is_file()  # forget never touches the original
+    keeper.unlink()
+    ghost.unlink()
+
+
+def test_ids_only_and_folder_filter(client, photos_dir):
+    sid = _live_sid(client, photos_dir)
+    allids = client.get("/api/v1/pic/items", params={"ids_only": True}).json()
+    assert allids["total"] and not allids["truncated"]
+    assert len(allids["ids"]) == allids["total"]
+
+    folders = client.get("/api/v1/pic/folders", params={"source_id": sid}).json()["folders"]
+    assert "2024" in folders and "2024/beach" in folders
+    sub = client.get("/api/v1/pic/items", params={"folder": "2024"}).json()
+    assert sub["total"] >= 1
+    assert all(i["rel_path"].startswith("2024/") for i in sub["items"])
+    assert client.get("/api/v1/pic/items", params={"folder": "../etc"}).status_code == 422

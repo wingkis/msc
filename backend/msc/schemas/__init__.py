@@ -270,13 +270,15 @@ class PicSettingsUpdate(BaseModel):
 
 class PicItemsBatch(BaseModel):
     """Bulk gallery actions. archive/restore are soft (never touch the
-    originals); retry re-queues failed photos into the pipeline."""
-    ids: List[int] = Field(..., min_length=1, max_length=500)
-    action: str = Field(..., pattern="^(archive|restore|retry)$")
+    originals); retry re-queues failed photos; forget deletes only the
+    derived rows (thumb/vectors) for vanished photos; unmissing brings a
+    hidden-but-present photo back into the gallery."""
+    ids: List[int] = Field(..., min_length=1, max_length=2000)
+    action: str = Field(..., pattern="^(archive|restore|retry|forget|unmissing)$")
 
 
 class PicItemsPurge(BaseModel):
     """The one truly destructive call: deletes the ORIGINAL files. confirm
     is a hard gate — the UI additionally makes the human type DELETE."""
-    ids: List[int] = Field(..., min_length=1, max_length=200)
+    ids: List[int] = Field(..., min_length=1, max_length=1000)
     confirm: bool = False

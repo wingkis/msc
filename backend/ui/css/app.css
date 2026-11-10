@@ -1084,3 +1084,6 @@ html, body {
   padding: 1px 5px; border-radius: 4px; color: var(--text-muted);
   background: rgba(0,0,0,0.35);
 }
+.pic-month-head { cursor: pointer; }
+.pic-month-head:hover { color: var(--text); }
+.pic-month-head small { font-weight: 400; font-size: 11px; opacity: .6; }

@@ -11,7 +11,7 @@ const PIC_PAGE = 200;
 let picObserver = null;
 let picPollTimer = null;
 let picSearchMode = false;   // grid shows search hits, not the gallery page
-let picTrashMode = false;    // grid shows the trash bin
+let picView = '';            // '' gallery | trash | missing
 let picCurrentId = null;     // detail modal target
 const picSelected = new Set();
 
@@ -25,8 +25,33 @@ function picFilterParams() {
   if (month) { params.taken_from = month; params.taken_to = month; }
   const q = document.getElementById('pic-search').value.trim();
   if (q) params.q = q;
-  if (picTrashMode) params.trash = 1;
+  const folder = document.getElementById('pic-folder').value;
+  if (folder) params.folder = folder;
+  if (picView) params.view = picView;
   return params;
+}
+
+function picViewChanged() {
+  picView = document.getElementById('pic-view').value;
+  const empty = document.getElementById('pic-empty-trash-btn');
+  if (empty) empty.style.display = picView === 'trash' ? '' : 'none';
+  loadPics();
+}
+
+async function loadPicFolders() {
+  const sel = document.getElementById('pic-folder');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">全部目录</option>';
+  const src = document.getElementById('pic-source-filter').value;
+  if (!src) { sel.disabled = true; return; }
+  sel.disabled = false;
+  try {
+    const r = await API.picFolders(src);
+    sel.innerHTML = '<option value="">全部目录</option>' + (r.folders || []).map(f =>
+      `<option value="${escHtml(f)}">${escHtml(f)}</option>`).join('');
+    if (current) sel.value = current;
+  } catch (e) { /* no folders yet */ }
 }
 
 async function loadPics() {
@@ -42,6 +67,7 @@ async function loadPics() {
     ]);
     renderPicStatusLine(status);
     fillPicSourceFilter(status.sources || []);
+    loadPicFolders();
     renderPicGrid(page.items || [], false);
     picOffset = (page.items || []).length;
     picTotal = page.total || 0;
@@ -63,6 +89,8 @@ function renderPicStatusLine(status) {
   if (c.discovered) parts.push(`待缩略图 ${c.discovered}`);
   if (c.failed) parts.push(`失败 ${c.failed}`);
   const scanning = (status.sources || []).filter(s => s.state === 'scanning').length;
+  if (status.missing) parts.push(`缺失 ${status.missing}`);
+  if (status.trashed) parts.push(`回收站 ${status.trashed}`);
   el.textContent = (parts.length ? parts.join(' · ') : '还没有照片') +
     (scanning ? ` · ${scanning} 个源正在扫描` : '') +
     (picTotal ? `（显示 ${picOffset}/${picTotal}）` : '');
@@ -93,14 +121,19 @@ function picTileHtml(item) {
     `<input type="checkbox" onchange="picToggleSelect(${item.id})" ` +
     `${picSelected.has(item.id) ? 'checked' : ''}></label>`;
   const dup = item.dup ? '<span class="pic-dup" title="与别的照片内容相同（连拍/副本）">⧉ 副本</span>' : '';
-  const trashBtns = picTrashMode
-    ? `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
+  let tileBtns = '';
+  if (picView === 'trash') {
+    tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
       `<button class="btn" onclick="picRestoreOne(${item.id})">恢复</button>` +
-      `<button class="btn btn-danger" onclick="picPurgeOne(${item.id})">彻底删除</button></div>`
-    : '';
+      `<button class="btn btn-danger" onclick="picPurgeOne(${item.id})">彻底删除</button></div>`;
+  } else if (picView === 'missing') {
+    tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
+      `<button class="btn" onclick="picKeepOne(${item.id})">保留</button>` +
+      `<button class="btn btn-danger" onclick="picForgetOne(${item.id})">清除</button></div>`;
+  }
   return `<div class="pic-tile state-${state}" data-id="${item.id}" title="${escHtml(item.rel_path)}" ` +
     `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${dup}${media}` +
-    `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${trashBtns}</div>`;
+    `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${tileBtns}</div>`;
 }
 
 // Poll updates in place: same ids in the same order → mutate each tile's
@@ -162,7 +195,7 @@ function renderPicGrid(items, append) {
   for (const item of items) {
     const month = (item.taken_at || '').slice(0, 7) || '未定时间';
     if (month !== lastMonth) {
-      html += `<div class="pic-month-head">${month}</div>`;
+      html += `<div class="pic-month-head" onclick="picPickMonth('${month}')">${month} <small>点选整月</small></div>`;
       lastMonth = month;
     }
     html += picTileHtml(item);
@@ -251,18 +284,58 @@ function updatePicActions() {
   if (!bar) return;
   bar.style.display = picSelected.size ? '' : 'none';
   document.getElementById('pic-sel-count').textContent = picSelected.size;
-  document.getElementById('pic-archive-btn').style.display = picTrashMode ? 'none' : '';
-  document.getElementById('pic-restore-btn').style.display = picTrashMode ? '' : 'none';
-  document.getElementById('pic-purge-btn').style.display = picTrashMode ? '' : 'none';
+  const show = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
+  show('pic-archive-btn', picView === '');
+  show('pic-restore-btn', picView === 'trash');
+  show('pic-purge-btn', picView === 'trash');
+  show('pic-keep-btn', picView === 'missing');
+  show('pic-forget-btn', picView === 'missing');
 }
 
-function picToggleTrash() {
-  picTrashMode = !picTrashMode;
-  const btn = document.getElementById('pic-trash-btn');
-  btn.textContent = picTrashMode ? '🖼 回到相册' : '🗑 回收站';
-  btn.classList.toggle('btn-primary', picTrashMode);
+async function picSelectAll() {
+  const params = picFilterParams();
+  params.ids_only = true; params.offset = 0; params.limit = 1000;
+  try {
+    const r = await API.picItems(params);
+    (r.ids || []).forEach(id => picSelected.add(id));
+    updatePicActions();
+    loadPics();   // re-render so the checkboxes appear checked
+    if (r.truncated) toast(`数量太大，只选了前 ${r.ids.length} 张`, 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function picPickMonth(month) {
+  document.getElementById('pic-month').value = month === '未定时间' ? '' : month;
+  picSearchMode = false;
+  await loadPics();
+  await picSelectAll();
+}
+
+async function picEmptyTrash() {
+  const params = picFilterParams();
+  params.ids_only = true; params.offset = 0; params.limit = 1000; params.view = 'trash';
+  const r = await API.picItems(params);
+  const ids = r.ids || [];
+  if (!ids.length) { toast('回收站已经是空的', 'success'); return; }
+  if (prompt(`清空回收站：${ids.length} 张的原图会从磁盘删除，不可恢复。输入 DELETE 确认：`) !== 'DELETE') return;
+  let purged = 0, errors = [];
+  for (let i = 0; i < ids.length; i += 500) {
+    const part = await API.picPurge(ids.slice(i, i + 500), true);
+    purged += part.purged; errors = errors.concat(part.errors || []);
+  }
+  toast(`回收站已清空：${purged} 张` + (errors.length ? `，${errors.length} 张失败` : ''),
+        errors.length ? 'error' : 'success');
   loadPics();
 }
+
+async function picKeepSelected() { await API.picBatch([...picSelected], 'unmissing'); toast('已保留', 'success'); loadPics(); }
+async function picForgetSelected() {
+  const r = await API.picBatch([...picSelected], 'forget');
+  toast(`已清除 ${r.changed} 张的缩略图和索引（原图未动）`, 'success');
+  loadPics();
+}
+async function picKeepOne(id) { await API.picBatch([id], 'unmissing'); loadPics(); }
+async function picForgetOne(id) { await API.picBatch([id], 'forget'); loadPics(); }
 
 async function picArchiveSelected() {
   const r = await API.picBatch([...picSelected], 'archive');
@@ -340,7 +413,7 @@ function startPicPoll() {
       const status = await API.picStatus();
       renderPicStatusLine(status);
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
-      if (pending && !picSearchMode && !picTrashMode) {
+      if (pending && !picSearchMode && !picView) {
         const params = picFilterParams();
         params.offset = 0;  // poll refreshes the on-screen window, not the paged tail
         const first = await API.picItems(params);

@@ -324,6 +324,10 @@ class PicSource(Base):
     state = Column(String, default="idle")
     scan_cursor = Column(String, nullable=True)
     scan_epoch = Column(Integer, default=0)   # bumped by /scan to re-request a walk
+    # Walk-session stamp: the GC cutoff for missing detection. Set when a
+    # walk starts from scratch; items whose originals were not seen since
+    # this moment when the walk COMPLETES are marked missing.
+    scan_started_at = Column(String, nullable=True)
     last_scan_at = Column(String, nullable=True)
     last_error = Column(String, nullable=True)
     created_at = Column(String, nullable=False)
@@ -374,6 +378,12 @@ class PicItem(Base):
     error_count = Column(Integer, default=0)
     retry_at = Column(String, nullable=True)
     last_error = Column(String, nullable=True)
+    # Source-side lifecycle: every walk touches last_seen_at; when a walk
+    # COMPLETES and an item was not seen, missing=1 hides it (thumbnail and
+    # caption survive — the user decides: keep, forget, or resync). A later
+    # walk that sees the file again clears the flag.
+    last_seen_at = Column(String, nullable=True)
+    missing = Column(Integer, default=0)
 
     archived = Column(Integer, default=0)       # trash bin, same idea as Memory.archived
     deleted_at = Column(String, nullable=True)

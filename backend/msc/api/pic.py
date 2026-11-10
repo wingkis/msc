@@ -161,6 +161,9 @@ def pic_status(db: Session = Depends(get_db)):
         "pending_thumbs": counts.get("discovered", 0),
         "pending_captions": counts.get("thumb_ready", 0),
         "failed": counts.get("failed", 0),
+        "missing": db.query(PicItem).filter(PicItem.archived == 0,
+                                            PicItem.missing == 1).count(),
+        "trashed": db.query(PicItem).filter(PicItem.archived == 1).count(),
         "providers": {purpose: public_view(get_config(db, purpose))
                       for purpose in ("vision", "embed")},
         "sources": [_source_view(row, source_counts(db, row.id))
@@ -381,8 +384,13 @@ def browse(path: str = Query("", description="server-side directory"),
 def list_items(source_id: int = Query(None), state: str = Query(None),
                kind: str = Query(None), q: str = Query("", max_length=200),
                taken_from: str = Query("", max_length=10), taken_to: str = Query("", max_length=10),
+               folder: str = Query("", max_length=300, description="源内子目录过滤，如 2024/夏"),
+               view: str = Query("", pattern="^(|gallery|trash|missing)$",
+                                 description="相册 / 回收站 / 缺失(原图已不在源里)"),
                include_archived: bool = Query(False),
-               trash: bool = Query(False, description="回收站视图：只看软删除的"),
+               include_missing: bool = Query(False),
+               trash: bool = Query(False, description="（旧参数）等同 view=trash"),
+               ids_only: bool = Query(False, description="只要 id 清单：全选/清空回收站用"),
                limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
                db: Session = Depends(get_db)):
     """Gallery page: placeholders and finished tiles together, newest-first
@@ -391,10 +399,15 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
     query = (db.query(PicItem, PicSource.name)
              .join(PicSource, PicSource.id == PicItem.source_id))
     conditions = []
-    if trash:
+    if view == "trash" or trash:
         conditions.append(PicItem.archived == 1)
-    elif not include_archived:
-        conditions.append(PicItem.archived == 0)
+    elif view == "missing":
+        conditions.append(and_(PicItem.archived == 0, PicItem.missing == 1))
+    else:
+        if not include_archived:
+            conditions.append(PicItem.archived == 0)
+        if not include_missing:
+            conditions.append(PicItem.missing == 0)
     if source_id is not None:
         conditions.append(PicItem.source_id == source_id)
     if state:
@@ -406,6 +419,11 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
         if kind not in ("photo", "screenshot"):
             raise HTTPException(status_code=422, detail="kind 只支持 photo/screenshot")
         conditions.append(PicItem.kind == kind)
+    if folder.strip():
+        clean = folder.strip().strip("/")
+        if ".." in clean.split("/"):
+            raise HTTPException(status_code=422, detail="目录过滤不能包含 ..")
+        conditions.append(PicItem.rel_path.like(f"{clean}/%"))
     if q.strip():
         needle = f"%{q.strip()}%"
         conditions.append(or_(PicItem.name.like(needle), PicItem.caption.like(needle),
@@ -417,6 +435,12 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
     if conditions:
         query = query.filter(and_(*conditions))
     total = query.count()
+
+    if ids_only:
+        # Select-all / empty-trash need the FULL id set, not just the page.
+        ids = [row[0] for row in db.query(PicItem.id).filter(and_(*conditions))
+               .order_by(PicItem.id).limit(5000).all()]
+        return {"total": total, "ids": ids, "truncated": total > len(ids)}
 
     rows = (query.order_by(PicItem.taken_at.isnot(None).desc(), PicItem.taken_at.desc(),
                            PicItem.id.desc())
@@ -448,6 +472,23 @@ def taken_at_prefix(value: str, end: bool = False) -> str:
     return v
 
 
+@router.get("/folders")
+def pic_folders(source_id: int = Query(...), db: Session = Depends(get_db)):
+    """Distinct subdirectories of one source (from already-indexed rel_paths)
+    — feeds the folder dropdown in the gallery toolbar."""
+    _require_pic()
+    rels = [row[0] for row in db.query(PicItem.rel_path)
+            .filter(PicItem.source_id == source_id, PicItem.archived == 0)
+            .limit(50000).all()]
+    folders: set = set()
+    for rel in rels:
+        cur = ""
+        for part in rel.split("/")[:-1]:
+            cur = f"{cur}/{part}" if cur else part
+            folders.add(cur)
+    return {"source_id": source_id, "folders": sorted(folders)[:500]}
+
+
 @router.get("/search")
 def pic_search(q: str = Query(..., min_length=1), top: int = Query(12, ge=1, le=100),
                db: Session = Depends(get_db)):
@@ -464,7 +505,7 @@ def pic_search(q: str = Query(..., min_length=1), top: int = Query(12, ge=1, le=
 
     needle = f"%{q.strip()}%"
     kw_rows = (db.query(PicItem.id)
-               .filter(PicItem.archived == 0,
+               .filter(PicItem.archived == 0, PicItem.missing == 0,
                        or_(PicItem.name.like(needle), PicItem.caption.like(needle),
                            PicItem.rel_path.like(needle)))
                .order_by(PicItem.updated_at.desc()).limit(recall).all())
@@ -627,6 +668,29 @@ def batch_items(data: PicItemsBatch, request: Request, db: Session = Depends(get
                 "discovered", 0, None, None
             row.updated_at = now
             changed += 1
+    elif data.action == "unmissing":
+        # 保留: the original is gone but the user wants the tile kept.
+        now = _now_iso()
+        for row in rows:
+            row.missing, row.updated_at = 0, now
+            changed += 1
+    elif data.action == "forget":
+        # 清除: drop thumbnails/vectors/rows — derived data only, the
+        # original (wherever it still is) is never touched by this action.
+        # No ORM edits on rows we are about to bulk-delete: a pending UPDATE
+        # flushed after the DELETE is a StaleDataError.
+        ids = []
+        for row in rows:
+            if row.thumb_path:
+                try:
+                    (Path(settings.pic_dir) / row.thumb_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            ids.append(row.id)
+        if ids:
+            db.query(PicVector).filter(PicVector.pic_id.in_(ids)).delete(synchronize_session=False)
+            db.query(PicItem).filter(PicItem.id.in_(ids)).delete(synchronize_session=False)
+            changed = len(ids)
     db.commit()
     return {"action": data.action, "changed": changed}
 

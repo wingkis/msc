@@ -287,6 +287,9 @@ const API = {
     const qs = new URLSearchParams(params).toString();
     return apiFetch('/pic/items?' + qs);
   },
+  picFolders(sourceId) {
+    return apiFetch('/pic/folders?source_id=' + encodeURIComponent(sourceId));
+  },
   picItem(id) {
     return apiFetch(`/pic/item/${id}`);
   },
