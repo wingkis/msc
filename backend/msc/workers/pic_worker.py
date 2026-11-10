@@ -70,8 +70,8 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
             result = db.execute(sql_text(
                 "INSERT OR IGNORE INTO pic_items "
                 "(source_id, rel_path, origin_uri, name, ext, size_bytes, mtime, kind, "
-                " state, archived, discovered_at, updated_at) "
-                "VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, 'discovered', 0, :p8, :p8)"),
+                " state, archived, error_count, discovered_at, updated_at) "
+                "VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, 'discovered', 0, 0, :p8, :p8)"),
                 {"p0": src.id, "p1": entry.rel_path,
                  "p2": f"pic://{src.id}/{entry.rel_path}", "p3": entry.name,
                  "p4": entry.name.rsplit(".", 1)[-1].lower() if "." in entry.name else "",
@@ -84,7 +84,7 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
                 db.commit()
         else:
             completed = True  # loop drained without hitting the budget break
-    except (SourceError, OSError) as exc:
+    except Exception as exc:  # SourceError, OSError or an adapter bug
         db.commit()  # keep the cursor progress made so far
         src.state = "error"
         src.last_error = str(exc)[:500]
@@ -120,8 +120,11 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
     for item in rows:
         try:
             raw = adapter.get_bytes(item.rel_path)
-        except (SourceError, OSError) as exc:
-            _backoff(item, exc)  # source hiccup: this photo is not broken, the wire is
+        except Exception as exc:
+            # Any adapter-side failure — hiccup, offline share, even a bug in
+            # an adapter — is the ITEM's retry queue problem, not a reason to
+            # kill the whole tick. Undecodable CONTENT fails below, per file.
+            _backoff(item, exc)
             db.commit()
             continue
         try:

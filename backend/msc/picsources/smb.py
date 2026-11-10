@@ -142,7 +142,7 @@ class SmbSource(ImageSource):
         uri = self._uri(self._jail(rel_path))
         smbclient = self._connect()
         try:
-            with smbclient.open(uri, "rb") as fh:
+            with smbclient.open_file(uri, "rb") as fh:
                 return fh.read(max_bytes) if max_bytes else fh.read()
         except OSError:
             self._drop()
@@ -152,7 +152,7 @@ class SmbSource(ImageSource):
         uri = self._uri(self._jail(rel_path))
         smbclient = self._connect()
         try:
-            with smbclient.open(uri, "rb") as fh:
+            with smbclient.open_file(uri, "rb") as fh:
                 if max_bytes:
                     if fh.seek(0, os.SEEK_END) > max_bytes:
                         raise SourceError("原图超过大小上限")
