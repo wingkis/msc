@@ -57,7 +57,7 @@ function renderGraphFallback(data, reason) {
   const edges = (data && data.edges) || [];
   let html = '<div class="empty-hint">图形库未能加载（' + escHtml(reason) + '），以下用列表展示关联。</div>';
   if (edges.length === 0) {
-    html += '<div class="empty-state"><div class="empty-state-icon">🔗</div><div class="empty-state-text">暂无关联数据</div></div>';
+    html += '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-link"/></svg><div class="empty-state-text">暂无关联数据</div></div>';
   } else {
     html += '<div class="fallback-list">';
     edges.forEach(e => {
@@ -85,7 +85,7 @@ function renderGraph(data) {
   }
 
   if (!data || !data.nodes || data.nodes.length === 0) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔗</div><div class="empty-state-text">暂无关联数据</div></div>';
+    container.innerHTML = '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-link"/></svg><div class="empty-state-text">暂无关联数据</div></div>';
     return;
   }
 

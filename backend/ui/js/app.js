@@ -86,14 +86,14 @@ async function loadDashboard() {
     console.error('Dashboard load error:', e);
     document.getElementById('stat-total').textContent = '—';
     document.getElementById('recent-memories').innerHTML =
-      '<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">加载失败，请检查网络或配置 API Key</div></div>';
+      '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">加载失败，请检查网络或配置 API Key</div></div>';
   }
 }
 
 function renderRecentMemories(memories) {
   const container = document.getElementById('recent-memories');
   if (!memories || memories.length === 0) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">暂无记忆</div></div>';
+    container.innerHTML = '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-inbox"/></svg><div class="empty-state-text">暂无记忆</div></div>';
     return;
   }
   container.innerHTML = memories.map(m => renderMemoryCard(m)).join('');
@@ -164,7 +164,7 @@ async function loadMemories() {
     populateBranchFilter(branches, memories);
   } catch (e) {
     document.getElementById('memories-list').innerHTML =
-      '<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">加载失败：' + escHtml(e.message) + '</div></div>';
+      '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">加载失败：' + escHtml(e.message) + '</div></div>';
   }
 }
 
@@ -173,7 +173,7 @@ function renderMemoriesList(memories) {
   visibleMemories = memories || [];
   document.getElementById('memories-count').textContent = `共 ${memories.length} 条记忆`;
   if (!memories.length) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">没有找到记忆</div></div>';
+    container.innerHTML = '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-inbox"/></svg><div class="empty-state-text">没有找到记忆</div></div>';
     return;
   }
   container.innerHTML = memories.map(m => renderMemoryCard(m)).join('');
@@ -259,7 +259,7 @@ async function doSearch() {
     }
   } catch (e) {
     document.getElementById('search-results').innerHTML =
-      `<div class="empty-state"><div class="empty-state-icon">⚠️</div><div class="empty-state-text">搜索失败: ${escHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">搜索失败: ${escHtml(e.message)}</div></div>`;
     document.getElementById('search-results').style.display = 'flex';
     document.getElementById('search-empty').style.display = 'none';
   }
@@ -287,7 +287,7 @@ function renderSearchResult(r) {
         </div>
       </div>
       <button class="btn btn-ghost btn-small echo-inline-btn" title="让模型给这条记忆写回响评注"
-              onclick="event.stopPropagation(); startEchoFor('${escHtml(r.slug)}')">🪞 回响</button>
+              onclick="event.stopPropagation(); startEchoFor('${escHtml(r.slug)}')">回响</button>
     </div>
   `;
 }
@@ -581,8 +581,8 @@ function renderSyncStatus(status) {
     <div class="kv"><span>目录</span><code>${escHtml(status.memory_dir)}</code></div>
     <div class="kv"><span>数据库</span><span>${status.db_memories} 条（归档 ${status.db_archived}）</span></div>
     <div class="kv"><span>文件</span><span>${status.files} 个</span></div>
-    <div class="kv"><span>差异</span><span>${drift === 0 ? '一致 ✓' : `仅库内 ${ (status.only_in_db||[]).length } / 仅文件 ${(status.only_in_files||[]).length}`}</span></div>
-    <div class="kv"><span>搜索索引</span><span>${status.search_index_unindexed === 0 ? '完整 ✓' : status.search_index_unindexed + ' 条未索引'}</span></div>
+    <div class="kv"><span>差异</span><span>${drift === 0 ? '<span class="status-ok">一致</span>' : `仅库内 ${ (status.only_in_db||[]).length } / 仅文件 ${(status.only_in_files||[]).length}`}</span></div>
+    <div class="kv"><span>搜索索引</span><span>${status.search_index_unindexed === 0 ? '<span class="status-ok">完整</span>' : status.search_index_unindexed + ' 条未索引'}</span></div>
     <div class="kv"><span>上次同步</span><span>${escHtml((status.last_sync && (status.last_sync.direction + ' ' + status.last_sync.detail)) || '无')}</span></div>
   `;
 }
@@ -599,12 +599,16 @@ function renderSyncLogs(logs) {
     </div>`).join('');
 }
 
+// The dot used to be a text bullet, and the state class was 'sync-'+status
+// which no CSS rule matched: the indicator stayed green through a failed sync.
+const SYNC_LABELS = { ready: '就绪', syncing: '同步中…', error: '错误' };
+
 function updateSyncStatus(status, message) {
   const indicator = document.querySelector('.sync-indicator');
   if (!indicator) return;
-  indicator.className = 'sync-indicator sync-' + status;
-  indicator.textContent = status === 'syncing' ? '● 同步中...' :
-    status === 'error' ? '● 错误' : '● 就绪';
+  const state = SYNC_LABELS[status] ? status : 'ready';
+  indicator.className = 'sync-indicator is-' + state;
+  indicator.innerHTML = '<span class="sync-dot" aria-hidden="true"></span>' + SYNC_LABELS[state];
   if (message) {
     const result = document.getElementById('sync-result');
     if (result) result.textContent = message;
@@ -619,10 +623,10 @@ async function loadSettings() {
     try {
       const cfg = await API.getConfig();
       if (cfg.auth_enabled) {
-        authStatus.textContent = '🔒 鉴权模式（需要 API Key / token）';
+        authStatus.textContent = '鉴权模式（需要 API Key / token）';
         authStatus.style.color = 'var(--priority-high)';
       } else {
-        authStatus.textContent = '🔓 局域网模式 — 无需登录，无 token 过期';
+        authStatus.textContent = '局域网模式 — 无需登录，无 token 过期';
         authStatus.style.color = 'var(--text-muted)';
       }
     } catch (e) {
@@ -950,13 +954,13 @@ async function testModelCard() {
     }
     if (report.ok) {
       const chat = report.chat || {};
-      if (box) box.innerHTML = `✅ 可用 · ${escHtml(chat.model || '')} · ${chat.latency_ms || 0}ms · 回复「${escHtml(chat.reply || '')}」`
+      if (box) box.innerHTML = `<span class="status-ok">可用</span> · ${escHtml(chat.model || '')} · ${chat.latency_ms || 0}ms · 回复「${escHtml(chat.reply || '')}」`
         + (report.models_error ? `<br>（${escHtml(report.models_error)}）` : '');
     } else {
-      if (box) box.innerHTML = `❌ ${escHtml(report.error || '未知错误')}`;
+      if (box) box.innerHTML = `<span class="status-bad">${escHtml(report.error || '未知错误')}</span>`;
     }
   } catch (e) {
-    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+    if (box) box.innerHTML = `<span class="status-bad">${escHtml(e.message)}</span>`;
   }
   loadModelCard();
 }
@@ -967,9 +971,9 @@ function renderModelStatus(card) {
   if (!card.ready) {
     box.innerHTML = `未配置：填好 API 地址与模型名后，记忆页的「小结所选」就能用。<br>当前端点: <code>${escHtml(card.endpoint)}</code>`;
   } else if (card.last_error) {
-    box.innerHTML = `⚠️ 上次失败: ${escHtml(card.last_error)}`;
+    box.innerHTML = `<span class="status-warn">上次失败: ${escHtml(card.last_error)}</span>`;
   } else if (card.last_ok_at) {
-    box.innerHTML = `✅ 上次成功: ${escHtml(fmtDate(card.last_ok_at))}`;
+    box.innerHTML = `<span class="status-ok">上次成功: ${escHtml(fmtDate(card.last_ok_at))}</span>`;
   }
 }
 
@@ -1006,7 +1010,7 @@ async function loadDigestWidget() {
         ? `模型 <code>${escHtml(card.model)}</code><br>` +
           (card.auto_enabled ? `每日 ${escHtml(card.auto_time)} 自动小结（${escHtml(card.auto_timezone || '容器时区')}）`
                              : '自动小结未开启') +
-          (card.last_error ? `<br>⚠️ ${escHtml(card.last_error)}` : '')
+          (card.last_error ? `<br><span class="status-warn">${escHtml(card.last_error)}</span>` : '')
         : '未配置模型，去设置里的「模型卡片」填地址和模型名。';
     }
     renderSummaryRuns(runs, 'digest-runs', 3);
@@ -1227,9 +1231,9 @@ function fillRagCard(card) {
   }
   const box = ragField(p, 'status');
   if (box && !box.textContent) {
-    if (card.last_error) box.innerHTML = `⚠️ 上次失败: ${escHtml(card.last_error)}`;
+    if (card.last_error) box.innerHTML = `<span class="status-warn">上次失败: ${escHtml(card.last_error)}</span>`;
     else if (card.ready) {
-      box.innerHTML = `✅ 就绪${p === 'embed' && card.probed_dim ? ` · ${card.probed_dim} 维` : ''}`;
+      box.innerHTML = `<span class="status-ok">就绪${p === 'embed' && card.probed_dim ? ` · ${card.probed_dim} 维` : ''}</span>`;
     }
   }
 }
@@ -1269,7 +1273,7 @@ async function saveRagCard(purpose) {
     if (box) box.textContent = '已保存';
     loadRagStatus();
   } catch (e) {
-    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+    if (box) box.innerHTML = `<span class="status-bad">${escHtml(e.message)}</span>`;
   }
 }
 
@@ -1280,12 +1284,12 @@ async function testRagCard(purpose) {
     const report = await API.testModelCard(purpose);
     if (report.ok) {
       const extra = purpose === 'embed' && report.probe ? ` · 维度 ${report.probe.dim}` : '';
-      if (box) box.innerHTML = `✅ 可用${extra}`;
+      if (box) box.innerHTML = `<span class="status-ok">可用${extra}</span>`;
     } else {
-      if (box) box.innerHTML = `❌ ${escHtml(report.error || '探针未通过')}`;
+      if (box) box.innerHTML = `<span class="status-bad">${escHtml(report.error || '探针未通过')}</span>`;
     }
   } catch (e) {
-    if (box) box.innerHTML = `❌ ${escHtml(e.message)}`;
+    if (box) box.innerHTML = `<span class="status-bad">${escHtml(e.message)}</span>`;
   }
   loadRagCards();
   loadRagStatus();
@@ -1310,7 +1314,7 @@ async function loadRagStatus() {
       <div class="kv"><span>RAG 开关</span><span>${s.enabled ? '开' : '关（MSC_RAG_ENABLED=false）'}</span></div>
       <div class="kv"><span>当前 embed 模型</span><code>${escHtml(s.active_model || '未配置')}</code></div>
       ${vectors}
-      <div class="kv"><span>嵌入队列</span><span>${s.dirty === 0 ? '已清空 ✓' : s.dirty + ' 条待嵌入'}</span></div>
+      <div class="kv"><span>嵌入队列</span><span>${s.dirty === 0 ? '<span class="status-ok">已清空</span>' : s.dirty + ' 条待嵌入'}</span></div>
     `;
     setFieldValue('rag-set-recall', s.settings?.recall_top);
     setFieldValue('rag-set-rrf', s.settings?.rrf_k);
@@ -1402,7 +1406,7 @@ async function toggleVoiceRecord() {
   voice.processor.connect(sink);
   sink.connect(voice.ctx.destination);
   voice.recording = true;
-  document.getElementById('voice-record-btn').textContent = '🎙️ 录音中…';
+  document.getElementById('voice-record-btn').textContent = '录音中…';
   document.getElementById('voice-stop-btn').style.display = '';
   if (status) status.textContent = '录音中，说完点停止';
 }
@@ -1415,7 +1419,7 @@ function stopVoiceRecord() {
   const sampleRate = voice.ctx.sampleRate;
   voice.ctx.close();
 
-  document.getElementById('voice-record-btn').textContent = '🎙️ 开始录音';
+  document.getElementById('voice-record-btn').textContent = '开始录音';
   document.getElementById('voice-stop-btn').style.display = 'none';
   const status = document.getElementById('voice-status');
   if (status) status.textContent = '编码上传中…';

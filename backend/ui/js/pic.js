@@ -170,7 +170,7 @@ function fillPicSourceFilter(sources) {
 function picTileHtml(item) {
   const state = item.state || 'discovered';
   const badge = state === 'failed'
-    ? `<span class="pic-badge" title="${escHtml(item.last_error || '')}">✕</span>`
+    ? `<span class="pic-badge" title="${escHtml(item.last_error || '')}">失败</span>`
     : '';
   const match = item.match
     ? `<span class="pic-match pic-match-${item.match}">${item.match === 'both' ? '双命中' : item.match === 'semantic' ? '语义' : '关键词'}</span>`
@@ -179,12 +179,12 @@ function picTileHtml(item) {
   // instead of drifting over the caption row below it.
   const inner = item.thumb_available
     ? `<img data-src="${item.thumb_url}" alt="${escHtml(item.name)}">`
-    : '<div class="pic-placeholder">⏳</div>';
+    : '<div class="pic-placeholder"><span class="pic-spin"></span></div>';
   const cap = item.caption ? `<div class="pic-tile-cap">${escHtml(item.caption)}</div>` : '';
   const check = '<label class="pic-check" onclick="event.stopPropagation()">' +
     `<input type="checkbox" onchange="picToggleSelect(${item.id})" ` +
     `${picSelected.has(item.id) ? 'checked' : ''}></label>`;
-  const dup = item.dup ? '<span class="pic-dup" title="与别的照片内容相同（连拍/副本）">⧉ 副本</span>' : '';
+  const dup = item.dup ? '<span class="pic-dup" title="与别的照片内容相同（连拍/副本）">副本</span>' : '';
   let tileBtns = '';
   if (picView === 'trash') {
     tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +

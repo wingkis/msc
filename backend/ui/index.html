@@ -5,40 +5,65 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.6">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.7">
 </head>
 <body>
+  <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
+       Add a <symbol> here and reference it with <svg class="icon"><use
+       href="#i-name"/></svg>; colour always follows the surrounding text. -->
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="6.5" cy="17.5" r="2.3"/><circle cx="12" cy="6.5" r="2.3"/><circle cx="17.5" cy="14.5" r="2.3"/><path d="M8.2 15.6 10.8 8.6M13.4 8.2l3 4.4"/></symbol>
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3.5h8.5L18 7v13.5H6z"/><path d="M14 3.8V7.5h3.6M8.8 11.5h6.4M8.8 15h6.4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="15 15 20 20"/></symbol>
+    <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="6" cy="17.5" r="2.5"/><circle cx="11" cy="6.5" r="2.5"/><circle cx="18" cy="14" r="2.5"/><path d="M7.6 15.6 9.9 8.8M13.1 7.9l3.4 4.2"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.8" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.2"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3.5 8h3l1.6-2.5h7.8L17.5 8h3v11.5h-17z"/><circle cx="12" cy="13.2" r="3.6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M11 3.2 12.7 8.6 18 10.4 12.7 12.1 11 17.5 9.3 12.1 4 10.4 9.3 8.6z"/><path d="M17.6 15.6 18.4 18.2 21 19 18.4 19.8 17.6 22.4 16.8 19.8 14.2 19 16.8 18.2z"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.6 7.8l2 1.2M17.4 15l2 1.2M4.6 16.2l2-1.2M17.4 9l2-1.2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4.5 17.5l4.6-4.6 3.6 3.4 3-2.8 4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7.5h15M9 7.5V4.8h6v2.7M6.5 7.5l1 13h9l1-13M10.5 11v6M13.5 11v6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 21.5 20H2.5z"/><path d="M12 9.5v5"/><circle cx="12" cy="17.2" r=".9"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M3.5 13.5h4l1.5 3h6l1.5-3h4"/><path d="M3.5 13.5 6 4.5h12l2.5 9v6h-17z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.8a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.3 1.3"/><path d="M14 10.2a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.3-1.3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.8v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6.5v4.2h-4.2"/><path d="M19.4 10.7A7.7 7.7 0 1 0 12 20a7.7 7.7 0 0 0 6.7-3.9"/></symbol>
+  </svg>
+
   <!-- Header -->
   <header id="app-header">
     <div class="header-inner">
       <a href="javascript:void(0)" onclick="navTo('dashboard')" class="logo">
-        <span class="logo-icon">🧠</span>
+        <svg class="icon logo-icon" aria-hidden="true"><use href="#i-logo"/></svg>
         <span class="logo-text">MSC Memory</span>
       </a>
       <nav class="nav-links" id="nav-links">
         <a href="javascript:void(0)" data-page="dashboard" onclick="navTo('dashboard')" class="nav-link active">
-          <span class="nav-icon">📊</span> 仪表板
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-dashboard"/></svg>仪表板
         </a>
         <a href="javascript:void(0)" data-page="memories" onclick="navTo('memories')" class="nav-link">
-          <span class="nav-icon">📝</span> 记忆
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-note"/></svg>记忆
         </a>
         <a href="javascript:void(0)" data-page="search" onclick="navTo('search')" class="nav-link">
-          <span class="nav-icon">🔍</span> 搜索
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-search"/></svg>搜索
         </a>
         <a href="javascript:void(0)" data-page="graph" onclick="navTo('graph')" class="nav-link">
-          <span class="nav-icon">🔗</span> 图谱
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-graph"/></svg>图谱
         </a>
         <a href="javascript:void(0)" data-page="voice" onclick="navTo('voice')" class="nav-link">
-          <span class="nav-icon">🎙️</span> 语音
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-mic"/></svg>语音
         </a>
         <a href="javascript:void(0)" data-page="pics" onclick="navTo('pics')" class="nav-link">
-          <span class="nav-icon">📷</span> 照片
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-camera"/></svg>照片
         </a>
         <a href="javascript:void(0)" data-page="insights" onclick="navTo('insights')" class="nav-link">
-          <span class="nav-icon">✨</span> 洞察
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-sparkle"/></svg>洞察
         </a>
         <a href="javascript:void(0)" data-page="settings" onclick="navTo('settings')" class="nav-link">
-          <span class="nav-icon">⚙️</span> 设置
+          <svg class="icon nav-icon" aria-hidden="true"><use href="#i-gear"/></svg>设置
         </a>
       </nav>
       <div class="header-actions">
@@ -90,7 +115,7 @@
             <div class="search-box">
               <input type="text" placeholder="关键词搜索..." id="dashboard-search"
                      onkeydown="if(event.key==='Enter')quickSearch('dashboard-search')">
-              <button onclick="quickSearch('dashboard-search')">🔍</button>
+              <button aria-label="搜索" onclick="quickSearch('dashboard-search')"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
             </div>
           </div>
           <div class="widget">
@@ -100,7 +125,7 @@
           <div class="widget">
             <h3>同步状态</h3>
             <div id="sync-status" class="sync-status">
-              <div class="sync-indicator">● 就绪</div>
+              <div class="sync-indicator is-ready"><span class="sync-dot" aria-hidden="true"></span>就绪</div>
               <button class="btn btn-sm" onclick="doSync()">同步</button>
             </div>
           </div>
@@ -108,7 +133,7 @@
             <h3>记忆小结</h3>
             <div id="digest-status" class="setting-hint">模型未配置</div>
             <div class="sync-controls">
-              <button class="btn btn-sm btn-primary" onclick="openSummaryModal('daily')">📝 总结今日</button>
+              <button class="btn btn-sm btn-primary" onclick="openSummaryModal('daily')">总结今日</button>
               <button class="btn btn-sm btn-ghost" onclick="navTo('settings')">模型卡片</button>
             </div>
             <div id="digest-runs" class="log-list"></div>
@@ -160,9 +185,9 @@
                      oninput="debouncedSearch()">
             </div>
             <div class="memories-actions">
-              <button class="btn btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">☑ 多选</button>
+              <button class="btn btn-sm" id="select-mode-btn" onclick="toggleSelectMode()">多选</button>
               <button class="btn btn-sm btn-primary" onclick="openSummaryModal('selected')"
-                      title="把勾选的记忆合并成一条小结">🧠 小结所选</button>
+                      title="把勾选的记忆合并成一条小结">小结所选</button>
             </div>
           </div>
           <div id="selection-bar" class="selection-bar" style="display:none">
@@ -236,7 +261,7 @@
             <option value="reference">参考</option>
           </select>
           <button class="btn btn-primary btn-sm" onclick="autoLinkGraph()"
-                  title="精确整词匹配: 记忆对共享 ≥3 个高频关键词才建边; 覆盖 >30% 的通用词排除 (幂等)">⚡ 自动关联</button>
+                  title="精确整词匹配: 记忆对共享 ≥3 个高频关键词才建边; 覆盖 >30% 的通用词排除 (幂等)">自动关联</button>
           <button class="btn btn-ghost btn-sm" onclick="fitGraph()">适应视图</button>
           <button class="btn btn-ghost btn-sm" onclick="reloadGraph()">刷新</button>
         </div>
@@ -257,8 +282,8 @@
             录音在浏览器里转成 16-bit PCM WAV 再上传，whisper.cpp 不解 webm。
           </div>
           <div class="sync-controls">
-            <button class="btn btn-primary" id="voice-record-btn" onclick="toggleVoiceRecord()">🎙️ 开始录音</button>
-            <button class="btn btn-ghost" id="voice-stop-btn" style="display:none" onclick="stopVoiceRecord()">⏹ 停止</button>
+            <button class="btn btn-primary" id="voice-record-btn" onclick="toggleVoiceRecord()">开始录音</button>
+            <button class="btn btn-ghost" id="voice-stop-btn" style="display:none" onclick="stopVoiceRecord()">停止</button>
             <span id="voice-status" class="sync-result"></span>
           </div>
           <div class="sync-controls">
@@ -272,7 +297,7 @@
           <h4>相似记忆（cos &gt; 0.6）</h4>
           <div id="voice-similar" class="log-list"><div class="empty-hint">还没有转写结果</div></div>
           <div class="sync-controls">
-            <button class="btn btn-primary" onclick="createMemoryFromVoice()">➕ 新建记忆</button>
+            <button class="btn btn-primary" onclick="createMemoryFromVoice()">新建记忆</button>
           </div>
         </div>
       </div>
@@ -282,21 +307,21 @@
     <section id="page-pics" class="page">
       <div class="pic-topbar">
         <div class="pic-tabs">
-          <button class="pic-tab active" data-view="" onclick="picSetView('')">🖼 相册</button>
-          <button class="pic-tab" data-view="missing" onclick="picSetView('missing')">⚠ 缺失</button>
-          <button class="pic-tab" data-view="trash" onclick="picSetView('trash')">🗑 回收站</button>
+          <button class="pic-tab active" data-view="" onclick="picSetView('')">相册</button>
+          <button class="pic-tab" data-view="missing" onclick="picSetView('missing')">缺失</button>
+          <button class="pic-tab" data-view="trash" onclick="picSetView('trash')">回收站</button>
         </div>
         <div class="pic-searchbox">
-          <span class="pic-search-icon">✨</span>
+          <svg class="icon pic-search-icon" aria-hidden="true"><use href="#i-sparkle"/></svg>
           <input type="text" id="pic-semantic" placeholder="语义找图：海边吃西瓜的人…"
                  onchange="picSemantic()" onkeydown="picSemanticKey(event)">
         </div>
         <div class="pic-tools">
-          <button class="btn btn-sm" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 返回相册</button>
-          <button class="btn btn-sm" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()">清空回收站</button>
+          <button class="btn btn-sm" id="pic-back-btn" style="display:none" onclick="picBackToGallery()"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-chevron-left"/></svg>返回相册</button>
+          <button class="btn btn-sm" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg>清空回收站</button>
           <button class="btn btn-sm" onclick="picSelectAll()">全选</button>
-          <button class="btn btn-sm" onclick="loadPics()">刷新</button>
-          <button class="btn btn-sm btn-ghost" onclick="picResetView()" title="清掉所有筛选，回到纯相册">↩ 重置</button>
+          <button class="btn btn-sm" onclick="loadPics()"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+          <button class="btn btn-sm btn-ghost" onclick="picResetView()" title="清掉所有筛选，回到纯相册">重置</button>
         </div>
         <div class="pic-filters">
           <select id="pic-source-filter" onchange="picFilterChanged()">
@@ -318,7 +343,7 @@
       <div id="pic-note" class="setting-hint"></div>
       <div id="pic-grid" class="pic-grid"></div>
       <div id="pic-empty" class="pic-empty" style="display:none">
-        <div class="pic-empty-icon">🖼</div>
+        <svg class="icon pic-empty-icon" aria-hidden="true"><use href="#i-image"/></svg>
         <div class="empty-state-text" id="pic-empty-text">这个视图是空的</div>
         <div class="setting-hint" id="pic-empty-hint">照片源在「设置 → 照片源」里添加，worker 每 15 秒推进一段。</div>
       </div>
@@ -341,7 +366,7 @@
         <h1>洞察</h1>
         <div class="settings-grid">
           <div class="settings-card">
-            <h3>📅 今日奇遇</h3>
+            <h3>今日奇遇</h3>
             <div class="setting-hint">按最近记忆编织一篇 700-900 字的长文，每天一篇、按日缓存（需要 chat 模型卡片）。</div>
             <div class="sync-controls">
               <button class="btn btn-primary" id="pick-btn" onclick="loadDailyPick(false)">生成/查看今日</button>
@@ -351,7 +376,7 @@
             <div id="daily-pick" class="pick-body"></div>
           </div>
           <div class="settings-card">
-            <h3>🪞 记忆评注</h3>
+            <h3>记忆评注</h3>
             <div class="setting-hint">挑一条记忆，让模型写 500-800 字的评注；只读不回写。</div>
             <div class="form-row">
               <div class="form-group">
@@ -379,7 +404,7 @@
             <div id="echo-result" class="pick-body"></div>
           </div>
           <div class="settings-card">
-            <h3>🩺 记忆健康</h3>
+            <h3>记忆健康</h3>
             <div class="setting-hint">近重复对（cos &gt; 0.92）、过期 temporary、归档统计。只出建议，合并走「小结所选」。</div>
             <div class="sync-controls">
               <button class="btn" onclick="loadHealthReport()">体检</button>
@@ -388,7 +413,7 @@
             <div id="health-report"></div>
           </div>
           <div class="settings-card">
-            <h3>🔥 创建热力</h3>
+            <h3>创建热力</h3>
             <div class="sync-controls">
               <select id="heatmap-days" onchange="loadHeatmap()">
                 <option value="30">30 天</option>
@@ -408,7 +433,7 @@
         <h1>设置</h1>
         <div class="settings-grid">
           <div class="settings-card">
-            <h3>🔓 访问模式</h3>
+            <h3>访问模式</h3>
             <div class="setting-item">
               <div id="settings-auth-status" style="color:var(--text-muted)">局域网模式 — 无需登录</div>
             </div>
@@ -418,7 +443,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🖼️ 照片源（msc-pic）</h3>
+            <h3>照片源（msc-pic）</h3>
             <div class="setting-hint">
               添加本机目录或局域网共享（SMB/WebDAV）。worker 渐进扫描：先占位，再逐张生成缩略图，
               随时可暂停/继续，中断后从断点接着走，不会重复。<br>
@@ -485,7 +510,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🤖 模型卡片（记忆小结）</h3>
+            <h3>模型卡片（记忆小结）</h3>
             <div class="setting-hint">
               填任意 OpenAI 兼容的本地/局域网模型：地址、模型名、密钥都能在这里改，保存即生效，不用重启容器。<br>
               小结由页面上的按钮触发（记忆页多选 → 小结所选），也可按下面的时间每天自动生成当日小结。
@@ -581,7 +606,7 @@
             <div id="summary-runs" class="log-list"></div>
           </div>
           <div class="settings-card">
-            <h3>🧬 嵌入模型（语义搜索）</h3>
+            <h3>嵌入模型（语义搜索）</h3>
             <div class="setting-hint">
               任意 OpenAI 兼容 embeddings（llama.cpp / LM Studio / Ollama / OpenAI）。测试按钮会嵌入一句话并回报维度。<br>
               llama.cpp 提供嵌入时需 <code>-ub 4096</code>，否则长记忆会失败。未配置时搜索自动退回关键词。
@@ -604,7 +629,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🎯 重排模型（可选）</h3>
+            <h3>重排模型（可选）</h3>
             <div class="setting-hint">llama.cpp <code>/v1/rerank</code>（--rerank）或 Cohere 方言；未配置时混合搜索只用余弦排序。</div>
             <div class="model-form">
               <div class="form-group"><label>API 地址</label><input type="text" id="rag-rerank-base-url"></div>
@@ -622,7 +647,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>👂 语音转写（whisper）</h3>
+            <h3>语音转写（whisper）</h3>
             <div class="setting-hint">llama-server 的 whisper 端点（<code>--model ggml-*.bin</code>）或其他 /v1/audio/transcriptions 服务。语音页用它。</div>
             <div class="model-form">
               <div class="form-group"><label>API 地址</label><input type="text" id="rag-whisper-base-url"></div>
@@ -640,7 +665,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🪞 回响评注模型（可选）</h3>
+            <h3>回响评注模型（可选）</h3>
             <div class="setting-hint">评注专用的独立模型 API；<b>留空自动回退 chat 卡</b>。评注可存成 md 记忆文件（默认存进记忆目录，下个同步周期自动入库成为普通记忆）。</div>
             <div class="model-form">
               <div class="form-group"><label>API 地址</label><input type="text" id="rag-echo-base-url"></div>
@@ -658,7 +683,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🧭 RAG 索引状态</h3>
+            <h3>RAG 索引状态</h3>
             <div id="rag-status" class="kv-list"></div>
             <div class="sync-controls">
               <button class="btn btn-primary" onclick="reindexRag()">全量重建向量</button>
@@ -677,7 +702,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>🔄 同步</h3>
+            <h3>同步</h3>
             <div class="sync-controls">
               <button class="btn" onclick="doSync()">推送到文件</button>
               <button class="btn" onclick="doPull()">从文件拉取</button>
@@ -689,18 +714,18 @@
             <div id="sync-logs" class="log-list"></div>
           </div>
           <div class="settings-card">
-            <h3>🩺 服务自检</h3>
+            <h3>服务自检</h3>
             <div id="health-detail" class="kv-list"></div>
           </div>
           <div class="settings-card">
-            <h3>💾 备份</h3>
+            <h3>备份</h3>
             <div class="backup-controls">
               <button class="btn btn-primary" onclick="createBackup()">创建备份</button>
               <div id="backup-list" class="backup-list"></div>
             </div>
           </div>
           <div class="settings-card">
-            <h3>🧹 维护</h3>
+            <h3>维护</h3>
             <div class="setting-item">
               <div id="archived-count" style="color:var(--text-muted)">已归档: -</div>
             </div>
@@ -718,7 +743,7 @@
             </div>
           </div>
           <div class="settings-card">
-            <h3>ℹ️ 关于</h3>
+            <h3>关于</h3>
             <div class="about-info">
               <p><strong>MSC</strong></p>
               <p>Memory Sync Client — 个人记忆管理系统</p>
@@ -736,7 +761,7 @@
     <div class="modal" id="modal-content">
       <div class="modal-header">
         <h2 id="modal-title">新建记忆</h2>
-        <button class="modal-close" onclick="closeModal()">✕</button>
+        <button class="modal-close" aria-label="关闭" onclick="closeModal()"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div class="modal-body">
         <div class="form-row">
@@ -795,7 +820,7 @@
     <div class="modal modal-lg" id="detail-content">
       <div class="modal-header">
         <h2 id="detail-title">记忆详情</h2>
-        <button class="modal-close" onclick="closeDetailModal()">✕</button>
+        <button class="modal-close" aria-label="关闭" onclick="closeDetailModal()"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div class="modal-body" id="detail-body"></div>
       <div class="modal-footer">
@@ -813,7 +838,7 @@
     <div class="modal modal-lg" id="summary-content">
       <div class="modal-header">
         <h2 id="summary-title">生成记忆小结</h2>
-        <button class="modal-close" onclick="closeSummaryModal()">✕</button>
+        <button class="modal-close" aria-label="关闭" onclick="closeSummaryModal()"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </div>
       <div class="modal-body">
         <div id="summary-scope" class="setting-hint">正在统计范围…</div>
@@ -871,10 +896,10 @@
       <div class="modal-header">
         <h2 id="pic-detail-title">照片</h2>
         <div class="pic-modal-nav">
-          <button class="btn btn-sm" onclick="picDetailStep(-1)" title="上一张（←）">←</button>
+          <button class="btn btn-sm" aria-label="上一张" onclick="picDetailStep(-1)"><svg class="icon" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
           <span id="pic-detail-pos" class="pic-detail-pos"></span>
-          <button class="btn btn-sm" onclick="picDetailStep(1)" title="下一张（→）">→</button>
-          <button class="modal-close" onclick="closePicDetail()">✕</button>
+          <button class="btn btn-sm" aria-label="下一张" onclick="picDetailStep(1)"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+          <button class="modal-close" aria-label="关闭" onclick="closePicDetail()"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
       </div>
       <div class="modal-body pic-modal-body">
@@ -890,7 +915,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn" id="pic-detail-orig-btn" onclick="picToggleOriginal()">查看原图</button>
-        <a class="btn btn-ghost" id="pic-detail-download" href="#" download>下载原图</a>
+        <a class="btn btn-ghost" id="pic-detail-download" href="#" download><svg class="icon icon--sm" aria-hidden="true"><use href="#i-download"/></svg>下载原图</a>
         <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
       </div>
     </div>
@@ -899,10 +924,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.4.6"></script>
-  <script src="/ui/js/app.js?v=2.4.6"></script>
-  <script src="/ui/js/graph.js?v=2.4.6"></script>
-  <script src="/ui/js/pic.js?v=2.4.6"></script>
+  <script src="/ui/js/api.js?v=2.4.7"></script>
+  <script src="/ui/js/app.js?v=2.4.7"></script>
+  <script src="/ui/js/graph.js?v=2.4.7"></script>
+  <script src="/ui/js/pic.js?v=2.4.7"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

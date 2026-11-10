@@ -67,3 +67,52 @@ def test_photos_page_ships_the_2_4_6_structure(client):
                  "picToggleOriginal", "picRefreshTail", "picUpdateEmptyState",
                  "pic-chip", "is-selected"):
         assert call in js, call
+
+
+# Emoji in a nav bar or a probe result reads as a toy; the UI ships a stroke
+# icon set instead. Arrows (← →) and CJK punctuation are typographic and stay.
+EMOJI_RANGES = (
+    ("\U0001F000", "\U0001FAFF"),   # 📊 🧠 🎙 🪞 …
+    ("\u2300", "\u23FF"),           # ⏳ ⏹ …
+    ("\u2600", "\u27BF"),           # ☑ ⚠ ✕ ✓ …
+    ("\u2B00", "\u2BFF"),           # ⭐ ⬆ …
+    ("\u25A0", "\u25FF"),           # ● ■ ▶ … status dots are drawn in CSS
+    ("\uFE0F", "\uFE0F"),           # the selector that makes a glyph coloured
+)
+
+
+def _emoji_in(text):
+    return sorted({ch for ch in text
+                   if any(lo <= ch <= hi for lo, hi in EMOJI_RANGES)})
+
+
+def test_no_emoji_anywhere_in_the_ui(client):
+    html, js = _sources()
+    sheets = "".join((UI / "css" / name).read_text(encoding="utf-8")
+                     for name in ("app.css",))
+    for name, text in (("index.html", html), ("js", js), ("app.css", sheets)):
+        found = _emoji_in(text)
+        assert not found, f"{name} still has {found}"
+
+
+def test_every_icon_reference_resolves_to_a_symbol(client):
+    """<use href="#i-x"/> with no matching <symbol> renders an empty box —
+    the same silent breakage an unknown element id used to cause."""
+    html, js = _sources()
+    used = set(re.findall(r'<use href="#([\w-]+)"', html + js))
+    defined = set(re.findall(r'<symbol id="([\w-]+)"', html))
+    assert used, "the sprite went missing"
+    assert used - defined == set(), used - defined
+
+
+def test_sync_indicator_state_classes_match_the_css(client):
+    """app.js writes the state class, app.css colours it. A name that only
+    exists on one side leaves the dot stuck on one colour forever — the bug
+    the 2.4.7 cleanup turned up."""
+    html, js = _sources()
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    assert 'class="sync-indicator is-ready"' in html
+    assert "'sync-indicator is-' + state" in js
+    for state in ("ready", "syncing", "error"):
+        assert f".sync-indicator.is-{state}" in css, state
+        assert f"{state}:" in js, state          # SYNC_LABELS covers it
