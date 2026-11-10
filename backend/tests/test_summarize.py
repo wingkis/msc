@@ -325,23 +325,30 @@ def test_search_is_question_covers_the_shapes_that_matter():
 
 def test_a_card_template_still_overrides_the_search_shape(client, monkeypatch):
     calls = _fake_chat(monkeypatch)
-    _card(client, prompt_template="自定义：{count} 条，查询 {query}\n{sources}")
     slugs = [_make(client, "Search Custom Template")]
-    client.post("/api/v1/summarize/search", json={"query": "模板", "slugs": slugs,
-                                                  "dry_run": True})
-    prompt = calls[-1]["messages"][-1]["content"]
-    assert prompt.startswith("自定义：1 条，查询 模板")
-    for slug in slugs:
-        assert slug in prompt
+    try:
+        _card(client, prompt_template="自定义：{count} 条，查询 {query}\n{sources}")
+        client.post("/api/v1/summarize/search", json={"query": "模板", "slugs": slugs,
+                                                      "dry_run": True})
+        prompt = calls[-1]["messages"][-1]["content"]
+        assert prompt.startswith("自定义：1 条，查询 模板")
+        for slug in slugs:
+            assert slug in prompt
+    finally:
+        # One card row is shared by the whole session; a custom template left
+        # behind would silently reshape every later digest test.
+        _card(client, prompt_template="")
 
 
 def test_search_digest_keeps_its_sources_even_when_the_card_archives(client, monkeypatch):
     _fake_chat(monkeypatch)
-    _card(client, archive_sources=True)          # the daily digest switch
     slugs = [_make(client, "Search Keep One"), _make(client, "Search Keep Two")]
-
-    result = client.post("/api/v1/summarize/search",
-                         json={"query": "保留", "slugs": slugs}).json()
+    try:
+        _card(client, archive_sources=True)      # the daily digest switch
+        result = client.post("/api/v1/summarize/search",
+                             json={"query": "保留", "slugs": slugs}).json()
+    finally:
+        _card(client, archive_sources=False)
 
     assert result["archived"] == []
     for slug in slugs:
@@ -353,3 +360,18 @@ def test_search_digest_keeps_its_sources_even_when_the_card_archives(client, mon
     assert "由搜索「保留」的命中生成。" in digest["body"]
     for slug in slugs:
         assert slug in digest["body"]            # the source list stays auditable
+
+def test_search_digest_allows_thought_out_but_labels_it(client, monkeypatch):
+    """The answer is allowed to be a conclusion drawn across the hits — what it
+    is not allowed to do is hide that. So the prompt both invites synthesis and
+    requires each conclusion to name the slugs holding it up."""
+    calls = _fake_chat(monkeypatch)
+    slugs = [_make(client, "Synthesis One"), _make(client, "Synthesis Two")]
+    client.post("/api/v1/summarize/search", json={"query": "备份", "slugs": slugs,
+                                                  "dry_run": True})
+    prompt = calls[-1]["messages"][-1]["content"]
+    assert "先通读下面的记忆" in prompt
+    assert "可以把这些记忆放在一起观察、对照、归纳后再作答" in prompt
+    assert "综合推断" in prompt and "直接记载" in prompt
+    assert "结论 ← 出处 slug（直接记载 或 综合推断）" in prompt
+    assert "但依据只能是上面列出的记忆" in prompt        # the leash, right after
