@@ -215,6 +215,16 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.4.6（msc-pic 分支）
+
+- **照片页翻页修复** — `picLoadMore` 自写下起就没人调用，画廊实际只能看到前 200 张（2.4.6 起 `#pic-sentinel` 挂 IntersectionObserver 滚动续页，并显示「已显示全部 N 张」/载入失败提示）。
+- **摄入队列索引** — 启动自检新增 `ensure_pic_indexes()`：`(state, archived, missing, id)` 与 `(source_id, state, archived, missing)` 两条，把 worker 每 tick 的三段队列查询从全表扫描变成索引 seek（`EXPLAIN QUERY PLAN` 有测试守着）。
+- **接口查询合并** — `/pic/status` 与 `/pic/sources` 的每源计数改为一条 `GROUP BY source_id, state`；调参一次读表；缺失/回收站计数合并成一条；`/pic/items` 的副本分组只查本页 hash（原来每次画廊请求都对全表 GROUP BY，而 UI 每 5 秒就在轮询）；彻底删除预取行与源（原来每张照片 2 次点查）。
+- **目录下拉免重扫** — `/pic/folders` 要遍历该源全部 `rel_path` 才能拼出目录树；前端按「源 + 最近一次完成扫描 + 行数」做指纹缓存，切筛选/切视图不再重复拉，只有该源真的变了才重取。
+- **scan 少一半语句** — 首轮摄入的新文件不再跟一条 touch-UPDATE（INSERT 里显式写 `missing=0/last_seen_at`，绕过 ORM 默认值的坑由 `ensure_pic_defaults` 同源说明）；缩略图尺寸从每张一次查表提到批首。
+- **照片页 UI** — 相册/缺失/回收站改成三段标签条；状态行改彩色胶囊（含「正在扫描」呼吸点）；4:3 等比格子 + 骨架微光占位 + 缩略图淡入；悬停出选择框、选中描边；批量操作条改悬浮胶囊不再顶动格子；空视图按当前视图给出原因；月分组头 sticky；详情弹窗左右分栏（大图 + 描述/标签胶囊/字段表），`←`/`→` 在屏内照片间走动、`Esc` 关闭、原图↔缩略图原位切换、新增下载原图。
+- **照片源卡片** — 设置页每个源一张卡（来源类型徽标 + 地址 + 状态/队列胶囊 + 错误行），不再是一行流水文本。
+
 ### 2.4.0（msc-pic 分支）
 
 - **照片源卡片** — Web UI 添加/编辑/暂停/删除照片源：本机目录（白名单 `MSC_PIC_ROOTS` 内，浏览点选免手敲）、SMB（smbprotocol，NTLM/访客）、WebDAV（httpx PROPFIND）。凭证掩码与模型卡同策略。
