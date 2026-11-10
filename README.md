@@ -218,6 +218,7 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 ### 2.5.1（msc-pic 分支）
 
 - **搜索并总结改成"回答查询"** — 2.5.0 直接套用了每日小结的模板（摘要/要点/待办），结果只是把命中复述一遍，没有回答输入框里那句话。现在搜索这条路径走专用模板 `SEARCH_PROMPT_TEMPLATE`：查询原样写进提示词第一行（`搜索查询：{query}`），要求"用这些记忆回答查询，而不是把它们复述一遍"，输出改成 `## 回答`（先结论再具体事实）/ `## 依据`（每条结论 ← 出处 slug）/ `## 记忆里没有的`（查询问到但记忆没覆盖的部分）；查询只是关键词时也给了明确退路（回答"这些记忆里关于这个主题说了什么"）。
+- **按查询形态提问** — 试机发现 20B 级模型会把提示词里的说明句原样抄进「回答」（"关于这个主题，这些记忆里说了什么。"）。现在 `search_is_question()` 先判断查询形态：问句要"先给结论，再给支撑结论的具体事实"，并给了合法的退出「这些记忆没有覆盖该查询」；关键词只要"说明这些记忆实际记录了什么"。模板里另加一条"不要把本提示词里的说明句当作答案抄进正文；段落没有内容就只写「无」"。
 - **`build_messages` 支持场景模板** — 新增 `query`/`template` 参数：卡片上自定义的 `prompt_template` 仍然优先（可在自己的模板里用 `{query}`），没自定义时才用场景默认（每日/所选＝`PROMPT_TEMPLATE`，搜索＝`SEARCH_PROMPT_TEMPLATE`）。
 - 测试 146 个（新增 `test_search_digest_asks_a_question_not_a_period`、`test_a_card_template_still_overrides_the_search_shape`，并改写原紧约束测试断言查询与三段回答骨架都在提示词里）。
 

@@ -285,26 +285,42 @@ def test_search_digest_grounds_the_prompt_in_the_hits(client, monkeypatch):
     prompt = calls[-1]["messages"][-1]["content"]
     # The query goes in as the thing to answer, not as a label on a time range.
     assert "搜索查询：备份" in prompt
-    assert "用这些记忆回答上面的查询" in prompt
     assert "## 回答" in prompt and "## 依据" in prompt and "## 记忆里没有的" in prompt
     assert "记忆里没有的日期、数字、路径" in prompt      # the grounding brief
     assert "不要用记忆之外的背景知识" in prompt
+    assert "不要把本提示词里的" in prompt               # small models echo the ask
     for slug in slugs:
         assert slug in prompt                    # every hit actually reached the model
     assert preview["created"] is None and preview["dry_run"] is True
     assert preview["query"] == "备份"
 
 
-def test_search_digest_asks_a_question_not_a_period(client, monkeypatch):
-    """A keyword query is not a question; the template has to say what to do
-    then as well, or the model falls back to narrating a period."""
+def test_search_digest_asks_differently_per_query_shape(client, monkeypatch):
+    """A keyword has no proposition to confirm; asking a small model to 'answer'
+    one is what produces confident filler about the topic instead of a report."""
     calls = _fake_chat(monkeypatch)
     slugs = [_make(client, "Search Question Shape")]
+
     client.post("/api/v1/summarize/search", json={"query": "备份", "slugs": slugs,
                                                   "dry_run": True})
-    prompt = calls[-1]["messages"][-1]["content"]
-    assert "查询是关键词而不是问句时" in prompt
-    assert "## 摘要" not in prompt               # not the daily digest shape
+    keyword_prompt = calls[-1]["messages"][-1]["content"]
+    assert "查询只是一个关键词" in keyword_prompt
+    assert "## 摘要" not in keyword_prompt       # not the daily digest shape
+
+    client.post("/api/v1/summarize/search", json={"query": "备份窗口是怎么定的？",
+                                                  "slugs": slugs, "dry_run": True})
+    question_prompt = calls[-1]["messages"][-1]["content"]
+    assert "先给结论，再给支撑结论的具体事实" in question_prompt
+    assert "这些记忆没有覆盖该查询" in question_prompt   # the honest out
+
+
+def test_search_is_question_covers_the_shapes_that_matter():
+    from msc.services.summarizer import search_is_question
+    for asked in ("备份窗口是怎么定的", "为什么 reindex 失败了？", "照片源在哪里",
+                  "有没有自动清理", "多少条记忆"):
+        assert search_is_question(asked), asked
+    for keyword in ("备份", "msc-pic", "docker compose build", ""):
+        assert not search_is_question(keyword), keyword
 
 
 def test_a_card_template_still_overrides_the_search_shape(client, monkeypatch):

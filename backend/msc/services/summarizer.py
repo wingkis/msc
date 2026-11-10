@@ -57,28 +57,36 @@ MAX_BODY_PER_MEMORY = 1200
 # topic from its own background knowledge instead of from what was retrieved.
 SEARCH_PROMPT_TEMPLATE = """搜索查询：{query}
 
-下面是这次搜索的 {count} 条命中记忆（{date_range}）。用这些记忆回答上面的查询，
-而不是把它们复述一遍。
+下面是这次搜索的 {count} 条命中记忆（{date_range}）。
 
-严格按这个格式输出，第一行必须是 TITLE: <不超过 20 字的标题>：
+第一行必须是 TITLE: <不超过 20 字的标题>，然后按下面的段落输出：
 
 TITLE: ...
 
 ## 回答
-直接回答查询：先给结论，再给支撑结论的具体事实（数字、路径、命令、版本、时间），
-3-8 句。查询是关键词而不是问句时，就回答「关于这个主题，这些记忆里说了什么」。
+{answer_ask}
 
 ## 依据
-- 每条结论一行，写成：结论 ← 该结论出处的 slug
+每行一条：结论 ← 出处 slug
 
 ## 记忆里没有的
-- 查询问到、但这些记忆没有覆盖的部分；没有则写：无
+查询问到、但上面这些记忆没有覆盖的点
 
-{instruction}
+规则：下面三段的小标题原样保留；段落里没有内容就只写「无」；不要把本提示词里的
+说明句当作答案抄进正文。{instruction}
 记忆内容：
 
 {sources}
 """
+
+# A 20B-class model echoes whatever sentence looks like filler ("关于这个主题，
+# 这些记忆里说了什么"), so the ask differs per query shape and the anti-echo
+# rule sits next to it.
+SEARCH_ANSWER_QUESTION = ("用这些记忆直接回答上面的查询：先给结论，再给支撑结论的具体"
+                          "事实（数字、路径、命令、版本、时间），3-8 句。若这些记忆与查询"
+                          "无关，就直说「这些记忆没有覆盖该查询」，不要勉强成文。")
+SEARCH_ANSWER_KEYWORD = ("查询只是一个关键词：说明这些记忆关于该关键词实际记录了什么，"
+                         "并给出具体事实；若这些记忆与关键词无关，就直说「没有相关记忆」。")
 
 SEARCH_GROUNDING = (
     "只依据上面列出的记忆回答查询：每条结论都要能在某条记忆的原文里找到出处；"
@@ -86,6 +94,20 @@ SEARCH_GROUNDING = (
     "用记忆之外的背景知识来解释这个主题；记忆之间说法不一致时并列写出并指明"
     "冲突；查询里问到了但没有依据的部分，明确写进「记忆里没有的」。"
 )
+
+
+def search_is_question(query: str) -> bool:
+    """Rough, and deliberately so: whether to demand an answer or a report.
+
+    A keyword query has no proposition to confirm, so asking a 20B model to
+    'answer' it is what produces confident filler about the topic."""
+    q = (query or "").strip()
+    if not q:
+        return False
+    return (q.endswith(("?", "？"))
+            or q[:2] in ("如何", "怎么", "为何", "是否", "什么", "为什", "为什", "能否", "可以", "需要")
+            or q[:3] in ("为什么", "是不是", "有没有", "能不能", "怎么样", "是什么")
+            or any(w in q for w in ("如何", "怎么", "为什么", "哪里", "多少", "哪个")))
 
 _TITLE_RE = re.compile(r"^\s*(?:#{1}\s+|(?:TITLE|标题)\s*[::]\s*)(.{2,120}?)\s*$", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n(.*)\n```$", re.DOTALL)
@@ -237,6 +259,8 @@ def build_messages(cfg: ModelConfig, memories: Sequence[Memory], *, date_range: 
         "count": len(kept),
         "date_range": date_range or "手动选择",
         "query": query or "",
+        "answer_ask": (SEARCH_ANSWER_QUESTION if search_is_question(query)
+                       else SEARCH_ANSWER_KEYWORD),
         "instruction": f"额外要求：{instruction}\n" if instruction else "",
         "sources": block,
     }
