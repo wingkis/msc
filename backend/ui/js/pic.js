@@ -31,6 +31,29 @@ function picFilterParams() {
   return params;
 }
 
+// One button out of every corner: clears source/kind/month/folder/text
+// filters, the semantic-search result mode, the trash/missing view and the
+// selection — always lands back on the plain gallery.
+function picResetView() {
+  document.getElementById('pic-source-filter').value = '';
+  document.getElementById('pic-kind-filter').value = '';
+  document.getElementById('pic-month').value = '';
+  document.getElementById('pic-search').value = '';
+  document.getElementById('pic-semantic').value = '';
+  document.getElementById('pic-view').value = '';
+  picView = '';
+  picSearchMode = false;
+  picSelected.clear();
+  const empty = document.getElementById('pic-empty-trash-btn');
+  if (empty) empty.style.display = 'none';
+  const back = document.getElementById('pic-back-btn');
+  if (back) back.style.display = 'none';
+  const folderSel = document.getElementById('pic-folder');
+  if (folderSel) { folderSel.innerHTML = '<option value="">全部目录</option>'; folderSel.disabled = true; }
+  updatePicActions();
+  loadPics();
+}
+
 function picViewChanged() {
   picView = document.getElementById('pic-view').value;
   const empty = document.getElementById('pic-empty-trash-btn');

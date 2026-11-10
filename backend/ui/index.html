@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.4">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.5">
 </head>
 <body>
   <!-- Header -->
@@ -304,6 +304,7 @@
         <button class="btn" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 相册</button>
         <button class="btn" onclick="picSelectAll()">全选</button>
         <button class="btn" onclick="loadPics()">刷新</button>
+        <button class="btn" onclick="picResetView()">↩ 返回</button>
         <button class="btn btn-danger" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()">🗑 清空回收站</button>
         <span id="pic-counts" class="sync-result"></span>
       </div>
@@ -872,10 +873,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.4.4"></script>
-  <script src="/ui/js/app.js?v=2.4.4"></script>
-  <script src="/ui/js/graph.js?v=2.4.4"></script>
-  <script src="/ui/js/pic.js?v=2.4.4"></script>
+  <script src="/ui/js/api.js?v=2.4.5"></script>
+  <script src="/ui/js/app.js?v=2.4.5"></script>
+  <script src="/ui/js/graph.js?v=2.4.5"></script>
+  <script src="/ui/js/pic.js?v=2.4.5"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });
