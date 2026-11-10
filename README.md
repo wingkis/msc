@@ -215,6 +215,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.1（msc-pic 分支）
+
+- **搜索并总结改成"回答查询"** — 2.5.0 直接套用了每日小结的模板（摘要/要点/待办），结果只是把命中复述一遍，没有回答输入框里那句话。现在搜索这条路径走专用模板 `SEARCH_PROMPT_TEMPLATE`：查询原样写进提示词第一行（`搜索查询：{query}`），要求"用这些记忆回答查询，而不是把它们复述一遍"，输出改成 `## 回答`（先结论再具体事实）/ `## 依据`（每条结论 ← 出处 slug）/ `## 记忆里没有的`（查询问到但记忆没覆盖的部分）；查询只是关键词时也给了明确退路（回答"这些记忆里关于这个主题说了什么"）。
+- **`build_messages` 支持场景模板** — 新增 `query`/`template` 参数：卡片上自定义的 `prompt_template` 仍然优先（可在自己的模板里用 `{query}`），没自定义时才用场景默认（每日/所选＝`PROMPT_TEMPLATE`，搜索＝`SEARCH_PROMPT_TEMPLATE`）。
+- 测试 146 个（新增 `test_search_digest_asks_a_question_not_a_period`、`test_a_card_template_still_overrides_the_search_shape`，并改写原紧约束测试断言查询与三段回答骨架都在提示词里）。
+
 ### 2.5.0（msc-pic 分支）
 
 - **搜索并总结** — 搜索页「搜索」旁边新增「搜索并总结」：把当前这一页搜索结果（最多 `/search` 的 20 条命中）交给记忆小结的 chat 模型写一篇小结。新端点 `POST /api/v1/summarize/search`（与其余 Web UI 端点一样不进 `/help`/`llms.txt`），先预览（`dry_run`）再点「存为记忆」才落库。
