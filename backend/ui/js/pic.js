@@ -114,6 +114,7 @@ function picSyncGrid(items) {
   if (tiles.length !== items.length ||
       items.some((it, i) => tiles[i].dataset.id !== String(it.id))) {
     renderPicGrid(items, false);
+    picOffset = items.length;  // keep the paging window aligned with what's rendered
     return;
   }
   items.forEach((item, i) => picUpdateTile(tiles[i], item));
@@ -340,7 +341,10 @@ function startPicPoll() {
       renderPicStatusLine(status);
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
       if (pending && !picSearchMode && !picTrashMode) {
-        const first = await API.picItems(picFilterParams());
+        const params = picFilterParams();
+        params.offset = 0;  // poll refreshes the on-screen window, not the paged tail
+        const first = await API.picItems(params);
+        if (first.items && !first.items.length && first.total) return;  // paranoid: never blank a full grid
         picSyncGrid(first.items || []);
         picTotal = first.total || picTotal;
       }
