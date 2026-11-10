@@ -79,6 +79,13 @@ function graphRelationsParam() {
   return graphRelationWanted ? Array.from(graphRelationWanted) : [];
 }
 
+// The selection is a Set (null = every type) while the query string wants an
+// array. Reading it through one predicate keeps the two apart — calling .has()
+// on the array threw inside loadGraph and the view fell back to a list.
+function graphRelationHidden(type) {
+  return graphRelationWanted !== null && !graphRelationWanted.has(type);
+}
+
 function renderRelationFilters(byType) {
   const host = document.getElementById('graph-relation-filters');
   if (!host) return;
@@ -86,7 +93,7 @@ function renderRelationFilters(byType) {
     (a, b) => byType[b] - byType[a] || a.localeCompare(b));
   if (types.length === 0) { host.innerHTML = ''; return; }
   host.innerHTML = types.map(type => {
-    const checked = !graphRelationWanted || graphRelationWanted.has(type);
+    const checked = !graphRelationHidden(type);
     const label = GRAPH_RELATION_LABELS[type] || type;
     return `<label title="${escHtml(type)}"><input type="checkbox" data-type="${escHtml(type)}"` +
       ` ${checked ? 'checked' : ''} onchange="graphRelationToggled()">` +
@@ -105,9 +112,8 @@ function graphRelationToggled() {
 
 function graphNoteText(data, cap) {
   const byType = data.edges_by_type || {};
-  const wanted = graphRelationsParam();
   const hidden = Object.keys(byType)
-    .filter(type => wanted && !wanted.has(type))
+    .filter(graphRelationHidden)
     .reduce((sum, type) => sum + byType[type], 0);
   const total = (data.edges_total || data.edges.length) + hidden;
   if (data.edges.length === total) return `${data.edges.length} 条关联`;
@@ -142,16 +148,24 @@ function relayoutGraph() {
 
 async function loadGraph() {
   const cap = graphDegreeCap();
+  let data;
   try {
-    const data = await API.getGraph(null, cap, graphRelationsParam());
-    allGraphData = data;
-    filteredGraphData = data;
-    renderRelationFilters(data.edges_by_type || {});
-    renderGraph(data);
-    setGraphNote(graphNoteText(data, cap));
+    data = await API.getGraph(null, cap, graphRelationsParam());
   } catch (e) {
     console.error('Graph load error:', e);
     renderGraphFallback(allGraphData, String(e.message || e));
+    return;
+  }
+  allGraphData = data;
+  filteredGraphData = data;
+  renderGraph(data);
+  // The checkbox row and the caption are decoration. Throwing in one of them
+  // used to swap an already-drawn graph for the fallback list.
+  try {
+    renderRelationFilters(data.edges_by_type || {});
+    setGraphNote(graphNoteText(data, cap));
+  } catch (e) {
+    console.error('Graph summary error:', e);
   }
 }
 

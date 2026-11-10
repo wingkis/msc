@@ -215,6 +215,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.6（msc-pic 分支）
+
+- **修：取消勾选后图谱退化成列表** — `graphRelationsParam()` 给查询串用的是数组，`graphNoteText()` 却按 Set 调 `wanted.has(type)`，抛出后被 `loadGraph()` 的 catch 接住，于是把画好的图换成「图形库未能加载（wanted.has is not a function）」的列表。现在只有 `graphRelationHidden(type)` 这一个谓词读 Set，勾选框与说明文字都走它。
+- **顺带收窄失败面** — `loadGraph()` 拆开两段：抓取失败才退化列表（vis CDN 不可达等），已经画出来的图不会被连线说明的报错换掉；装饰性代码（勾选框、`#graph-note`）的异常只记 console。
+- 测试 157 个（新增 `test_graph_relation_filter_reads_one_kind_of_collection`：`graphNoteText` 里不得出现 `graphRelationsParam`、必须走 `graphRelationHidden`，并钉住"抓取失败才 fallback"的分层）。
+
 ### 2.5.5（msc-pic 分支）
 
 - **按关系类型过滤图谱连线** — 度数上限只裁掉最忙的那些边，噪声本身还在。`GET /api/v1/memories/graph` 新增 `?relations=a,b`（逗号白名单，空＝全部；未知类型只返回空边集，不报 422），响应新增 `edges_by_type`（每种类型的边数）与 `relations`（本次生效的白名单）。图谱页据此渲染一排勾选框：自动关联 / 摘要 / 关联 / 依赖，带条数，默认全勾选，取消即重载。`#graph-note` 会写「显示 X / Y 条关联（按类型隐藏 N 条，每节点 ≤6，省略 M 条）」。过滤只裁边，节点永远不丢。

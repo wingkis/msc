@@ -214,3 +214,18 @@ def test_graph_view_can_filter_edges_by_relation_type(client):
     assert "clearAutoLinks()" in js
     css = (UI / "css" / "app.css").read_text(encoding="utf-8")
     assert ".graph-filters" in css
+
+
+def test_graph_relation_filter_reads_one_kind_of_collection(client):
+    """The selection is a Set, the query string wants an array. The first build
+    called .has() on the array inside loadGraph, and the catch then replaced a
+    perfectly good graph with the fallback list. One predicate reads the Set,
+    and decoration errors never reach that catch again."""
+    js = (UI / "js" / "graph.js").read_text(encoding="utf-8")
+    assert "function graphRelationHidden(type)" in js
+    assert not re.search(r"graphRelationsParam\(\)\s*\.has\(", js)
+    body = re.search(r"function graphNoteText.*?\n}", js, re.S).group(0)
+    assert ".filter(graphRelationHidden)" in body and "graphRelationsParam" not in body
+    # fetch errors fall back; drawing/summary errors must not
+    assert "renderGraphFallback(allGraphData" in js
+    assert "Graph summary error" in js
