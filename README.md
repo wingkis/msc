@@ -215,6 +215,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.4.8（msc-pic 分支）
+
+- **全站一个字号** — 原来 10/11/12/13/14/15/16/18/24/28px 十档收敛成 `--fs: 13px` 一档（`--fs-micro` 只给页首 wordmark，正好是小字号的一半）；层级改由字重、大小写与发丝边框承担，`font-size` 在 html/js 里也不再内联出现。图谱画布的节点/边标签同样统一到这一个尺寸（`GRAPH_FONT_SIZE`）。
+- **只留黑白灰** — 所有色值改成严格 R=G=B 的中性灰（页面 #0b0b0b → 文字 #f4f4f4），靛蓝主色/绿/琥珀/红/紫与五档分类色、优先级色全部换成灰阶梯度：健康=安静灰，故障=最亮灰并配边框；删除类按钮不再是红的，改成描边、悬停反白；匹配类型（语义/关键词/双命中）改用边框样式区分，热力图改成灰度强度梯度。字体本身不变（Inter/系统等宽栈照旧）。
+- **闸门** — `test_ui_ships_only_black_white_and_grey` 扫 css/js/html 里每个 `#hex`/`rgb(a)()` 字面量并要求三通道相等；`test_one_font_size_for_the_whole_ui` 要求 app.css 里 `font-size` 只出现 `var(--fs)`/`var(--fs-micro)`，且 html/js 不含任何 `font-size`。
+
 ### 2.4.7（msc-pic 分支）
 
 - **Web UI 去表情** — 导航/按钮/标题里的 emoji 全部清掉，换成一套线性描边图标（`index.html` 顶部内联 `<symbol>` sprite，`<svg class="icon"><use href="#i-name"/></svg>`，`stroke: currentColor`，随文字颜色走，与 192.168.29.50:8080 那套控制台的做法一致）。新增图标只在 sprite 里加一个 `<symbol>`。
