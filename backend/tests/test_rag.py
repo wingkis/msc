@@ -66,7 +66,7 @@ def _embed_card(client, **patch):
 def test_purpose_cards_are_seeded_and_independent(client):
     cards = client.get("/api/v1/model/cards").json()
     purposes = {c["purpose"] for c in cards}
-    assert purposes == {"chat", "embed", "rerank", "whisper", "echo"}
+    assert purposes == {"chat", "embed", "rerank", "whisper", "echo", "vision"}
     # The chat card keeps 2.x behaviour: env-seeded, unconfigured in tests.
     chat = next(c for c in cards if c["purpose"] == "chat")
     assert chat["base_url"] == "" and chat["ready"] is False

@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     echo_base_url: str = ""
     echo_model: str = ""
     echo_api_key: str = ""
+    # Vision (照片描述) needs a multimodal endpoint; seed empty so the card
+    # has to be pointed at one deliberately (text-only servers are common).
+    vision_base_url: str = ""
+    vision_model: str = ""
+    vision_api_key: str = ""
     # Where /rag/echo's markdown lands when save=true. Empty = the memory
     # directory, so an echo becomes a first-class memory on the next sync.
     echo_dir: str = ""

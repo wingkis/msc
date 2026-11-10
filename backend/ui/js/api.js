@@ -290,6 +290,9 @@ const API = {
   picItem(id) {
     return apiFetch(`/pic/item/${id}`);
   },
+  picSearch(q, top = 24) {
+    return apiFetch(`/pic/search?q=${encodeURIComponent(q)}&top=${top}`);
+  },
   picThumbUrl(id) {
     return `${API_BASE}/pic/item/${id}/thumb`;
   }

@@ -291,6 +291,9 @@
         </select>
         <input type="text" id="pic-month" placeholder="2024-05（按月）" onchange="picFilterChanged()">
         <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
+        <input type="text" id="pic-semantic" placeholder="语义找图：海边吃西瓜的人…" onchange="picSemantic()">
+        <button class="btn btn-primary" onclick="picSemantic()">🔎 语义搜索</button>
+        <button class="btn" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 相册</button>
         <button class="btn" onclick="loadPics()">刷新</button>
         <span id="pic-counts" class="sync-result"></span>
       </div>
@@ -824,6 +827,24 @@
         <button class="btn btn-ghost" onclick="closeSummaryModal()">取消</button>
         <button class="btn" id="summary-preview-btn" onclick="previewSummary()">预览</button>
         <button class="btn btn-primary" id="summary-run-btn" onclick="runSummary()">生成并写入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Photo detail modal (msc-pic): thumb + AI caption + provenance.
+       Original-image preview joins this modal with the SMB/WebDAV pass. -->
+  <div id="pic-detail-overlay" class="modal-overlay" onclick="if(event.target===this)closePicDetail()">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h2 id="pic-detail-title">照片</h2>
+        <button class="modal-close" onclick="closePicDetail()">✕</button>
+      </div>
+      <div class="modal-body">
+        <img id="pic-detail-img" alt="缩略图" style="max-width:100%;border-radius:8px">
+        <div id="pic-detail-meta" class="setting-hint" style="margin-top:10px"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
       </div>
     </div>
   </div>

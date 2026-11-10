@@ -362,3 +362,214 @@ def test_settings_round_trip(client):
     after = client.put("/api/v1/pic/settings", json={"thumb_batch": 8}).json()["settings"]
     assert after["thumb_batch"] == 8
     assert client.put("/api/v1/pic/settings", json={"thumb_batch": 0}).status_code == 422
+
+
+# ── stage 2: vision card, caption, embed, semantic search ────────────
+
+_DIM = 64
+_PIC_AXIS = {"红": 0, "海边": 1, "截图": 2}
+
+
+def _pic_fake_embed(cfg, texts):
+    """Directional axes like test_rag: a caption naming 红 lands on axis 0 etc."""
+    import hashlib
+    import random
+    out = []
+    for text in texts:
+        for token, axis in _PIC_AXIS.items():
+            if token in text:
+                vec = [0.0] * _DIM
+                vec[axis] = 1.0
+                out.append(vec)
+                break
+        else:
+            rng = random.Random(hashlib.md5(text.encode()).hexdigest())
+            out.append([rng.uniform(-1, 1) for _ in range(_DIM)])
+    return out
+
+
+def _fake_chat_result(text):
+    return {"text": text, "model": "fake-vl", "finish_reason": "stop",
+            "usage": {}, "latency_ms": 3, "reasoning_only": False}
+
+
+def _caption_chat(state):
+    """Caption depends on the filename hint in the message: deterministic
+    per-photo captions make the search assertions exact. state counts calls."""
+    def fake(cfg, messages, max_tokens=None):
+        state["calls"] = state.get("calls", 0) + 1
+        blob = str(messages)
+        if "gamma" in blob:
+            return _fake_chat_result("一辆红色的车停在路边\n标签: 红色, 街道")
+        if "Screenshot" in blob:
+            return _fake_chat_result("一张软件界面的截图")
+        return _fake_chat_result("海边日落时分的照片")
+    return fake
+
+
+def test_vision_probe_sends_an_image(client, monkeypatch):
+    """The vision probe must fail a text-only server: it posts real image
+    bytes and asserts the transport used an image content part."""
+    from msc.services import llm
+
+    seen = {}
+
+    def fake_chat(cfg, messages, max_tokens=None):
+        has_image = any(isinstance(m.get("content"), list) and
+                        any(p.get("type") == "image_url" for p in m["content"])
+                        for m in messages)
+        seen["has_image"] = has_image
+        return _fake_chat_result("红色")
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    created = client.put("/api/v1/model?purpose=vision",
+                         json={"base_url": "http://vision.test:8080", "model": "fake-vl"})
+    assert created.status_code == 200
+    report = client.post("/api/v1/model/test?purpose=vision").json()
+    assert report["ok"] is True and seen["has_image"] is True
+
+
+def test_caption_embed_and_search_flow(client, db, photos_dir, monkeypatch):
+    from msc.models import PicItem, PicVector
+    from msc.services import llm, rag_providers
+    from msc.workers import pic_worker
+
+    # Put the pic items of this fixture dir through the semantic stages.
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": "语义源", "kind": "local", "root_path": str(photos_dir)}).json()["id"]
+    assert client.put("/api/v1/model?purpose=embed",
+                      json={"base_url": "http://embed.test", "model": "picembed-v1"}
+                      ).status_code == 200
+
+    state = {}
+    monkeypatch.setattr(llm, "chat", _caption_chat(state))
+    monkeypatch.setattr(rag_providers, "embed", _pic_fake_embed)
+
+    for _ in range(15):
+        pic_worker.run_once()
+        pending = (db.query(PicItem).filter_by(source_id=sid)
+                   .filter(PicItem.state.in_(["discovered", "thumb_ready"])).count())
+        if not pending:
+            break
+
+    by_rel = {i.rel_path: i for i in db.query(PicItem).filter_by(source_id=sid).all()}
+    alpha, gamma = by_rel["alpha.jpg"], by_rel["2024/beach/gamma.jpg"]
+    assert alpha.state == "embedded" and "海边" in alpha.caption
+    assert gamma.tags == "红色, 街道"  # the 标签: line parsed out
+    # caption_batch=1 default: one vision call per photo, not one mega-request
+    assert state.get("calls", 0) >= 3
+
+    vecs = db.query(PicVector).filter(PicVector.model == "picembed-v1").all()
+    assert len(vecs) >= 2 and all(len(v.vec) == v.dim * 4 for v in vecs)
+
+    # Semantic photo search: axis vectors decide the winner exactly.
+    hits = client.get("/api/v1/pic/search", params={"q": "红色的车"}).json()
+    top_ids = [r["id"] for r in hits["results"]]
+    assert top_ids and top_ids[0] == gamma.id
+    assert hits["results"][0]["match"] in ("semantic", "both")
+
+    # Isolation: memory search must never see photo ids.
+    created = client.post("/api/v1/memories", json={
+        "name": "红色记忆", "body": "一辆红色的车", "category": "knowledge",
+        "priority": "medium"}).json()
+    from msc.workers import rag_worker
+    rag_worker.run_once()
+    mem_hits = client.get("/api/v1/rag/search", params={"q": "红色的车"}).json()
+    assert mem_hits["results"], "memory leg should find the new memory"
+    # Isolation is structural — photo ids live in pic_vectors, never in the
+    # embeddings table the memory scan reads. The observable proxy: every hit
+    # is a real memory row, no photo file ever surfaces as a memory.
+    assert created["slug"] in [r["slug"] for r in mem_hits["results"]]
+    assert not any(r["slug"].endswith((".jpg", ".png", ".webp"))
+                   for r in mem_hits["results"])
+    # Ids are per-table, so the check that matters is on the embedding side:
+    # every row of the memories' embeddings table belongs to a real memory.
+    from msc.models import Embedding, Memory
+    embedding_memory_ids = {e.memory_id for e in db.query(Embedding).all()}
+    live_memory_ids = {m.id for m in db.query(Memory).all()}
+    assert embedding_memory_ids <= live_memory_ids
+
+
+def test_caption_outage_backs_off(client, db, photos_dir, monkeypatch):
+    from msc.models import PicItem
+    from msc.services import llm
+    from msc.services.llm import LLMError
+    from msc.workers import pic_worker
+
+    item = (db.query(PicItem).filter(PicItem.state == "thumb_ready")
+            .order_by(PicItem.id.desc()).first())
+    if item is None:  # everything already captioned: force one back
+        item = db.query(PicItem).filter(PicItem.state == "embedded").first()
+        item.state = "thumb_ready"
+        db.commit()
+    target_id = item.id
+
+    def broken(cfg, messages, max_tokens=None):
+        raise LLMError("vision endpoint down")
+
+    monkeypatch.setattr(llm, "chat", broken)
+    report = pic_worker.run_once()
+    db.expire_all()
+    item = db.get(PicItem, target_id)
+    assert item.state == "thumb_ready" and item.retry_at
+    assert report and any("vision endpoint down" in e for e in report["errors"])
+    cards = {c["purpose"]: c for c in client.get("/api/v1/model/cards").json()}
+    assert "vision endpoint down" in (cards["vision"]["last_error"] or "")
+
+
+def test_caption_reuse_for_duplicate_content(client, db, photos_dir, monkeypatch):
+    """A byte-identical copy of an already-captioned photo skips the vision
+    call entirely — burst shots cost nothing after the first."""
+    from msc.models import PicItem
+    from msc.services import llm
+    from msc.workers import pic_worker
+
+    alpha = db.query(PicItem).filter_by(rel_path="alpha.jpg").first()
+    assert alpha and alpha.caption
+    twin = photos_dir / "alpha_copy.jpg"
+    twin.write_bytes((photos_dir / "alpha.jpg").read_bytes())
+
+    state = {}
+    monkeypatch.setattr(llm, "chat", _caption_chat(state))
+    before = state.get("calls", 0)
+    sid = alpha.source_id
+    assert client.post(f"/api/v1/pic/sources/{sid}/scan").status_code == 200
+    pic_worker.run_once()
+    db.expire_all()
+    copy_item = db.query(PicItem).filter_by(source_id=sid, rel_path="alpha_copy.jpg").first()
+    assert copy_item is not None
+    assert copy_item.state in ("captioned", "embedded")
+    assert copy_item.caption == alpha.caption
+    assert state.get("calls", 0) == before  # no vision call spent on the twin
+    twin.unlink()
+
+
+def test_embed_card_switch_reembeds(client, db, monkeypatch):
+    """Switching the embed model demotes stragglers (self-heal) and rewrites
+    vectors under the new model key; the old key's rows survive until pruned."""
+    from msc.models import PicVector
+    from msc.services import rag_providers
+    from msc.workers import pic_worker
+
+    monkeypatch.setattr(rag_providers, "embed", _pic_fake_embed)
+    assert client.put("/api/v1/model?purpose=embed",
+                      json={"base_url": "http://embed.test", "model": "picembed-v2"}
+                      ).status_code == 200
+    for _ in range(6):
+        pic_worker.run_once()
+    db.expire_all()
+    models = {r.model for r in db.query(PicVector).all()}
+    assert {"picembed-v1", "picembed-v2"} <= models
+    from msc.models import PicItem
+    embedded = db.query(PicItem).filter(PicItem.state == "embedded").count()
+    v2 = db.query(PicVector).filter(PicVector.model == "picembed-v2").count()
+    assert v2 == embedded  # every live captioned photo now sits on the new model
+
+
+def test_stage2_leaves_shared_cards_clean(client):
+    """Cards are one DB row per purpose, shared with test_rag — undo the
+    embed/vision wiring this file's flow tests needed."""
+    for purpose in ("embed", "vision"):
+        cleared = client.put(f"/api/v1/model?purpose={purpose}",
+                             json={"base_url": "", "model": ""})
+        assert cleared.status_code == 200 and cleared.json()["base_url"] == ""

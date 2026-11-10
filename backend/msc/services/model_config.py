@@ -18,7 +18,7 @@ AUTO_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CATEGORIES = ("config", "project", "user", "knowledge", "reference")
 PRIORITIES = ("low", "medium", "high", "critical")
 
-PURPOSES = ("chat", "embed", "rerank", "whisper", "echo")
+PURPOSES = ("chat", "embed", "rerank", "whisper", "echo", "vision")
 
 # Columns the API may write. api_key is handled separately: an omitted key keeps
 # the stored one, an empty string clears it.
@@ -32,7 +32,7 @@ BOOL_FIELDS = ("enabled", "auto_enabled", "archive_sources")
 
 DEFAULT_LABELS = {"chat": "本地模型", "embed": "嵌入模型",
                   "rerank": "重排模型", "whisper": "语音转写",
-                  "echo": "评注模型"}
+                  "echo": "评注模型", "vision": "视觉描述"}
 
 
 def _now() -> str:
@@ -48,6 +48,16 @@ def _env_seed(purpose: str) -> dict:
             base_url=settings.echo_base_url, model=settings.echo_model,
             api_key=settings.echo_api_key, temperature=settings.llm_temperature,
             max_tokens=1600, timeout_seconds=settings.llm_timeout_seconds,
+            max_input_chars=settings.llm_max_input_chars,
+        )
+    if purpose == "vision":
+        # Chat-shaped but sends an image_url content part; the probe actually
+        # posts a picture, so a text-only server fails here instead of at
+        # caption time. Captions are short — the token budget stays small.
+        return dict(
+            base_url=settings.vision_base_url, model=settings.vision_model,
+            api_key=settings.vision_api_key, temperature=settings.llm_temperature,
+            max_tokens=600, timeout_seconds=settings.llm_timeout_seconds,
             max_input_chars=settings.llm_max_input_chars,
         )
     prefixes = {"embed": "embed_", "rerank": "rerank_", "whisper": "whisper_"}

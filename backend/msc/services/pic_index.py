@@ -17,7 +17,8 @@ from msc.models import PicSetting
 
 _log = logging.getLogger("msc.pic")
 
-PIC_TUNABLES = ("scan_seconds", "thumb_batch", "rescan_hours", "thumb_px")
+PIC_TUNABLES = ("scan_seconds", "thumb_batch", "rescan_hours", "thumb_px",
+                "caption_batch", "embed_batch")
 
 # Filename patterns that mean "this is a screenshot, not a camera photo".
 _SCREENSHOT_MARKS = ("screenshot", "screen_shot", "screen shot", "screencapture",
@@ -49,7 +50,11 @@ def pic_setting(db: Session, key: str) -> int:
         except ValueError:
             _log.warning("pic_settings.%s is not an integer: %r", key, row.value)
     return {"scan_seconds": 8, "thumb_batch": 16, "rescan_hours": 24,
-            "thumb_px": settings.pic_thumb_px}[key]
+            "thumb_px": settings.pic_thumb_px,
+            # 1 by default: captioning shares a busy local GPU (the vision card
+            # usually sits on the same box that answers chat). Raise it when
+            # the endpoint can take it.
+            "caption_batch": 1, "embed_batch": 8}[key]
 
 
 def set_pic_setting(db: Session, key: str, value: int) -> None:
@@ -130,3 +135,21 @@ def taken_at_from_image(im, mtime_iso: str):
 def image_size(im):
     w, h = im.size
     return int(w), int(h)
+
+
+def pic_semantic_ids(db: Session, q: str, top: int):
+    """Ranked photo ids for a semantic pass. Returns (ids, cos_by_id, error).
+
+    Same embed card as memories (bge-m3) but scans pic_vectors only — photos
+    and memories stay in their own corpora on purpose.
+    """
+    from msc.models import PicItem, PicVector
+    from msc.services.rag import embed_query, scan_vector_table
+
+    vec, model, error = embed_query(db, q)
+    if vec is None:
+        return [], {}, error
+    live = {row[0] for row in db.query(PicItem.id).filter(PicItem.archived == 0).all()}
+    scored = scan_vector_table(db, PicVector, PicVector.pic_id, PicVector.model,
+                               vec, model, top, live)
+    return [pic_id for pic_id, _ in scored], dict(scored), None

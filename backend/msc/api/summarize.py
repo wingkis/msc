@@ -88,7 +88,47 @@ def test_model(request: Request, purpose: str = Query("chat"),
     cfg = get_config(db, purpose)
     if purpose in ("chat", "echo"):
         return _test_chat_card(db, cfg)
+    if purpose == "vision":
+        return _test_vision_card(db, cfg)
     return _test_rag_card(db, cfg, purpose)
+
+
+def _probe_png_bytes() -> bytes:
+    """A 16x16 red square, built on the fly — small enough to inline in every
+    vision probe, distinctive enough that 'what colour is this' answers prove
+    the image actually reached the model."""
+    from io import BytesIO
+
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGB", (16, 16), "red").save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _test_vision_card(db, cfg):
+    """Vision probes must send an image. A chat-only llama.cpp (no --mmproj)
+    answers text fine and rejects pictures — a text-only probe would call it
+    ready, and every caption would fail later."""
+    report = {"endpoint": None, "models": [], "chat": None, "error": None}
+    try:
+        report["endpoint"] = llm.chat_endpoint(cfg.base_url)
+        try:
+            report["models"] = llm.list_models(cfg)
+        except llm.LLMError as exc:
+            report["models_error"] = str(exc)
+        answer = llm.chat(cfg, [{"role": "user", "content": [
+            llm.image_part(_probe_png_bytes(), "image/png"),
+            {"type": "text", "text": "连接测试。只用两个字描述这张图的颜色。"},
+        ]}], max_tokens=64)
+        report["chat"] = {"ok": True, "model": answer["model"], "reply": answer["text"][:120],
+                          "latency_ms": answer["latency_ms"]}
+        note_result(db, cfg)
+        report["ok"] = True
+    except llm.LLMError as exc:
+        note_result(db, cfg, error=str(exc))
+        report["error"] = str(exc)
+        report["ok"] = False
+    return report
 
 
 def _test_chat_card(db, cfg):

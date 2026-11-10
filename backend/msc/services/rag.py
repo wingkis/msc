@@ -107,12 +107,13 @@ def dirty_depth(db: Session) -> int:
     return db.query(RagDirty).count()
 
 
-def scan_scores(db: Session, query_vec, model: str, top: int,
-                include_archived: bool = False):
-    """Cosine similarity of query_vec against every stored vector for `model`.
+def scan_vector_table(db: Session, table, id_col, model_col, query_vec,
+                      model: str, top: int, live_ids: set):
+    """Cosine over one vector table's rows for `model`, restricted to live ids.
 
-    Returns [(memory_id, cos)] sorted best-first. Numpy import is inside the
-    function so a missing dependency degrades search, not boot.
+    Shared by memories (Embedding) and photos (PicVector): the math is
+    identical, only the corpus differs — and keeping the tables separate is
+    what stops the two searches from seeing each other.
     """
     try:
         import numpy
@@ -125,22 +126,17 @@ def scan_scores(db: Session, query_vec, model: str, top: int,
     if qn == 0.0:
         return []
 
-    rows = db.query(Embedding.memory_id, Embedding.vec, Embedding.dim).filter(
-        Embedding.model == model).all()
+    rows = db.query(id_col, table.vec, table.dim).filter(model_col == model).all()
     if not rows:
         return []
 
-    live = {row[0] for row in (
-        db.query(Memory.id).filter(Memory.archived == 0).all()
-        if not include_archived else db.query(Memory.id).all())}
-
     matrix = numpy.empty((len(rows), len(q)), dtype=numpy.float32)
     valid = []
-    for i, (memory_id, blob, dim) in enumerate(rows):
-        if memory_id not in live or dim != len(q) or len(blob) != dim * 4:
+    for obj_id, blob, dim in rows:
+        if obj_id not in live_ids or dim != len(q) or len(blob) != dim * 4:
             continue  # model switch mid-scan or truncated blob: skip, reindex fixes
         matrix[len(valid)] = numpy.frombuffer(blob, dtype=numpy.float32)
-        valid.append(memory_id)
+        valid.append(obj_id)
     if not valid:
         return []
     matrix = matrix[:len(valid)]
@@ -148,6 +144,20 @@ def scan_scores(db: Session, query_vec, model: str, top: int,
     scores = matrix @ q / numpy.where(norms == 0, 1.0, norms) / qn
     order = numpy.argsort(-scores)[:top]
     return [(valid[i], float(scores[i])) for i in order if scores[i] > 0.0]
+
+
+def scan_scores(db: Session, query_vec, model: str, top: int,
+                include_archived: bool = False):
+    """Cosine similarity of query_vec against every stored vector for `model`.
+
+    Returns [(memory_id, cos)] sorted best-first. Numpy import is inside the
+    function so a missing dependency degrades search, not boot.
+    """
+    live = {row[0] for row in (
+        db.query(Memory.id).filter(Memory.archived == 0).all()
+        if not include_archived else db.query(Memory.id).all())}
+    return scan_vector_table(db, Embedding, Embedding.memory_id, Embedding.model,
+                             query_vec, model, top, live)
 
 
 def embed_query(db: Session, q: str):

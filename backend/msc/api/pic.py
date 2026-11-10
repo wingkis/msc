@@ -25,9 +25,12 @@ from msc.database import get_db
 from msc.models import PicItem, PicSource, PicVector
 from msc.picsources import SourceError, build_source
 from msc.schemas import PicSettingsUpdate, PicSourceCreate, PicSourceUpdate
+from msc.services.model_config import get_config, public_view
 from msc.services.pic_index import (
-    PIC_TUNABLES, pic_setting, set_pic_setting, source_counts, state_counts,
+    PIC_TUNABLES, pic_semantic_ids, pic_setting, set_pic_setting,
+    source_counts, state_counts,
 )
+from msc.services.rag import rrf_fusion, setting as rag_setting
 
 _log = logging.getLogger("msc.pic")
 router = APIRouter()
@@ -152,7 +155,10 @@ def pic_status(db: Session = Depends(get_db)):
         "thumb_dir": str(Path(settings.pic_dir) / "thumbs"),
         "counts": counts,
         "pending_thumbs": counts.get("discovered", 0),
+        "pending_captions": counts.get("thumb_ready", 0),
         "failed": counts.get("failed", 0),
+        "providers": {purpose: public_view(get_config(db, purpose))
+                      for purpose in ("vision", "embed")},
         "sources": [_source_view(row, source_counts(db, row.id))
                     for row in db.query(PicSource).order_by(PicSource.id).all()],
         "settings": {key: pic_setting(db, key) for key in PIC_TUNABLES},
@@ -426,6 +432,57 @@ def taken_at_prefix(value: str, end: bool = False) -> str:
     if len(v) == 10:                     # day
         return f"{v}T23:59:59" if end else f"{v}T00:00:00"
     return v
+
+
+@router.get("/search")
+def pic_search(q: str = Query(..., min_length=1), top: int = Query(12, ge=1, le=100),
+               db: Session = Depends(get_db)):
+    """Hybrid photo search: captions in pic_vectors (cosine) fused with a
+    keyword leg over name/caption/rel_path via the same RRF as memories.
+
+    Unlike /rag/search there is no 503 without an embed card: photos still
+    answer with keyword hits and a note — the gallery degrades, it does not
+    refuse.
+    """
+    _require_pic()
+    recall = max(rag_setting(db, "recall_top"), top)
+    sem_ids, sem_cos, sem_error = pic_semantic_ids(db, q, recall)
+
+    needle = f"%{q.strip()}%"
+    kw_rows = (db.query(PicItem.id)
+               .filter(PicItem.archived == 0,
+                       or_(PicItem.name.like(needle), PicItem.caption.like(needle),
+                           PicItem.rel_path.like(needle)))
+               .order_by(PicItem.updated_at.desc()).limit(recall).all())
+    kw_ids = [row[0] for row in kw_rows]
+
+    if not sem_ids and not kw_ids:
+        note = sem_error or "没有命中；embed 卡未配置时只有关键词搜索"
+        return {"query": q, "results": [], "note": note}
+
+    fused = rrf_fusion(kw_ids, sem_ids, rrf_k=rag_setting(db, "rrf_k"))
+    top_ids = [pid for pid, _, _ in fused][:top]
+    by_id = {i.id: i for i in db.query(PicItem).filter(PicItem.id.in_(top_ids)).all()}
+    names = {}
+    if by_id:
+        src_ids = {i.source_id for i in by_id.values()}
+        names = dict(db.query(PicSource.id, PicSource.name)
+                     .filter(PicSource.id.in_(src_ids)).all())
+    results = []
+    for pid, score, match in fused[:top]:
+        item = by_id.get(pid)
+        if item is None or item.archived:
+            continue
+        view = _item_view(item, names.get(item.source_id, ""))
+        view["score"] = score
+        view["match"] = match
+        view["cos"] = round(sem_cos.get(pid, 0.0), 4) if match in ("semantic", "both") else None
+        results.append(view)
+    out = {"query": q, "results": results,
+           "model": (get_config(db, "embed").model or "").strip()}
+    if sem_error:
+        out["note"] = f"语义腿不可用：{sem_error}"
+    return out
 
 
 @router.get("/item/{item_id}")

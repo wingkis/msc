@@ -39,6 +39,18 @@ def models_endpoint(base_url: str) -> str:
     return chat_endpoint(base_url).removesuffix("/chat/completions") + "/models"
 
 
+def image_part(data: bytes, mime: str = "image/webp") -> dict:
+    """An OpenAI-style image content part from raw bytes (base64 data URL).
+
+    Messages are passed through chat() verbatim, so multimodal support is
+    purely a payload-construction question — vision endpoints take it, text
+    ones answer with a readable LLMError.
+    """
+    import base64
+    b64 = base64.b64encode(data).decode()
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
 def _headers(api_key: Optional[str]) -> dict:
     headers = {"Content-Type": "application/json"}
     if api_key:

@@ -10,6 +10,7 @@ let picTotal = 0;
 const PIC_PAGE = 200;
 let picObserver = null;
 let picPollTimer = null;
+let picSearchMode = false;   // grid shows search hits, not the gallery page
 
 function picFilterParams() {
   const params = { limit: PIC_PAGE, offset: picOffset };
@@ -26,6 +27,9 @@ function picFilterParams() {
 
 async function loadPics() {
   picOffset = 0;
+  picSearchMode = false;
+  const back = document.getElementById('pic-back-btn');
+  if (back) back.style.display = 'none';
   try {
     const [status, page] = await Promise.all([
       API.picStatus(), API.picItems(picFilterParams()),
@@ -72,11 +76,15 @@ function picTileHtml(item) {
   const badge = state === 'failed'
     ? `<span class="pic-badge" title="${escHtml(item.last_error || '')}">✕</span>`
     : '';
+  const match = item.match
+    ? `<span class="pic-match pic-match-${item.match}">${item.match === 'both' ? '双命中' : item.match === 'semantic' ? '语义' : '关键词'}</span>`
+    : '';
   const media = item.thumb_available
     ? `<img data-src="${item.thumb_url}" alt="${escHtml(item.name)}">`
     : '<div class="pic-placeholder">⏳</div>';
   const cap = item.caption ? `<div class="pic-tile-cap">${escHtml(item.caption)}</div>` : '';
-  return `<div class="pic-tile state-${state}" title="${escHtml(item.rel_path)}">${badge}${media}` +
+  return `<div class="pic-tile state-${state}" title="${escHtml(item.rel_path)}" ` +
+    `onclick="picOpenDetail(${item.id})">${badge}${match}${media}` +
     `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}</div>`;
 }
 
@@ -132,6 +140,57 @@ async function picLoadMore() {
 
 function picFilterChanged() { loadPics(); }
 
+// ── semantic search over photo captions ─────────────────────────────
+
+async function picSemantic() {
+  const q = document.getElementById('pic-semantic').value.trim();
+  if (!q) { loadPics(); return; }
+  picSearchMode = true;
+  try {
+    const r = await API.picSearch(q, 24);
+    picOffset = 0; picTotal = 0; // search view: no paging
+    renderPicGrid(r.results || [], false);
+    const back = document.getElementById('pic-back-btn');
+    if (back) back.style.display = '';
+    const el = document.getElementById('pic-counts');
+    el.textContent = r.note
+      ? `语义搜索：${r.note}`
+      : `「${q}」命中 ${(r.results || []).length} 张（模型 ${(r.model || '仅关键词')}）`;
+  } catch (e) {
+    document.getElementById('pic-counts').textContent = '语义搜索失败：' + e.message;
+  }
+}
+
+function picBackToGallery() {
+  const back = document.getElementById('pic-back-btn');
+  if (back) back.style.display = 'none';
+  loadPics();
+}
+
+// ── detail modal ─────────────────────────────────────────────────────
+
+async function picOpenDetail(id) {
+  try {
+    const it = await API.picItem(id);
+    document.getElementById('pic-detail-title').textContent = it.name;
+    const img = document.getElementById('pic-detail-img');
+    img.src = it.thumb_url || '';
+    img.style.display = it.thumb_available ? '' : 'none';
+    const when = it.taken_at ? `${it.taken_at}（${{exif: '相机时间', exif_naive: '相机时间·无时区', mtime: '文件时间'}[it.taken_at_src] || ''}）` : '时间未知';
+    document.getElementById('pic-detail-meta').innerHTML =
+      `状态：${it.state} · 来源：${escHtml(it.source_name)} · ${escHtml(it.rel_path)}<br>` +
+      `拍摄：${when} · 尺寸：${it.width}×${it.height} · ${Math.round((it.size_bytes || 0) / 1024)}KB<br>` +
+      (it.caption ? `描述：${escHtml(it.caption)}<br>` : '') +
+      (it.tags ? `标签：${escHtml(it.tags)}<br>` : '') +
+      `<code>${escHtml(it.origin_uri || '')}</code>`;
+    document.getElementById('pic-detail-overlay').classList.add('active');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function closePicDetail() {
+  document.getElementById('pic-detail-overlay').classList.remove('active');
+}
+
 function startPicPoll() {
   if (picPollTimer) return;
   picPollTimer = setInterval(async () => {
@@ -141,7 +200,7 @@ function startPicPoll() {
       const status = await API.picStatus();
       renderPicStatusLine(status);
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
-      if (pending) {
+      if (pending && !picSearchMode) {
         const first = await API.picItems(picFilterParams());
         picOffset = 0;
         renderPicGrid(first.items || [], false);

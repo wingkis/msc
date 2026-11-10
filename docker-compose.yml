@@ -63,6 +63,11 @@ services:
       - MSC_ECHO_BASE_URL=${MSC_ECHO_BASE_URL:-}
       - MSC_ECHO_MODEL=${MSC_ECHO_MODEL:-}
       - MSC_ECHO_API_KEY=${MSC_ECHO_API_KEY:-}
+      # Vision card (photo captions): seed only on first use; the card probe
+      # posts a real image, so pointing it at a text-only server fails loudly.
+      - MSC_VISION_BASE_URL=${MSC_VISION_BASE_URL:-}
+      - MSC_VISION_MODEL=${MSC_VISION_MODEL:-}
+      - MSC_VISION_API_KEY=${MSC_VISION_API_KEY:-}
       # Where echo commentaries (save=true) land; empty = the memory directory.
       - MSC_ECHO_DIR=${MSC_ECHO_DIR:-}
       - MSC_RAG_RECALL_TOP=${MSC_RAG_RECALL_TOP:-30}

@@ -22,8 +22,11 @@ from sqlalchemy import or_, text as sql_text
 
 from msc.config import get_settings
 from msc.database import SessionLocal
-from msc.models import PicItem, PicSource
+from msc.models import PicItem, PicSource, PicVector
 from msc.picsources import SourceError, build_source
+from msc.services import llm, rag_providers
+from msc.services.model_config import get_config, note_result
+from msc.services.rag import pack_vec
 from msc.services.pic_index import (
     content_hash, guess_kind, pic_setting, taken_at_from_image,
 )
@@ -135,8 +138,20 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 thumb.save(target, "WEBP", quality=80)
             item.thumb_path = rel_thumb
-            item.state = "thumb_ready"
             item.last_error = None
+            # Burst shots and re-saved copies: if a sibling already has a
+            # caption under the same content hash, inherit it — one vision
+            # call saved per duplicate.
+            twin = (db.query(PicItem)
+                    .filter(PicItem.content_hash == item.content_hash,
+                            PicItem.id != item.id, PicItem.caption != "")
+                    .first()) if item.content_hash else None
+            if twin is not None:
+                item.caption, item.tags = twin.caption, twin.tags
+                item.state = "captioned"
+                report["reused"] = report.get("reused", 0) + 1
+            else:
+                item.state = "thumb_ready"
             item.updated_at = _now().isoformat()
             report["thumbs"] += 1
         except Exception as exc:
@@ -148,6 +163,137 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
             item.updated_at = _now().isoformat()
             report["failed"] += 1
         db.commit()  # one tile lands while the user watches, before the next read
+
+
+_CAPTION_SYSTEM = (
+    "你是照片库的说明员。仔细看这张照片，最多输出两行：\n"
+    "第一行：一句具体的中文描述（画面里的人/物/场景/动作/光线/可见文字）。\n"
+    "第二行（可选）：以「标签: 」开头，给 3-6 个检索标签。\n"
+    "不要寒暄，不确定的细节不要编造。直接输出这两行。")
+
+
+def _parse_caption(text: str):
+    """First non-empty line is the caption; a 标签:/tags: line becomes tags."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return "", ""
+    caption = lines[0][:400]
+    tags = ""
+    for line in lines[1:]:
+        low = line.lower()
+        for mark in ("标签:", "标签：", "tags:", "tags："):
+            if low.startswith(mark):
+                tags = line[len(mark):].strip()[:200]
+                break
+    return caption, tags
+
+
+def _captions(db, report: dict) -> None:
+    """thumb_ready → captioned on the vision card, one photo per call.
+
+    The batch is 1 by default and the whole stage stops on the first model
+    error (card noted, retry_at backoff) — a busy or down multimodal endpoint
+    must not burn the tick, and the states stay queued for the next one.
+    """
+    cfg = get_config(db, "vision")
+    if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
+        return  # keep the queue; configuring the card backfills later
+
+    batch = max(1, pic_setting(db, "caption_batch"))
+    now_iso = _now().isoformat()
+    rows = (db.query(PicItem)
+            .filter(PicItem.state == "thumb_ready", PicItem.archived == 0,
+                    or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
+            .order_by(PicItem.id).limit(batch).all())
+    for item in rows:
+        thumb = Path(settings.pic_dir) / (item.thumb_path or "")
+        if not item.thumb_path or not thumb.is_file():
+            _backoff(item, SourceError("缩略图文件缺失"))
+            db.commit()
+            continue
+        try:
+            answer = llm.chat(cfg, [
+                {"role": "system", "content": _CAPTION_SYSTEM},
+                {"role": "user", "content": [
+                    llm.image_part(thumb.read_bytes(), "image/webp"),
+                    {"type": "text", "text": f"文件名：{item.name}（目录：{item.rel_path.rsplit('/', 1)[0] or '/'}）"},
+                ]},
+            ], max_tokens=int(cfg.max_tokens or 600))
+        except llm.LLMError as exc:
+            note_result(db, cfg, error=str(exc))
+            _backoff(item, exc)
+            db.commit()
+            report["errors"].append(f"caption: {exc}")
+            return  # endpoint unhappy: stop, retry next tick
+        caption, tags = _parse_caption(answer["text"])
+        if not caption:
+            _backoff(item, llm.LLMError("模型没有给出描述"))
+            db.commit()
+            continue
+        item.caption, item.tags = caption, tags
+        item.state, item.last_error = "captioned", None
+        item.updated_at = _now().isoformat()
+        report["captioned"] = report.get("captioned", 0) + 1
+        db.commit()
+    note_result(db, cfg)
+
+
+def _embeds(db, report: dict) -> None:
+    """captioned → embedded with the active embed card; PicVector is keyed by
+    model exactly like the memory embeddings, and an embed-card switch
+    demotes stragglers so the self-heal re-embeds them."""
+    cfg = get_config(db, "embed")
+    if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
+        return
+    model_name = cfg.model.strip()
+
+    # Self-heal: embedded rows with no vector for the current model fall back
+    # to captioned and get re-embedded below (card switch, lost write).
+    db.execute(sql_text(
+        "UPDATE pic_items SET state = 'captioned' WHERE state = 'embedded' "
+        "AND id NOT IN (SELECT pic_id FROM pic_vectors WHERE model = :p0)"),
+        {"p0": model_name})
+    db.commit()
+
+    batch = max(1, pic_setting(db, "embed_batch"))
+    rows = (db.query(PicItem).filter(PicItem.state == "captioned", PicItem.archived == 0)
+            .order_by(PicItem.id).limit(batch).all())
+    if not rows:
+        return
+
+    texts, pairs = [], []
+    for item in rows:
+        if (item.caption or "").strip():
+            texts.append(item.caption[:1000])
+            pairs.append(item)
+        else:
+            item.state, item.last_error = "failed", "没有可嵌入的描述"
+            report["failed"] += 1
+    db.commit()
+    if not texts:
+        return
+
+    try:
+        vectors = rag_providers.embed(cfg, texts)
+    except llm.LLMError as exc:
+        note_result(db, cfg, error=str(exc))
+        report["errors"].append(f"embed: {exc}")
+        return  # states stay captioned; retried next tick
+
+    now_iso = _now().isoformat()
+    for item, vec in zip(pairs, vectors):
+        payload = pack_vec(vec)
+        row = db.get(PicVector, (item.id, model_name))
+        if row is None:
+            db.add(PicVector(pic_id=item.id, model=model_name, dim=len(vec),
+                             vec=payload, embedded_at=now_iso))
+        else:
+            row.dim, row.vec, row.embedded_at = len(vec), payload, now_iso
+        item.state = "embedded"
+        item.updated_at = now_iso
+        report["embedded"] = report.get("embedded", 0) + 1
+    db.commit()
+    note_result(db, cfg)
 
 
 def run_once() -> dict | None:
@@ -172,7 +318,11 @@ def run_once() -> dict | None:
                 _thumbs(db, src, adapter, report)
             finally:
                 adapter.close()
-        worked = report["scanned"] or report["thumbs"] or report["failed"] or report["errors"]
+        _captions(db, report)
+        _embeds(db, report)
+        worked = (report["scanned"] or report["thumbs"] or report["failed"]
+                  or report.get("captioned") or report.get("embedded")
+                  or report["errors"])
         return report if worked else None
     except Exception as exc:  # the loop must survive anything
         db.rollback()
@@ -188,9 +338,13 @@ def start_pic_worker(interval: int = 15) -> None:
         try:
             result = run_once()
             if result and not result.get("error"):
-                touched = result["scanned"] + result["thumbs"] + result["failed"]
+                touched = (result["scanned"] + result["thumbs"] + result["failed"]
+                           + result.get("captioned", 0) + result.get("embedded", 0)
+                           + result.get("reused", 0))
                 if touched or result["errors"]:
                     print(f"PIC: discovered {result['scanned']}, thumbs {result['thumbs']}, "
+                          f"captioned {result.get('captioned', 0)}, "
+                          f"embedded {result.get('embedded', 0)}, "
                           f"failed {result['failed']}"
                           + (f", errors: {result['errors'][:2]}" if result["errors"] else ""))
         except Exception as exc:
