@@ -197,3 +197,20 @@ def test_graph_view_can_cap_edges_per_node(client):
     assert "stabilizationIterationsDone" in js
     css = (UI / "css" / "app.css").read_text(encoding="utf-8")
     assert ".graph-note" in css
+
+
+def test_graph_view_can_filter_edges_by_relation_type(client):
+    """Degree caps hide the busiest edges; type filters hide whole classes of
+    them, and 「清除自动关联」 deletes only what the auto-linker wrote. The
+    control, the API param and the delete route are one contract."""
+    html, js = _sources()
+    for marker in ('id="graph-relation-filters"', 'onclick="clearAutoLinks()"'):
+        assert marker in html, marker
+    assert "renderRelationFilters" in js and "graphRelationToggled" in js
+    assert "edges_by_type" in js, "the checkbox counts come from the response"
+    assert "getGraph(center, maxDegree, relations)" in js    # api.js takes the whitelist
+    assert "params.relations" in js and "API.getGraph(null, cap, graphRelationsParam())" in js
+    assert "`/memories/graph/auto-links`" in js or "'/memories/graph/auto-links'" in js
+    assert "clearAutoLinks()" in js
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    assert ".graph-filters" in css

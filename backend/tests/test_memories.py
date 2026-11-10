@@ -312,3 +312,74 @@ def test_graph_degree_cap_prefers_curated_relations(client):
     capped = client.get("/api/v1/memories/graph", params={"max_degree": 1}).json()
     mine = [e for e in capped["edges"] if first in (e["source"], e["target"])]
     assert len(mine) == 1 and mine[0]["relation_type"] == "related"
+
+
+# ── Relation types: hide the noise, or clear it outright ─────────────
+
+def _keyword_trio(client, prefix):
+    """Three memories sharing exact rare words, so auto-link connects exactly
+    this trio no matter what else the shared test database holds."""
+    body = "archival retrieval provenance"
+    slugs = []
+    for i in range(3):
+        created = client.post("/api/v1/memories", json={
+            "name": f"{prefix.title()} Node {i}", "slug": f"{prefix}-node-{i}",
+            "body": body, "category": "project", "priority": "medium"})
+        slugs.append(created.json()["slug"])
+    assert client.post("/api/v1/memories/graph/auto-link",
+                       params={"min_freq": 2, "max_coverage": 1.0,
+                               "min_shared": 2}).status_code == 200
+    return slugs
+
+
+def test_graph_relations_param_hides_auto_links(client):
+    """?relations= is a whitelist: hiding 2.3k keyword edges must leave every
+    node on the canvas, only the noise goes away."""
+    slugs = _keyword_trio(client, "rel-filter")
+    full = client.get("/api/v1/memories/graph").json()
+    ids = {full["nodes"][i]["id"] for i in range(len(full["nodes"]))}
+    by_slug = _graph_ids_by_slug(full)
+    mine = [(by_slug[slugs[0]], by_slug[slugs[1]])]
+    assert any(e["relation_type"] == "keyword" and
+               {e["source"], e["target"]} == set(mine[0]) for e in full["edges"])
+
+    curated = client.get("/api/v1/memories/graph",
+                         params={"relations": "related,summarizes,depends_on"}).json()
+    assert all(e["relation_type"] != "keyword" for e in curated["edges"])
+    assert len(curated["nodes"]) == len(full["nodes"])
+    # The checkbox labels need the counts they are hiding.
+    assert curated["edges_by_type"].get("keyword", 0) > 0
+    assert curated["relations"] == ["depends_on", "related", "summarizes"]
+    assert ids == {n["id"] for n in curated["nodes"]}
+
+
+def test_graph_relations_param_unknown_type_is_empty_not_rejected(client):
+    data = client.get("/api/v1/memories/graph", params={"relations": "no-such-type"}).json()
+    assert data["edges"] == [] and data["edges_total"] == 0
+    assert data["nodes"], "nodes are never dropped by an edge filter"
+
+
+def test_clear_auto_links_keeps_curated_relations(client):
+    slugs = _keyword_trio(client, "rel-clear")
+    assert client.post(f"/api/v1/memories/{slugs[0]}/relate?target={slugs[1]}").status_code == 200
+
+    before = client.get("/api/v1/memories/graph").json()["edges_by_type"]
+    assert before.get("keyword", 0) > 0
+
+    cleared = client.delete("/api/v1/memories/graph/auto-links")
+    assert cleared.status_code == 200, cleared.text
+    body = cleared.json()
+    assert body["relation_type"] == "keyword"
+    # /relate rewrites only one direction of an existing pair, so a pair can
+    # hold one keyword row and one curated row: count what actually went.
+    assert 0 < body["rows_deleted"] <= before["keyword"] * 2
+    assert body["edges_deleted"] == body["rows_deleted"] // 2
+
+    after = client.get("/api/v1/memories/graph").json()
+    assert "keyword" not in after["edges_by_type"]
+    assert after["edges_by_type"].get("related", 0) > 0, "a hand-made relation went missing"
+    assert any(r["relation_type"] == "related"
+               for r in client.get(f"/api/v1/memories/{slugs[0]}/relate").json())
+
+    again = client.delete("/api/v1/memories/graph/auto-links").json()
+    assert again["edges_deleted"] == 0 and again["rows_deleted"] == 0

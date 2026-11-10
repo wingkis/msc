@@ -317,6 +317,9 @@ def get_graph(center: Optional[str] = Query(None),
               max_degree: int = Query(0, ge=0, le=100,
                                       description="cap edges per node (0 = unlimited); "
                                                   "curated relations outrank auto-linked ones"),
+              relations: str = Query("", description="comma-separated relation types to show "
+                                                    "(empty = all; ?relations=related,summarizes "
+                                                    "hides every auto-linked keyword edge)"),
               db: Session = Depends(get_db)):
     """Get graph data for Vis.js visualization."""
     if center:
@@ -336,6 +339,8 @@ def get_graph(center: Optional[str] = Query(None),
              for mem in memories]
     memory_ids = {m.id for m in memories}
     # Relations are stored in both directions, so fold each pair into one edge.
+    wanted = {name.strip() for name in relations.split(",") if name.strip()}
+    by_type: dict = {}
     candidates, seen = [], set()
     for rel in db.query(MemoryRelation).filter(
         MemoryRelation.memory_id_a.in_(memory_ids), MemoryRelation.memory_id_b.in_(memory_ids)
@@ -344,11 +349,17 @@ def get_graph(center: Optional[str] = Query(None),
         if key in seen:
             continue
         seen.add(key)
+        # Counts stay type-complete even when a filter hides them: the Web UI
+        # draws one checkbox per type, with the number behind each name.
+        by_type[rel.relation_type] = by_type.get(rel.relation_type, 0) + 1
+        if wanted and rel.relation_type not in wanted:
+            continue
         candidates.append((_RELATION_RANK.get(rel.relation_type, 9), rel.created_at or "", rel))
 
     edges = _cap_degrees(candidates, max_degree)
     return GraphResponse(nodes=nodes, edges=edges, edges_total=len(candidates),
-                         edges_dropped=len(candidates) - len(edges), max_degree=max_degree)
+                         edges_dropped=len(candidates) - len(edges), max_degree=max_degree,
+                         edges_by_type=by_type, relations=sorted(wanted))
 
 
 @router.post("/graph/auto-link")
@@ -373,6 +384,24 @@ def auto_link_graph(
     _guard_write()
     return build_keyword_links(db, min_freq=min_freq, max_coverage=max_coverage,
                                min_shared=min_shared, rebuild=rebuild)
+
+
+@router.delete("/graph/auto-links")
+def clear_auto_links(request: Request = None, db: Session = Depends(get_db)):
+    """Drop every auto-created keyword edge and nothing else.
+
+    The auto-linker is a plain function of the current corpus, so this is not
+    destructive: 「自动关联」 rebuilds the same edges on the next pass. What it
+    protects is the hand-made side — a curated relation is never removed here,
+    which is exactly why this route only matches relation_type 'keyword'.
+    """
+    _require_auth(request, db)
+    _guard_write()
+    rows = db.query(MemoryRelation).filter(
+        MemoryRelation.relation_type == "keyword").delete(synchronize_session=False)
+    db.commit()
+    # Edges are stored in both directions, so report both numbers.
+    return {"relation_type": "keyword", "rows_deleted": rows, "edges_deleted": rows // 2}
 
 
 # ── Get memory detail ─────────────────────────────────────────────────

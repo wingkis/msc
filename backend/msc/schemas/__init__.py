@@ -1,7 +1,7 @@
 """Pydantic schemas for API request/response."""
 
 from __future__ import annotations
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -98,6 +98,10 @@ class GraphResponse(BaseModel):
     edges_total: int = 0
     edges_dropped: int = 0
     max_degree: int = Field(0, description="the cap that was applied; 0 = unlimited")
+    # Every relation type present with its edge count, so a caller can decide
+    # what to hide instead of guessing which kinds the auto-linker wrote.
+    edges_by_type: Dict[str, int] = Field(default_factory=dict)
+    relations: List[str] = Field(default_factory=list, description="types the caller asked for; empty = all")
 
 
 class RegisterRequest(BaseModel):

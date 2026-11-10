@@ -66,6 +66,71 @@ function graphDegreeChanged() {
   loadGraph();
 }
 
+// Which relation types to draw. null means "everything"; the moment a box is
+// unchecked it becomes an explicit whitelist, because 2.3k keyword edges next
+// to 21 curated ones is what makes this view unreadable in the first place.
+const GRAPH_RELATION_LABELS = {
+  keyword: '自动关联', summarizes: '摘要', related: '关联',
+  relates_to: '关联', depends_on: '依赖'
+};
+let graphRelationWanted = null;
+
+function graphRelationsParam() {
+  return graphRelationWanted ? Array.from(graphRelationWanted) : [];
+}
+
+function renderRelationFilters(byType) {
+  const host = document.getElementById('graph-relation-filters');
+  if (!host) return;
+  const types = Object.keys(byType).sort(
+    (a, b) => byType[b] - byType[a] || a.localeCompare(b));
+  if (types.length === 0) { host.innerHTML = ''; return; }
+  host.innerHTML = types.map(type => {
+    const checked = !graphRelationWanted || graphRelationWanted.has(type);
+    const label = GRAPH_RELATION_LABELS[type] || type;
+    return `<label title="${escHtml(type)}"><input type="checkbox" data-type="${escHtml(type)}"` +
+      ` ${checked ? 'checked' : ''} onchange="graphRelationToggled()">` +
+      `${escHtml(label)}<span class="graph-filter-count">${byType[type]}</span></label>`;
+  }).join('');
+}
+
+function graphRelationToggled() {
+  const host = document.getElementById('graph-relation-filters');
+  if (!host) { loadGraph(); return; }
+  const boxes = Array.from(host.querySelectorAll('input[type=checkbox]'));
+  const on = boxes.filter(box => box.checked).map(box => box.dataset.type);
+  graphRelationWanted = (on.length === boxes.length || on.length === 0) ? null : new Set(on);
+  loadGraph();
+}
+
+function graphNoteText(data, cap) {
+  const byType = data.edges_by_type || {};
+  const wanted = graphRelationsParam();
+  const hidden = Object.keys(byType)
+    .filter(type => wanted && !wanted.has(type))
+    .reduce((sum, type) => sum + byType[type], 0);
+  const total = (data.edges_total || data.edges.length) + hidden;
+  if (data.edges.length === total) return `${data.edges.length} 条关联`;
+  const why = [];
+  if (hidden) why.push(`按类型隐藏 ${hidden} 条`);
+  if (data.edges_dropped) why.push(`每节点 ≤${cap}，省略 ${data.edges_dropped} 条`);
+  return `显示 ${data.edges.length} / ${total} 条关联（${why.join('，')}）`;
+}
+
+async function clearAutoLinks() {
+  const byType = (allGraphData && allGraphData.edges_by_type) || {};
+  const count = byType.keyword || 0;
+  if (!confirm(`清除 ${count} 条自动关联（keyword）？
+手写的关联不会被删；再点「自动关联」可按当前记忆重新生成。`)) return;
+  try {
+    const result = await API.clearAutoLinks();
+    toast(`已清除 ${result.edges_deleted} 条自动关联`, 'success');
+    await loadGraph();
+  } catch (e) {
+    toast('清除自动关联失败: ' + e.message, 'error');
+  }
+}
+
 function relayoutGraph() {
   if (!graphNetwork) { loadGraph(); return; }
   setGraphNote('重新布局中…');
@@ -78,15 +143,12 @@ function relayoutGraph() {
 async function loadGraph() {
   const cap = graphDegreeCap();
   try {
-    const data = await API.getGraph(null, cap);
+    const data = await API.getGraph(null, cap, graphRelationsParam());
     allGraphData = data;
     filteredGraphData = data;
+    renderRelationFilters(data.edges_by_type || {});
     renderGraph(data);
-    if (data.edges_total != null && data.edges_total > data.edges.length) {
-      setGraphNote(`显示 ${data.edges.length} / ${data.edges_total} 条关联（每节点 ≤${cap}，省略 ${data.edges_dropped} 条）`);
-    } else {
-      setGraphNote(`${data.edges.length} 条关联`);
-    }
+    setGraphNote(graphNoteText(data, cap));
   } catch (e) {
     console.error('Graph load error:', e);
     renderGraphFallback(allGraphData, String(e.message || e));

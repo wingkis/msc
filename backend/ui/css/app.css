@@ -584,6 +584,10 @@ a:hover { text-decoration-color: currentColor; }
 .graph-controls .search-box.small { flex: 1 1 160px; min-width: 0; }
 /* How many of the stored edges are actually drawn, and what the layout is
    doing right now. */
+.graph-filters { display: inline-flex; gap: 10px; align-items: center; color: var(--text-muted); }
+.graph-filters label { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+.graph-filters input { accent-color: var(--text-muted); width: 12px; height: 12px; margin: 0; }
+.graph-filters .graph-filter-count { color: var(--text-dim); }
 .graph-note { color: var(--text-dim); margin-left: auto; white-space: nowrap; }
 .graph-container {
   flex: 1;

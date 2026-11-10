@@ -85,7 +85,9 @@ READ
   GET  /meta                          vocabularies, tags, counts
   GET  /tags                          tag names + usage counts
   GET  /stats                         counts by category/priority/source
-  GET  /memories/graph                relation graph (?max_degree=N caps edges per node; 0 = all)
+  GET  /memories/graph                relation graph (?max_degree=N caps edges per node, 0 = all;
+                                      ?relations=a,b shows only those relation types; response
+                                      carries edges_by_type so you know what is what)
   GET  /versions/{{slug}}             edit history (only the latest snapshot is kept)
 
 WRITE
@@ -100,6 +102,8 @@ WRITE
                                       min_shared=3, rebuild=false)
   DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge)
   DELETE /memories/archived           hard-purge every archived memory at once
+  DELETE /memories/graph/auto-links   drop every auto-linked "keyword" edge (hand-made
+                                      relations are untouched; /graph/auto-link rebuilds them)
   POST   /memories/{{slug}}/restore   undo a soft delete
   POST   /backup/backups/{{filename}}/restore  replay a backup into DB + files
 

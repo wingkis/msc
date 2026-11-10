@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.5（msc-pic 分支）
+
+- **按关系类型过滤图谱连线** — 度数上限只裁掉最忙的那些边，噪声本身还在。`GET /api/v1/memories/graph` 新增 `?relations=a,b`（逗号白名单，空＝全部；未知类型只返回空边集，不报 422），响应新增 `edges_by_type`（每种类型的边数）与 `relations`（本次生效的白名单）。图谱页据此渲染一排勾选框：自动关联 / 摘要 / 关联 / 依赖，带条数，默认全勾选，取消即重载。`#graph-note` 会写「显示 X / Y 条关联（按类型隐藏 N 条，每节点 ≤6，省略 M 条）」。过滤只裁边，节点永远不丢。
+- **一键清除自动关联** — 新增 `DELETE /api/v1/memories/graph/auto-links`：只删 `relation_type='keyword'` 的行（手写关联一律不动），返回 `rows_deleted` / `edges_deleted`。这不是破坏性操作——自动关联是当前语料的纯函数，再点一次「自动关联」即按现记忆重建。图谱控制条加「清除自动关联」按钮，二次确认并说明可重建。根因即此：现网 2341 条 `keyword` 边里绝大多数是共同词噪声，源头清掉比每次裁边省事。
+- `/help` 同步这两处（`?relations=`、`DELETE /memories/graph/auto-links`）。
+- 测试 156 个（新增：`?relations=` 隐藏自动边但节点数不变且 `edges_by_type` 仍给出被隐藏的条数、未知类型返回空边不报错、清除只删 keyword 行并保留手工 `related` 且幂等再删返回 0；界面侧 `test_graph_view_can_filter_edges_by_relation_type` 钉住勾选框容器、清除按钮、`params.relations` 与 DELETE 路由）。
+
 ### 2.5.4（msc-pic 分支）
 
 - **图谱不再疯转** — 现网 84 节点 / 2363 条边（其中 2341 条是自动关联产生的 `keyword` 边），最大度数 81：枢纽节点让 vis-network 的物理模拟永不收敛，整张图一直在转。`GET /api/v1/memories/graph` 新增 `max_degree`（默认 0＝不限制，agent 契约不变）：按类型权重再时间裁剪 `depends_on > summarizes > relates_to/related > keyword`，同权重取最新，且只有两端都还有余量才保留该边；响应新增 `edges_total` / `edges_dropped` / `max_degree`，度数上限只裁边、从不删节点。

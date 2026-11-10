@@ -119,16 +119,21 @@ const API = {
   // Graph / vocab
   // maxDegree caps edges per node server-side: the auto-linker can produce
   // thousands of keyword edges and one hub then spins the layout forever.
-  getGraph(center, maxDegree) {
+  getGraph(center, maxDegree, relations) {
     const params = {};
     if (center) params.center = center;
     if (maxDegree) params.max_degree = maxDegree;
+    // Empty = every relation type; otherwise only the listed ones come back.
+    if (relations && relations.length) params.relations = relations.join(',');
     const qs = new URLSearchParams(params).toString();
     return apiFetch('/memories/graph' + (qs ? '?' + qs : ''));
   },
   autoLinkGraph({ minFreq = 3, maxCoverage = 0.3, minShared = 3, rebuild = false } = {}) {
     return apiFetch(`/memories/graph/auto-link?min_freq=${minFreq}&max_coverage=${maxCoverage}&min_shared=${minShared}&rebuild=${rebuild}`,
       { method: 'POST' });
+  },
+  clearAutoLinks() {
+    return apiFetch('/memories/graph/auto-links', { method: 'DELETE' });
   },
   listTags() {
     return apiFetch('/tags');

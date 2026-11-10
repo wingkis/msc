@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.4">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.5">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -265,6 +265,8 @@
           </select>
           <button class="btn btn-primary btn-sm" onclick="autoLinkGraph()"
                   title="精确整词匹配: 记忆对共享 ≥3 个高频关键词才建边; 覆盖 >30% 的通用词排除 (幂等)">自动关联</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearAutoLinks()"
+                  title="只删自动生成的 keyword 关联，手写的关联一律不动；再点一次「自动关联」即可重建">清除自动关联</button>
           <select id="graph-degree-select" onchange="graphDegreeChanged()"
                   title="每个节点最多显示几条关联。自动关联会造出上千条 keyword 边，一个枢纽节点就能让布局永远转下去">
             <option value="3">每节点 ≤3 关联</option>
@@ -274,6 +276,8 @@
             <option value="12">每节点 ≤12 关联</option>
             <option value="0">不限制（会很挤）</option>
           </select>
+          <span id="graph-relation-filters" class="graph-filters"
+                title="按关系类型显示连线：取消勾选即隐藏该类型的边"></span>
           <button class="btn btn-ghost btn-sm" onclick="relayoutGraph()" title="重新排一次，排完自动冻结">重新布局</button>
           <button class="btn btn-ghost btn-sm" onclick="fitGraph()">适应视图</button>
           <button class="btn btn-ghost btn-sm" onclick="reloadGraph()">刷新</button>
@@ -938,10 +942,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.4"></script>
-  <script src="/ui/js/app.js?v=2.5.4"></script>
-  <script src="/ui/js/graph.js?v=2.5.4"></script>
-  <script src="/ui/js/pic.js?v=2.5.4"></script>
+  <script src="/ui/js/api.js?v=2.5.5"></script>
+  <script src="/ui/js/app.js?v=2.5.5"></script>
+  <script src="/ui/js/graph.js?v=2.5.5"></script>
+  <script src="/ui/js/pic.js?v=2.5.5"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });
