@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Bumped together by the CLI, the Web UI and /api/v1/health so a mismatch is
 # impossible to miss.
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 
 
 class Settings(BaseSettings):
