@@ -46,3 +46,24 @@ def test_api_client_covers_the_endpoints_the_ui_uses(client):
     methods = set(re.findall(r"^\s{2}(\w+)\s*\(", js.split("const API = {", 1)[1], re.M))
     used = set(re.findall(r"\bAPI\.(\w+)", js))
     assert used - methods == set()
+
+
+def test_photos_page_ships_the_2_4_6_structure(client):
+    """pic.js reaches for these nodes: view tabs (not a view <select>), a
+    sentinel that actually drives paging, the floating action bar, the per-view
+    empty state and the detail modal's nav. A silent drop here is a half-built
+    gallery, so the contract lives in the suite."""
+    html, js = _sources()
+    for marker in ('class="pic-tab"', 'data-view="trash"', 'id="pic-sentinel"',
+                   'id="pic-loadmore"', 'class="pic-actionbar"', 'id="pic-empty"',
+                   'id="pic-detail-orig-btn"', 'id="pic-detail-download"',
+                   'id="pic-detail-tags"', 'onkeydown="picSemanticKey(event)"',
+                   'class="pic-src-list"'):
+        assert marker in html, marker
+    assert 'id="pic-view"' not in html          # the old view dropdown is gone
+    assert "picViewChanged" not in html + js    # and so is its handler
+
+    for call in ("initPicSentinel", "picLoadMore()", "picSetView", "picDetailStep",
+                 "picToggleOriginal", "picRefreshTail", "picUpdateEmptyState",
+                 "pic-chip", "is-selected"):
+        assert call in js, call

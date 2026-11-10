@@ -10,9 +10,13 @@ let picTotal = 0;
 const PIC_PAGE = 200;
 let picObserver = null;
 let picPollTimer = null;
+let picSentinelOn = false;
+let picLoadingMore = false;
 let picSearchMode = false;   // grid shows search hits, not the gallery page
 let picView = '';            // '' gallery | trash | missing
 let picCurrentId = null;     // detail modal target
+let picLastStatus = null;    // last /pic/status payload, for cheap re-renders
+let picFoldersStamp = '';    // fingerprint of the folder list now in the select
 const picSelected = new Set();
 
 function picFilterParams() {
@@ -40,7 +44,6 @@ function picResetView() {
   document.getElementById('pic-month').value = '';
   document.getElementById('pic-search').value = '';
   document.getElementById('pic-semantic').value = '';
-  document.getElementById('pic-view').value = '';
   picView = '';
   picSearchMode = false;
   picSelected.clear();
@@ -50,30 +53,49 @@ function picResetView() {
   if (back) back.style.display = 'none';
   const folderSel = document.getElementById('pic-folder');
   if (folderSel) { folderSel.innerHTML = '<option value="">全部目录</option>'; folderSel.disabled = true; }
+  picFoldersStamp = '';
+  updatePicTabs();
   updatePicActions();
   loadPics();
 }
 
-function picViewChanged() {
-  picView = document.getElementById('pic-view').value;
+// 相册/缺失/回收站 are tabs, not a <select>: one state variable, and the tab
+// strip plus the trash-only button follow it.
+function picSetView(view) {
+  picView = view;
+  updatePicTabs();
   const empty = document.getElementById('pic-empty-trash-btn');
-  if (empty) empty.style.display = picView === 'trash' ? '' : 'none';
+  if (empty) empty.style.display = view === 'trash' ? '' : 'none';
   loadPics();
 }
 
-async function loadPicFolders() {
+function updatePicTabs() {
+  document.querySelectorAll('.pic-tab').forEach(tab =>
+    tab.classList.toggle('active', (tab.dataset.view || '') === picView));
+}
+
+async function loadPicFolders(status) {
   const sel = document.getElementById('pic-folder');
   if (!sel) return;
   const current = sel.value;
-  sel.innerHTML = '<option value="">全部目录</option>';
   const src = document.getElementById('pic-source-filter').value;
   if (!src) { sel.disabled = true; return; }
   sel.disabled = false;
+  // A source can carry tens of thousands of rel_paths and this endpoint walks
+  // all of them to fill the dropdown. Only refetch when that source actually
+  // moved: its last completed walk plus its live row count.
+  const row = ((status && status.sources) || []).find(s => String(s.id) === src);
+  const counts = (row && row.counts) || {};
+  const total = Object.keys(counts).reduce((sum, key) => sum + (counts[key] || 0), 0);
+  const stamp = `${src}|${(row && row.last_scan_at) || ''}|${total}`;
+  if (stamp === picFoldersStamp && sel.options.length > 1) return;
+  sel.innerHTML = '<option value="">全部目录</option>';
   try {
     const r = await API.picFolders(src);
     sel.innerHTML = '<option value="">全部目录</option>' + (r.folders || []).map(f =>
       `<option value="${escHtml(f)}">${escHtml(f)}</option>`).join('');
     if (current) sel.value = current;
+    picFoldersStamp = stamp;
   } catch (e) { /* no folders yet */ }
 }
 
@@ -82,41 +104,58 @@ async function loadPics() {
   picSearchMode = false;
   picSelected.clear();
   updatePicActions();
+  updatePicTabs();
+  initPicSentinel();
   const back = document.getElementById('pic-back-btn');
   if (back) back.style.display = 'none';
   try {
     const [status, page] = await Promise.all([
       API.picStatus(), API.picItems(picFilterParams()),
     ]);
-    renderPicStatusLine(status);
     fillPicSourceFilter(status.sources || []);
-    loadPicFolders();
+    loadPicFolders(status);
     renderPicGrid(page.items || [], false);
     picOffset = (page.items || []).length;
     picTotal = page.total || 0;
+    // Counts last: the "显示 x/total" chip reads the paging window above.
+    renderPicStatusLine(status);
   } catch (e) {
     const note = document.getElementById('pic-note');
     if (note) note.textContent = '照片功能不可用：' + e.message;
+    const empty = document.getElementById('pic-empty');
+    const text = document.getElementById('pic-empty-text');
+    const hint = document.getElementById('pic-empty-hint');
+    if (empty) empty.style.display = '';
+    if (text) text.textContent = '照片功能不可用';
+    if (hint) hint.textContent = e.message;
   }
   startPicPoll();
+}
+
+function picChip(cls, html) {
+  return `<span class="pic-chip ${cls}">${html}</span>`;
 }
 
 function renderPicStatusLine(status) {
   const el = document.getElementById('pic-counts');
   if (!el) return;
+  if (status) picLastStatus = status;
+  status = status || picLastStatus || {};
   const c = status.counts || {};
   const parts = [];
-  if (c.embedded) parts.push(`已索引 ${c.embedded}`);
-  if (c.captioned) parts.push(`待嵌入 ${c.captioned}`);
-  if (c.thumb_ready) parts.push(`待描述 ${c.thumb_ready}`);
-  if (c.discovered) parts.push(`待缩略图 ${c.discovered}`);
-  if (c.failed) parts.push(`失败 ${c.failed}`);
+  if (c.embedded) parts.push(picChip('pic-chip-ok', `已索引 <b>${c.embedded}</b>`));
+  if (c.captioned) parts.push(picChip('pic-chip-warn', `待嵌入 <b>${c.captioned}</b>`));
+  if (c.thumb_ready) parts.push(picChip('pic-chip-warn', `待描述 <b>${c.thumb_ready}</b>`));
+  if (c.discovered) parts.push(picChip('pic-chip-warn', `待缩略图 <b>${c.discovered}</b>`));
+  if (c.failed) parts.push(picChip('pic-chip-bad', `失败 <b>${c.failed}</b>`));
   const scanning = (status.sources || []).filter(s => s.state === 'scanning').length;
-  if (status.missing) parts.push(`缺失 ${status.missing}`);
-  if (status.trashed) parts.push(`回收站 ${status.trashed}`);
-  el.textContent = (parts.length ? parts.join(' · ') : '还没有照片') +
-    (scanning ? ` · ${scanning} 个源正在扫描` : '') +
-    (picTotal ? `（显示 ${picOffset}/${picTotal}）` : '');
+  if (status.missing) parts.push(picChip('pic-chip-dim', `缺失 <b>${status.missing}</b>`));
+  if (status.trashed) parts.push(picChip('pic-chip-dim', `回收站 <b>${status.trashed}</b>`));
+  if (scanning) parts.push(picChip('pic-chip-live', `${scanning} 个源正在扫描`));
+  if (picTotal && !picSearchMode) {
+    parts.push(picChip('pic-chip-dim', `显示 <b>${picOffset}</b>/${picTotal}`));
+  }
+  el.innerHTML = parts.length ? parts.join('') : picChip('pic-chip-dim', '还没有照片');
 }
 
 function fillPicSourceFilter(sources) {
@@ -136,7 +175,9 @@ function picTileHtml(item) {
   const match = item.match
     ? `<span class="pic-match pic-match-${item.match}">${item.match === 'both' ? '双命中' : item.match === 'semantic' ? '语义' : '关键词'}</span>`
     : '';
-  const media = item.thumb_available
+  // Flags live inside the media box: they overlay the photo (or the skeleton)
+  // instead of drifting over the caption row below it.
+  const inner = item.thumb_available
     ? `<img data-src="${item.thumb_url}" alt="${escHtml(item.name)}">`
     : '<div class="pic-placeholder">⏳</div>';
   const cap = item.caption ? `<div class="pic-tile-cap">${escHtml(item.caption)}</div>` : '';
@@ -154,9 +195,12 @@ function picTileHtml(item) {
       `<button class="btn" onclick="picKeepOne(${item.id})">保留</button>` +
       `<button class="btn btn-danger" onclick="picForgetOne(${item.id})">清除</button></div>`;
   }
-  return `<div class="pic-tile state-${state}" data-id="${item.id}" title="${escHtml(item.rel_path)}" ` +
-    `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${dup}${media}` +
+  const info = `<div class="pic-tile-info">` +
     `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${tileBtns}</div>`;
+  return `<div class="pic-tile state-${state}${picSelected.has(item.id) ? ' is-selected' : ''}" ` +
+    `data-id="${item.id}" title="${escHtml(item.rel_path)}" ` +
+    `onclick="picOpenDetail(${item.id})">` +
+    `<div class="pic-tile-media">${inner}${check}${badge}${dup}${match}</div>${info}</div>`;
 }
 
 // Poll updates in place: same ids in the same order → mutate each tile's
@@ -189,11 +233,13 @@ function picUpdateTile(tile, item) {
     tile.outerHTML = picTileHtml(item);
     return;
   }
-  tile.className = 'pic-tile state-' + state;
+  tile.className = 'pic-tile state-' + state +
+    (picSelected.has(item.id) ? ' is-selected' : '');
   const placeholder = tile.querySelector('.pic-placeholder');
   if (item.thumb_available && placeholder) {
     const img = document.createElement('img');
     img.alt = item.name;
+    img.addEventListener('load', () => img.classList.add('pic-loaded'));
     img.src = item.thumb_url;   // the tile is on screen already: no lazy dance
     placeholder.replaceWith(img);
   }
@@ -202,8 +248,8 @@ function picUpdateTile(tile, item) {
     if (!capEl) {
       capEl = document.createElement('div');
       capEl.className = 'pic-tile-cap';
-      const btns = tile.querySelector('.pic-tile-btns');
-      tile.insertBefore(capEl, btns || null);
+      const info = tile.querySelector('.pic-tile-info') || tile;
+      info.insertBefore(capEl, info.querySelector('.pic-tile-btns') || null);
     }
     if (capEl.textContent !== item.caption) capEl.textContent = item.caption;
   }
@@ -228,11 +274,52 @@ function renderPicGrid(items, append) {
   observeLazyPics();
   const note = document.getElementById('pic-note');
   if (note) note.textContent = (items.length && !append) ? '' : note.textContent;
+  picUpdateEmptyState();
+  picRefreshTail();
+}
+
+// The gallery is empty for a different reason in every view — say which one
+// instead of leaving a blank rectangle where the photos should be.
+function picUpdateEmptyState() {
+  const empty = document.getElementById('pic-empty');
+  if (!empty) return;
+  const tiles = document.querySelectorAll('#pic-grid .pic-tile').length;
+  empty.style.display = tiles ? 'none' : '';
+  if (tiles) return;
+  const text = document.getElementById('pic-empty-text');
+  const hint = document.getElementById('pic-empty-hint');
+  const copy = picSearchMode
+    ? ['语义搜索没有命中', '换一句更具体的描述；embed 卡没配置时这里只有关键词腿。']
+    : picView === 'trash'
+      ? ['回收站是空的', '相册里的「移入回收站」只动 MSC 的记录，原图不会被删。']
+      : picView === 'missing'
+        ? ['没有缺失的照片', '原图从源里消失时才会进这个视图，缩略图和描述都还在。']
+        : ['还没有照片', '在「设置 → 照片源」添加目录，worker 每 15 秒推进一段，中断可续传。'];
+  if (text) text.textContent = copy[0];
+  if (hint) hint.textContent = copy[1];
+}
+
+// Paging tail: PIC_PAGE tiles at a time, so the grid must say when the walk
+// is over — and picLoadMore was, until now, never called by anything.
+function picRefreshTail() {
+  const bar = document.getElementById('pic-loadmore');
+  if (!bar) return;
+  if (picSearchMode || picLoadingMore) return;
+  if (picTotal && picOffset >= picTotal) {
+    bar.style.display = '';
+    bar.textContent = `已显示全部 ${picTotal} 张`;
+  } else if (!picOffset) {
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = '';
+    bar.textContent = '继续滚动载入更多…';
+  }
 }
 
 function observeLazyPics() {
   if (!('IntersectionObserver' in window)) {
     document.querySelectorAll('#pic-grid img[data-src]').forEach(img => {
+      img.addEventListener('load', () => img.classList.add('pic-loaded'));
       img.src = img.dataset.src; img.removeAttribute('data-src');
     });
     return;
@@ -242,6 +329,7 @@ function observeLazyPics() {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         const img = entry.target;
+        img.addEventListener('load', () => img.classList.add('pic-loaded'));
         img.src = img.dataset.src;
         img.removeAttribute('data-src');
         picObserver.unobserve(img);
@@ -251,17 +339,60 @@ function observeLazyPics() {
   document.querySelectorAll('#pic-grid img[data-src]').forEach(img => picObserver.observe(img));
 }
 
+// The grid only ever held the first PIC_PAGE photos: picLoadMore existed but
+// nothing called it. The sentinel under the grid now pulls the next page in
+// as it scrolls into view.
+function initPicSentinel() {
+  if (picSentinelOn) return;
+  const sentinel = document.getElementById('pic-sentinel');
+  if (!sentinel) return;
+  picSentinelOn = true;
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) picLoadMore();
+    }, { rootMargin: '600px' }).observe(sentinel);
+  } else {
+    window.addEventListener('scroll', () => {
+      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 400) {
+        picLoadMore();
+      }
+    });
+  }
+}
+
 async function picLoadMore() {
+  if (picSearchMode || picLoadingMore) return;
   if (!picOffset || picOffset >= picTotal) return;
-  const page = await API.picItems(picFilterParams());
-  renderPicGrid(page.items || [], true);
-  picOffset += (page.items || []).length;
-  picTotal = page.total || picTotal;
+  picLoadingMore = true;
+  const bar = document.getElementById('pic-loadmore');
+  if (bar) { bar.style.display = ''; bar.textContent = '载入更多…'; }
+  try {
+    const page = await API.picItems(picFilterParams());
+    const got = (page.items || []).length;
+    renderPicGrid(page.items || [], true);
+    picOffset += got;
+    picTotal = page.total || picTotal;
+    if (!got) picOffset = picTotal;  // page emptied under us: stop the retry loop
+  } catch (e) {
+    if (bar) { bar.style.display = ''; bar.textContent = '载入失败：' + e.message; }
+  } finally {
+    picLoadingMore = false;
+    renderPicStatusLine();   // the 显示 x/total chip follows the new page
+    picRefreshTail();
+  }
 }
 
 function picFilterChanged() { loadPics(); }
 
 // ── semantic search over photo captions ─────────────────────────────
+
+// Enter in the semantic box runs the search (and stops the browser's implicit
+// form submit, which would reload the page).
+function picSemanticKey(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  picSemantic();
+}
 
 async function picSemantic() {
   const q = document.getElementById('pic-semantic').value.trim();
@@ -274,11 +405,13 @@ async function picSemantic() {
     const back = document.getElementById('pic-back-btn');
     if (back) back.style.display = '';
     const el = document.getElementById('pic-counts');
-    el.textContent = r.note
-      ? `语义搜索：${r.note}`
-      : `「${q}」命中 ${(r.results || []).length} 张（模型 ${(r.model || '仅关键词')}）`;
+    el.innerHTML = r.note
+      ? picChip('pic-chip-warn', '语义搜索：' + escHtml(r.note))
+      : picChip('pic-chip-ok', `「${escHtml(q)}」命中 <b>${(r.results || []).length}</b> 张`) +
+        picChip('pic-chip-dim', '模型 ' + escHtml(r.model || '仅关键词'));
   } catch (e) {
-    document.getElementById('pic-counts').textContent = '语义搜索失败：' + e.message;
+    document.getElementById('pic-counts').innerHTML =
+      picChip('pic-chip-bad', '语义搜索失败：' + escHtml(e.message));
   }
 }
 
@@ -292,6 +425,8 @@ function picBackToGallery() {
 
 function picToggleSelect(id) {
   if (picSelected.has(id)) picSelected.delete(id); else picSelected.add(id);
+  const tile = document.querySelector(`#pic-grid .pic-tile[data-id="${id}"]`);
+  if (tile) tile.classList.toggle('is-selected', picSelected.has(id));
   updatePicActions();
 }
 
@@ -300,6 +435,7 @@ function picClearSelection() {
   updatePicActions();
   const grid = document.getElementById('pic-grid');
   grid.querySelectorAll('.pic-check input').forEach(cb => { cb.checked = false; });
+  grid.querySelectorAll('.pic-tile.is-selected').forEach(t => t.classList.remove('is-selected'));
 }
 
 function updatePicActions() {
@@ -326,8 +462,10 @@ async function picSelectAll() {
     // the selection it had just made (loadPics clears picSelected).
     const tiles = document.querySelectorAll('#pic-grid .pic-tile');
     tiles.forEach(tile => {
+      const on = picSelected.has(Number(tile.dataset.id));
       const cb = tile.querySelector('.pic-check input');
-      if (cb) cb.checked = picSelected.has(Number(tile.dataset.id));
+      if (cb) cb.checked = on;
+      tile.classList.toggle('is-selected', on);
     });
     if (r.truncated || r.ids.length > tiles.length) {
       toast(`已选 ${r.ids.length} 张（含未翻页的部分），操作会作用于全部`, 'success');
@@ -403,37 +541,117 @@ async function picPurgeOne(id) {
 }
 
 // ── detail modal ─────────────────────────────────────────────────────
+// The modal walks the tiles that are actually rendered: ← / → move through
+// the same list the grid shows, so browsing a month is arrow-keys only.
+let picDetailList = [];
+let picDetailIndex = -1;
+let picDetailThumb = '';
+let picDetailOriginal = false;
 
-async function picOpenDetail(id) {
+function picOpenDetail(id) {
+  picDetailList = Array.from(document.querySelectorAll('#pic-grid .pic-tile'))
+    .map(tile => Number(tile.dataset.id));
+  picDetailIndex = picDetailList.indexOf(id);
+  return picShowItem(id);
+}
+
+async function picShowItem(id) {
   try {
     const it = await API.picItem(id);
     picCurrentId = id;
+    picDetailThumb = it.thumb_url || '';
+    picDetailOriginal = false;
     document.getElementById('pic-detail-title').textContent = it.name;
     const img = document.getElementById('pic-detail-img');
-    img.src = it.thumb_url || '';
+    img.onload = null;
+    img.onerror = null;
+    img.src = picDetailThumb;
     img.style.display = it.thumb_available ? '' : 'none';
+    const orig = document.getElementById('pic-detail-orig-btn');
+    orig.textContent = '查看原图';
+    orig.disabled = !it.thumb_available && it.state === 'failed';
+    document.getElementById('pic-detail-download').href = API.picOriginalUrl(id);
+    picDetailHint(it);
+    document.getElementById('pic-detail-pos').textContent = picDetailIndex >= 0
+      ? `${picDetailIndex + 1} / ${picDetailList.length}` : '';
+    document.getElementById('pic-detail-caption').textContent = it.caption || '';
+    document.getElementById('pic-detail-tags').innerHTML =
+      (it.tags || '').split(/[,，、;；\s]+/).filter(Boolean)
+        .map(tag => `<span class="pic-tag">${escHtml(tag)}</span>`).join('');
     const when = it.taken_at ? `${it.taken_at}（${{exif: '相机时间', exif_naive: '相机时间·无时区', mtime: '文件时间'}[it.taken_at_src] || ''}）` : '时间未知';
     document.getElementById('pic-detail-meta').innerHTML =
-      `状态：${it.state} · 来源：${escHtml(it.source_name)} · ${escHtml(it.rel_path)}<br>` +
-      `拍摄：${when} · 尺寸：${it.width}×${it.height} · ${Math.round((it.size_bytes || 0) / 1024)}KB<br>` +
-      (it.caption ? `描述：${escHtml(it.caption)}<br>` : '') +
-      (it.tags ? `标签：${escHtml(it.tags)}<br>` : '') +
-      `<code>${escHtml(it.origin_uri || '')}</code>`;
+      `<div class="kv"><span>状态</span><code>${escHtml(it.state)}</code></div>` +
+      `<div class="kv"><span>来源</span><code>${escHtml(it.source_name)}</code></div>` +
+      `<div class="kv"><span>路径</span><code>${escHtml(it.rel_path)}</code></div>` +
+      `<div class="kv"><span>拍摄</span><code>${escHtml(when)}</code></div>` +
+      `<div class="kv"><span>像素</span><code>${it.width}×${it.height}</code></div>` +
+      `<div class="kv"><span>大小</span><code>${Math.round((it.size_bytes || 0) / 1024)} KB</code></div>` +
+      `<div class="kv"><span>标识</span><code>${escHtml(it.origin_uri || '')}</code></div>`;
     document.getElementById('pic-detail-overlay').classList.add('active');
   } catch (e) { toast(e.message, 'error'); }
+}
+
+function picDetailHint(it) {
+  const hint = document.getElementById('pic-detail-hint');
+  if (it.thumb_available) { hint.style.display = 'none'; hint.textContent = ''; return; }
+  hint.style.display = '';
+  hint.textContent = it.state === 'failed'
+    ? `这张处理失败：${it.last_error || '未知原因'}`
+    : '缩略图还没生成，worker 正在排队处理';
+}
+
+function picDetailStep(delta) {
+  if (!picDetailList.length || picDetailIndex < 0) return;
+  const next = picDetailIndex + delta;
+  if (next < 0 || next >= picDetailList.length) return;
+  picDetailIndex = next;
+  picShowItem(picDetailList[next]);
 }
 
 function closePicDetail() {
   document.getElementById('pic-detail-overlay').classList.remove('active');
 }
 
-function picShowOriginal() {
+// Thumb ↔ original in place. The original streams from wherever it lives
+// (SMB/WebDAV included), so the stage says what it is waiting for.
+function picToggleOriginal() {
   if (!picCurrentId) return;
   const img = document.getElementById('pic-detail-img');
-  img.src = API.picOriginalUrl(picCurrentId);
-  img.style.display = '';
-  img.onerror = () => toast('原图读取失败（源不可达或超过大小上限）', 'error');
+  const btn = document.getElementById('pic-detail-orig-btn');
+  const hint = document.getElementById('pic-detail-hint');
+  if (!picDetailOriginal) {
+    picDetailOriginal = true;
+    img.style.display = '';
+    hint.style.display = '';
+    hint.textContent = '正在从源读取原图（远端源会慢一些）…';
+    img.onload = () => { if (picDetailOriginal) hint.style.display = 'none'; };
+    img.onerror = () => {
+      hint.style.display = '';
+      hint.textContent = '原图读取失败：源不可达，或超过 MSC_PIC_MAX_ORIGINAL_MB 上限';
+    };
+    img.src = API.picOriginalUrl(picCurrentId);
+    btn.textContent = '回到缩略图';
+  } else {
+    picDetailOriginal = false;
+    img.onload = null;
+    img.onerror = null;
+    img.src = picDetailThumb;
+    img.style.display = picDetailThumb ? '' : 'none';
+    btn.textContent = '查看原图';
+    hint.style.display = 'none';
+  }
 }
+
+// Esc closes, ← / → walk the on-screen tiles.
+document.addEventListener('keydown', event => {
+  const overlay = document.getElementById('pic-detail-overlay');
+  if (!overlay || !overlay.classList.contains('active')) return;
+  if (event.key === 'Escape') { closePicDetail(); return; }
+  const tag = (event.target && event.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (event.key === 'ArrowLeft') { event.preventDefault(); picDetailStep(-1); }
+  else if (event.key === 'ArrowRight') { event.preventDefault(); picDetailStep(1); }
+});
 
 function startPicPoll() {
   if (picPollTimer) return;
@@ -442,7 +660,6 @@ function startPicPoll() {
     if (!page || !page.classList.contains('active')) return;
     try {
       const status = await API.picStatus();
-      renderPicStatusLine(status);
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
       if (pending && !picSearchMode && !picView) {
         const params = picFilterParams();
@@ -451,7 +668,9 @@ function startPicPoll() {
         if (first.items && !first.items.length && first.total) return;  // paranoid: never blank a full grid
         picSyncGrid(first.items || []);
         picTotal = first.total || picTotal;
+        picRefreshTail();
       }
+      renderPicStatusLine(status);  // after the paging window settles
     } catch (e) { /* page idle, next tick */ }
   }, 5000);
 }
@@ -463,24 +682,42 @@ async function loadPicSources() {
   if (!box) return;
   try {
     const sources = await API.picListSources();
-    if (!sources.length) { box.innerHTML = '<div class="setting-hint">还没有照片源。</div>'; return; }
+    if (!sources.length) {
+      box.innerHTML = '<div class="setting-hint">还没有照片源：添加一个目录，worker 会在 15 秒内开始摄入。</div>';
+      return;
+    }
     box.innerHTML = sources.map(s => {
       const c = s.counts || {};
-      const badge = { idle: '', scanning: '扫描中', paused: '已暂停', error: '出错' }[s.state] || s.state;
+      const stateName = { idle: '空闲', scanning: '扫描中', paused: '已暂停', error: '出错' }[s.state] || s.state;
+      const stateChip = { idle: 'pic-chip-dim', scanning: 'pic-chip-live',
+                          paused: 'pic-chip-warn', error: 'pic-chip-bad' }[s.state] || 'pic-chip-dim';
       const addr = s.kind === 'local' ? s.root_path
         : s.kind === 'smb' ? `smb://${s.host}/${s.share}/${s.subpath || ''}` : s.url;
       const buttons =
-        `<button class="btn" onclick="picProbeSrc(${s.id})">探测</button>` +
-        `<button class="btn" onclick="picScanSrc(${s.id})">扫描</button>` +
+        `<button class="btn btn-sm" onclick="picProbeSrc(${s.id})">探测</button>` +
+        `<button class="btn btn-sm" onclick="picScanSrc(${s.id})">重新扫描</button>` +
         (s.state === 'paused'
-          ? `<button class="btn" onclick="picResumeSrc(${s.id})">继续</button>`
-          : `<button class="btn" onclick="picPauseSrc(${s.id})">暂停</button>`) +
-        `<button class="btn btn-danger" onclick="picDeleteSrc(${s.id})">删除</button>`;
-      return `<div class="log-item"><div><b>${escHtml(s.name)}</b> · ${s.kind} · ${escHtml(addr)}` +
-        `${s.resuming ? ' · <i>断点待续</i>' : ''}<br>` +
-        `<span class="setting-hint">发现 ${c.discovered || 0} · 缩略图 ${c.thumb_ready || 0} · ` +
-        `描述 ${c.captioned || 0} · 索引 ${c.embedded || 0} · 失败 ${c.failed || 0}` +
-        (s.last_error ? ` · ${escHtml(s.last_error)}` : '') + `</span></div><div>${buttons}</div></div>`;
+          ? `<button class="btn btn-sm" onclick="picResumeSrc(${s.id})">继续</button>`
+          : `<button class="btn btn-sm" onclick="picPauseSrc(${s.id})">暂停</button>`) +
+        `<button class="btn btn-sm btn-danger" onclick="picDeleteSrc(${s.id})">删除</button>`;
+      const chips = [
+        picChip(stateChip, escHtml(stateName)),
+        picChip('pic-chip-ok', `索引 <b>${c.embedded || 0}</b>`),
+        c.discovered ? picChip('pic-chip-warn', `待缩略图 <b>${c.discovered}</b>`) : '',
+        c.thumb_ready ? picChip('pic-chip-warn', `待描述 <b>${c.thumb_ready}</b>`) : '',
+        c.captioned ? picChip('pic-chip-warn', `待索引 <b>${c.captioned}</b>`) : '',
+        c.failed ? picChip('pic-chip-bad', `失败 <b>${c.failed}</b>`) : '',
+        s.resuming ? picChip('pic-chip-dim', '断点待续') : '',
+      ].filter(Boolean).join('');
+      return `<div class="pic-src">` +
+        `<div class="pic-src-head">` +
+        `<span class="pic-src-kind pic-src-${escHtml(s.kind)}">` +
+        `${{ local: '本地', smb: 'SMB', webdav: 'WebDAV' }[s.kind] || escHtml(s.kind)}</span>` +
+        `<b class="pic-src-name" title="${escHtml(addr)}">${escHtml(s.name)}</b></div>` +
+        `<code class="pic-src-addr">${escHtml(addr)}</code>` +
+        `<div class="pic-stats">${chips}</div>` +
+        (s.last_error ? `<div class="pic-src-error">${escHtml(s.last_error)}</div>` : '') +
+        `<div class="pic-src-btns">${buttons}</div></div>`;
     }).join('');
   } catch (e) {
     box.innerHTML = `<div class="setting-hint">照片功能不可用：${escHtml(e.message)}</div>`;

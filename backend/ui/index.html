@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.5">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.4.6">
 </head>
 <body>
   <!-- Header -->
@@ -280,46 +280,59 @@
 
     <!-- Photos (msc-pic): 渐进摄入的照片墙，占位格与缩略图共用一个网格 -->
     <section id="page-pics" class="page">
-      <div class="pic-toolbar">
-        <select id="pic-source-filter" onchange="picFilterChanged()">
-          <option value="">全部来源</option>
-        </select>
-        <select id="pic-kind-filter" onchange="picFilterChanged()">
-          <option value="">全部类型</option>
-          <option value="photo">照片</option>
-          <option value="screenshot">截图</option>
-        </select>
-        <input type="text" id="pic-month" placeholder="2024-05（按月）" onchange="picFilterChanged()">
-        <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
-        <select id="pic-view" onchange="picViewChanged()">
-          <option value="">相册</option>
-          <option value="trash">回收站</option>
-          <option value="missing">缺失</option>
-        </select>
-        <select id="pic-folder" onchange="picFilterChanged()">
-          <option value="">全部目录</option>
-        </select>
-        <input type="text" id="pic-semantic" placeholder="语义找图：海边吃西瓜的人…" onchange="picSemantic()">
-        <button class="btn btn-primary" onclick="picSemantic()">🔎 语义搜索</button>
-        <button class="btn" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 相册</button>
-        <button class="btn" onclick="picSelectAll()">全选</button>
-        <button class="btn" onclick="loadPics()">刷新</button>
-        <button class="btn" onclick="picResetView()">↩ 返回</button>
-        <button class="btn btn-danger" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()">🗑 清空回收站</button>
-        <span id="pic-counts" class="sync-result"></span>
+      <div class="pic-topbar">
+        <div class="pic-tabs">
+          <button class="pic-tab active" data-view="" onclick="picSetView('')">🖼 相册</button>
+          <button class="pic-tab" data-view="missing" onclick="picSetView('missing')">⚠ 缺失</button>
+          <button class="pic-tab" data-view="trash" onclick="picSetView('trash')">🗑 回收站</button>
+        </div>
+        <div class="pic-searchbox">
+          <span class="pic-search-icon">✨</span>
+          <input type="text" id="pic-semantic" placeholder="语义找图：海边吃西瓜的人…"
+                 onchange="picSemantic()" onkeydown="picSemanticKey(event)">
+        </div>
+        <div class="pic-tools">
+          <button class="btn btn-sm" id="pic-back-btn" style="display:none" onclick="picBackToGallery()">← 返回相册</button>
+          <button class="btn btn-sm" id="pic-empty-trash-btn" style="display:none" onclick="picEmptyTrash()">清空回收站</button>
+          <button class="btn btn-sm" onclick="picSelectAll()">全选</button>
+          <button class="btn btn-sm" onclick="loadPics()">刷新</button>
+          <button class="btn btn-sm btn-ghost" onclick="picResetView()" title="清掉所有筛选，回到纯相册">↩ 重置</button>
+        </div>
+        <div class="pic-filters">
+          <select id="pic-source-filter" onchange="picFilterChanged()">
+            <option value="">全部来源</option>
+          </select>
+          <select id="pic-kind-filter" onchange="picFilterChanged()">
+            <option value="">全部类型</option>
+            <option value="photo">照片</option>
+            <option value="screenshot">截图</option>
+          </select>
+          <select id="pic-folder" onchange="picFilterChanged()">
+            <option value="">全部目录</option>
+          </select>
+          <input type="text" id="pic-month" placeholder="按月 2024-05" onchange="picFilterChanged()">
+          <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
+        </div>
       </div>
-      <div id="pic-actions" class="pic-toolbar" style="display:none">
-        已选 <b id="pic-sel-count">0</b> 张
-        <button class="btn" id="pic-archive-btn" onclick="picArchiveSelected()">移入回收站</button>
-        <button class="btn" id="pic-restore-btn" style="display:none" onclick="picRestoreSelected()">恢复所选</button>
-        <button class="btn btn-danger" id="pic-purge-btn" style="display:none" onclick="picPurgeSelected()">彻底删除所选</button>
-        <button class="btn" id="pic-keep-btn" style="display:none" onclick="picKeepSelected()">保留缩略图</button>
-        <button class="btn btn-danger" id="pic-forget-btn" style="display:none" onclick="picForgetSelected()">清除衍生</button>
-        <button class="btn btn-ghost" onclick="picClearSelection()">清空选择</button>
-      </div>
+      <div id="pic-counts" class="pic-stats"></div>
       <div id="pic-note" class="setting-hint"></div>
       <div id="pic-grid" class="pic-grid"></div>
+      <div id="pic-empty" class="pic-empty" style="display:none">
+        <div class="pic-empty-icon">🖼</div>
+        <div class="empty-state-text" id="pic-empty-text">这个视图是空的</div>
+        <div class="setting-hint" id="pic-empty-hint">照片源在「设置 → 照片源」里添加，worker 每 15 秒推进一段。</div>
+      </div>
+      <div id="pic-loadmore" class="pic-loadmore" style="display:none"></div>
       <div id="pic-sentinel" class="pic-sentinel"></div>
+      <div id="pic-actions" class="pic-actionbar" style="display:none">
+        <span class="pic-sel-pill">已选 <b id="pic-sel-count">0</b> 张</span>
+        <button class="btn btn-sm" id="pic-archive-btn" onclick="picArchiveSelected()">移入回收站</button>
+        <button class="btn btn-sm" id="pic-restore-btn" style="display:none" onclick="picRestoreSelected()">恢复所选</button>
+        <button class="btn btn-sm btn-danger" id="pic-purge-btn" style="display:none" onclick="picPurgeSelected()">彻底删除所选</button>
+        <button class="btn btn-sm" id="pic-keep-btn" style="display:none" onclick="picKeepSelected()">保留缩略图</button>
+        <button class="btn btn-sm btn-danger" id="pic-forget-btn" style="display:none" onclick="picForgetSelected()">清除衍生</button>
+        <button class="btn btn-sm btn-ghost" onclick="picClearSelection()">取消选择</button>
+      </div>
     </section>
 
     <!-- Insights: 健康报告 / 奇遇长文 / 评注 / 热力图 -->
@@ -411,7 +424,7 @@
               随时可暂停/继续，中断后从断点接着走，不会重复。<br>
               本地目录必须在 <code>MSC_PIC_ROOTS</code> 白名单内（默认 <code>/home/astro/photos</code>），并已挂载进容器。
             </div>
-            <div id="pic-sources-list" class="log-list"></div>
+            <div id="pic-sources-list" class="pic-src-list"></div>
             <h4>添加照片源</h4>
             <div class="form-row">
               <div class="form-group">
@@ -854,17 +867,30 @@
   <!-- Photo detail modal (msc-pic): thumb + AI caption + provenance.
        Original-image preview joins this modal with the SMB/WebDAV pass. -->
   <div id="pic-detail-overlay" class="modal-overlay" onclick="if(event.target===this)closePicDetail()">
-    <div class="modal modal-lg">
+    <div class="modal pic-modal">
       <div class="modal-header">
         <h2 id="pic-detail-title">照片</h2>
-        <button class="modal-close" onclick="closePicDetail()">✕</button>
+        <div class="pic-modal-nav">
+          <button class="btn btn-sm" onclick="picDetailStep(-1)" title="上一张（←）">←</button>
+          <span id="pic-detail-pos" class="pic-detail-pos"></span>
+          <button class="btn btn-sm" onclick="picDetailStep(1)" title="下一张（→）">→</button>
+          <button class="modal-close" onclick="closePicDetail()">✕</button>
+        </div>
       </div>
-      <div class="modal-body">
-        <img id="pic-detail-img" alt="缩略图" style="max-width:100%;border-radius:8px">
-        <div id="pic-detail-meta" class="setting-hint" style="margin-top:10px"></div>
+      <div class="modal-body pic-modal-body">
+        <div class="pic-stage">
+          <img id="pic-detail-img" alt="缩略图">
+          <div id="pic-detail-hint" class="pic-stage-hint" style="display:none"></div>
+        </div>
+        <div class="pic-facts">
+          <div id="pic-detail-caption" class="pic-detail-caption"></div>
+          <div id="pic-detail-tags" class="pic-detail-tags"></div>
+          <div id="pic-detail-meta" class="pic-meta-grid"></div>
+        </div>
       </div>
       <div class="modal-footer">
-        <button class="btn" onclick="picShowOriginal()">查看原图</button>
+        <button class="btn" id="pic-detail-orig-btn" onclick="picToggleOriginal()">查看原图</button>
+        <a class="btn btn-ghost" id="pic-detail-download" href="#" download>下载原图</a>
         <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
       </div>
     </div>
@@ -873,10 +899,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.4.5"></script>
-  <script src="/ui/js/app.js?v=2.4.5"></script>
-  <script src="/ui/js/graph.js?v=2.4.5"></script>
-  <script src="/ui/js/pic.js?v=2.4.5"></script>
+  <script src="/ui/js/api.js?v=2.4.6"></script>
+  <script src="/ui/js/app.js?v=2.4.6"></script>
+  <script src="/ui/js/graph.js?v=2.4.6"></script>
+  <script src="/ui/js/pic.js?v=2.4.6"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });
