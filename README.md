@@ -215,6 +215,10 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.4.9（msc-pic 分支）
+
+- **裸链接不再发紫** — 小结运行记录里的 slug、近重复对、搜索结果这类没有 class 的 `<a>` 从来没被 CSS 覆盖过，于是直接吃到浏览器的蓝/紫默认色。现在 `app.css` 给 `a`/`a:visited` 定死中性灰 + 发丝下划线（悬停只是下划线加深），带 class 的链接（导航、按钮、logo）仍走自己的样式。`test_bare_links_stay_greyscale` 守住这条底线。
+
 ### 2.4.8（msc-pic 分支）
 
 - **全站一个字号** — 原来 10/11/12/13/14/15/16/18/24/28px 十档收敛成 `--fs: 13px` 一档（`--fs-micro` 只给页首 wordmark，正好是小字号的一半）；层级改由字重、大小写与发丝边框承担，`font-size` 在 html/js 里也不再内联出现。图谱画布的节点/边标签同样统一到这一个尺寸（`GRAPH_FONT_SIZE`）。
