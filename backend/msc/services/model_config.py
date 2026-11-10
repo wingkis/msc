@@ -53,11 +53,12 @@ def _env_seed(purpose: str) -> dict:
     if purpose == "vision":
         # Chat-shaped but sends an image_url content part; the probe actually
         # posts a picture, so a text-only server fails here instead of at
-        # caption time. Captions are short — the token budget stays small.
+        # caption time. The budget has room for thinking models: reasoning
+        # before the caption is normal, 600 could end up all-thought-no-answer.
         return dict(
             base_url=settings.vision_base_url, model=settings.vision_model,
             api_key=settings.vision_api_key, temperature=settings.llm_temperature,
-            max_tokens=600, timeout_seconds=settings.llm_timeout_seconds,
+            max_tokens=1200, timeout_seconds=settings.llm_timeout_seconds,
             max_input_chars=settings.llm_max_input_chars,
         )
     prefixes = {"embed": "embed_", "rerank": "rerank_", "whisper": "whisper_"}

@@ -116,10 +116,13 @@ def _test_vision_card(db, cfg):
             report["models"] = llm.list_models(cfg)
         except llm.LLMError as exc:
             report["models_error"] = str(exc)
+        # 512, not 64: reasoning-style vision models (q3 and friends) spend
+        # the whole budget thinking and answer with empty content — the probe
+        # would blame the model for arithmetic it imposed itself.
         answer = llm.chat(cfg, [{"role": "user", "content": [
             llm.image_part(_probe_png_bytes(), "image/png"),
             {"type": "text", "text": "连接测试。只用两个字描述这张图的颜色。"},
-        ]}], max_tokens=64)
+        ]}], max_tokens=512)
         report["chat"] = {"ok": True, "model": answer["model"], "reply": answer["text"][:120],
                           "latency_ms": answer["latency_ms"]}
         note_result(db, cfg)
