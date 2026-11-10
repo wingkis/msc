@@ -98,9 +98,58 @@ function picTileHtml(item) {
       `<button class="btn" onclick="picRestoreOne(${item.id})">恢复</button>` +
       `<button class="btn btn-danger" onclick="picPurgeOne(${item.id})">彻底删除</button></div>`
     : '';
-  return `<div class="pic-tile state-${state}" title="${escHtml(item.rel_path)}" ` +
+  return `<div class="pic-tile state-${state}" data-id="${item.id}" title="${escHtml(item.rel_path)}" ` +
     `onclick="picOpenDetail(${item.id})">${check}${badge}${match}${dup}${media}` +
     `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${trashBtns}</div>`;
+}
+
+// Poll updates in place: same ids in the same order → mutate each tile's
+// state class, swap placeholder for the thumb once it exists, add the caption
+// line. Rebuilding the whole grid (the old behaviour) reloaded every image
+// and made the page flicker every few seconds. A full re-render is reserved
+// for when the id sequence actually changes (rescan, new photos, filtering).
+function picSyncGrid(items) {
+  const grid = document.getElementById('pic-grid');
+  const tiles = Array.from(grid.querySelectorAll('.pic-tile'));
+  if (tiles.length !== items.length ||
+      items.some((it, i) => tiles[i].dataset.id !== String(it.id))) {
+    renderPicGrid(items, false);
+    return;
+  }
+  items.forEach((item, i) => picUpdateTile(tiles[i], item));
+  observeLazyPics();  // covers tiles that were individually rebuilt above
+}
+
+function picUpdateTile(tile, item) {
+  const state = item.state || 'discovered';
+  const wantFailed = state === 'failed';
+  const hasFailed = !!tile.querySelector('.pic-badge');
+  const wantDup = !!item.dup;
+  const hasDup = !!tile.querySelector('.pic-dup');
+  // Badge appearance needs structure the live tile lacks: rebuild just that tile.
+  if ((wantFailed && !hasFailed) || (!wantFailed && hasFailed) ||
+      (wantDup !== hasDup)) {
+    tile.outerHTML = picTileHtml(item);
+    return;
+  }
+  tile.className = 'pic-tile state-' + state;
+  const placeholder = tile.querySelector('.pic-placeholder');
+  if (item.thumb_available && placeholder) {
+    const img = document.createElement('img');
+    img.alt = item.name;
+    img.src = item.thumb_url;   // the tile is on screen already: no lazy dance
+    placeholder.replaceWith(img);
+  }
+  let capEl = tile.querySelector('.pic-tile-cap');
+  if (item.caption) {
+    if (!capEl) {
+      capEl = document.createElement('div');
+      capEl.className = 'pic-tile-cap';
+      const btns = tile.querySelector('.pic-tile-btns');
+      tile.insertBefore(capEl, btns || null);
+    }
+    if (capEl.textContent !== item.caption) capEl.textContent = item.caption;
+  }
 }
 
 function renderPicGrid(items, append) {
@@ -292,10 +341,8 @@ function startPicPoll() {
       const pending = (status.counts.discovered || 0) + (status.counts.thumb_ready || 0);
       if (pending && !picSearchMode && !picTrashMode) {
         const first = await API.picItems(picFilterParams());
-        picOffset = 0;
-        renderPicGrid(first.items || [], false);
-        picOffset = (first.items || []).length;
-        picTotal = first.total || 0;
+        picSyncGrid(first.items || []);
+        picTotal = first.total || picTotal;
       }
     } catch (e) { /* page idle, next tick */ }
   }, 5000);
