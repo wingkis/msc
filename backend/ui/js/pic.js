@@ -299,8 +299,16 @@ async function picSelectAll() {
     const r = await API.picItems(params);
     (r.ids || []).forEach(id => picSelected.add(id));
     updatePicActions();
-    loadPics();   // re-render so the checkboxes appear checked
-    if (r.truncated) toast(`数量太大，只选了前 ${r.ids.length} 张`, 'success');
+    // Tick the visible checkboxes in place. A loadPics() here used to wipe
+    // the selection it had just made (loadPics clears picSelected).
+    const tiles = document.querySelectorAll('#pic-grid .pic-tile');
+    tiles.forEach(tile => {
+      const cb = tile.querySelector('.pic-check input');
+      if (cb) cb.checked = picSelected.has(Number(tile.dataset.id));
+    });
+    if (r.truncated || r.ids.length > tiles.length) {
+      toast(`已选 ${r.ids.length} 张（含未翻页的部分），操作会作用于全部`, 'success');
+    }
   } catch (e) { toast(e.message, 'error'); }
 }
 
