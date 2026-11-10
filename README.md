@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.0（msc-pic 分支）
+
+- **搜索并总结** — 搜索页「搜索」旁边新增「搜索并总结」：把当前这一页搜索结果（最多 `/search` 的 20 条命中）交给记忆小结的 chat 模型写一篇小结。新端点 `POST /api/v1/summarize/search`（与其余 Web UI 端点一样不进 `/help`/`llms.txt`），先预览（`dry_run`）再点「存为记忆」才落库。
+- **只依据记忆事实** — 该端点在提示里固定附加 `SEARCH_GROUNDING`：每条要点都要能在某条记忆原文里找到出处，记忆里没有的日期/数字/路径/因果/动机不得补全或推测，不得用记忆之外的背景知识解释，记忆互相冲突要并列指出，没依据就在「待办与风险」写「记忆里没有」；框架行也从"时间段"改成"搜索「q」的 N 条命中"。约束走 `{instruction}` 槽，自定义 `prompt_template` 的卡片仍然生效。
+- **可审计、不伤人** — 生成的小结带 `summary`+`search` 标签，正文尾部列出取材记忆与"由搜索「q」的命中生成"；这条路径强制不归档来源（卡片上的 `archive_sources` 只影响每日小结），模型失败时 502 且记忆库一条不动，超出输入上限会注明"未送入 N 条"。
+- 测试 144 个（新增 `test_search_digest_*` 3 项：无结果 422/不存在 404、提示词里含查询框架与命中原文与紧约束、卡片开归档也不归档且标签与来源列表落库；`test_search_page_offers_a_digest_of_the_hits` 守住按钮/面板/API 方法三件套）。
+
 ### 2.4.9（msc-pic 分支）
 
 - **裸链接不再发紫** — 小结运行记录里的 slug、近重复对、搜索结果这类没有 class 的 `<a>` 从来没被 CSS 覆盖过，于是直接吃到浏览器的蓝/紫默认色。现在 `app.css` 给 `a`/`a:visited` 定死中性灰 + 发丝下划线（悬停只是下划线加深），带 class 的链接（导航、按钮、logo）仍走自己的样式。`test_bare_links_stay_greyscale` 守住这条底线。
