@@ -86,7 +86,7 @@ def test_model(request: Request, purpose: str = Query("chat"),
 
     purpose = _purpose_or_422(purpose)
     cfg = get_config(db, purpose)
-    if purpose == "chat":
+    if purpose in ("chat", "echo"):
         return _test_chat_card(db, cfg)
     return _test_rag_card(db, cfg, purpose)
 

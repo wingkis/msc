@@ -285,8 +285,17 @@ function renderSearchResult(r) {
           ${tagsHtml}
         </div>
       </div>
+      <button class="btn btn-ghost btn-small echo-inline-btn" title="让模型给这条记忆写回响评注"
+              onclick="event.stopPropagation(); startEchoFor('${escHtml(r.slug)}')">🪞 回响</button>
     </div>
   `;
+}
+
+// Search-result echo button: prefill the insights echo panel and run it.
+function startEchoFor(slug) {
+  navTo('insights');
+  document.getElementById('echo-slug').value = slug;
+  runEcho();
 }
 
 // ── Memory Detail ───────────────────────────────────────────────────
@@ -1192,7 +1201,7 @@ async function restoreDigestSources(digestSlug) {
 
 // ── RAG provider cards ──────────────────────────────────────────────
 // Same fill/collect/save/test shape as the chat card, one prefix per purpose.
-const RAG_PURPOSES = ['embed', 'rerank', 'whisper'];
+const RAG_PURPOSES = ['embed', 'rerank', 'whisper', 'echo'];
 const ragCards = {};
 
 function ragField(purpose, field) {
@@ -1539,11 +1548,18 @@ async function runEcho() {
   if (!slug) { toast('先填要评注的 slug 或名称', 'error'); return; }
   const status = document.getElementById('echo-status');
   status.textContent = '模型阅读中（1-2 分钟）…';
+  const save = document.getElementById('echo-save').checked;
+  const savePath = document.getElementById('echo-save-path').value.trim();
   try {
-    const result = await API.ragEcho({ slug, instruction: document.getElementById('echo-instruction').value.trim() });
+    const result = await API.ragEcho({
+      slug, instruction: document.getElementById('echo-instruction').value.trim(),
+      save, save_path: savePath || null,
+    });
+    const savedNote = result.saved_to
+      ? `<div class="pick-meta">已存为 <code>${escHtml(result.saved_to)}</code>（下个同步周期入库）</div>` : '';
     document.getElementById('echo-result').innerHTML =
-      `<div class="pick-meta">${escHtml(result.name)} · 模型 ${escHtml(result.model)} · ${result.latency_ms}ms</div>` +
-      `<div class="pick-text">${escHtml(result.body)}</div>`;
+      `<div class="pick-meta">${escHtml(result.name)} · 卡片 ${escHtml(result.card || 'chat')} · 模型 ${escHtml(result.model)} · ${result.latency_ms}ms</div>` +
+      `<div class="pick-text">${escHtml(result.body)}</div>` + savedNote;
     status.textContent = '';
   } catch (e) {
     status.textContent = '失败: ' + e.message;

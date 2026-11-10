@@ -204,6 +204,11 @@ class RagSettingsUpdate(BaseModel):
 class EchoRequest(BaseModel):
     slug: str = Field(..., min_length=1)
     instruction: Optional[str] = Field(None, max_length=300)
+    # Persist the echo as a markdown memory file. Off by default (the endpoint
+    # stays read-only unless you ask); the Web UI turns it on.
+    save: bool = False
+    # Base-relative filename, default "{slug}-回响". No absolute paths, no "..".
+    save_path: Optional[str] = Field(None, max_length=200)
 
 
 class RagImportEntry(BaseModel):

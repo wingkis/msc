@@ -11,6 +11,7 @@ answers with a readable 4xx/5xx.
 
 import base64
 from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import text as sql_text
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 from msc.api.memories import _actor, _guard_write, _require_auth, _resolve_memory
 from msc.config import get_settings
 from msc.database import get_db
+from msc.filesystem.md_writer import write_memory_file
 from msc.models import Embedding, Memory, RagCache
 from msc.schemas import EchoRequest, RagImportRequest, RagSettingsUpdate
 from msc.services import llm, rag_providers
@@ -380,17 +382,61 @@ def daily_pick(refresh: bool = Query(False), db: Session = Depends(get_db)):
     return {**payload, "cached": False, "date": today}
 
 
+def _echo_config(db):
+    """The commentary model: the dedicated echo card when it is configured,
+    otherwise the chat card. Echo can point at a different API on purpose."""
+    for purpose in ("echo", "chat"):
+        cfg = get_config(db, purpose)
+        if cfg.enabled and (cfg.base_url or "").strip() and (cfg.model or "").strip():
+            return cfg, purpose
+    return None, None
+
+
+def _save_echo(db, memory: Memory, text: str, answer_model: str, rel: str | None):
+    """Write the commentary as a markdown memory file under the echo base dir
+    (default: the memory directory, so the sync worker adopts it as a real
+    memory on its next cycle). The path stays inside the base: no absolute,
+    no '..'. Returns the written path."""
+    base = Path(settings.echo_dir or settings.memory_dir)
+    name = (rel or "").strip().removesuffix(".md")
+    p = PurePosixPath(name or f"{memory.slug}-回响")
+    if p.is_absolute() or not p.parts or ".." in p.parts:
+        raise HTTPException(status_code=422,
+                            detail="保存路径必须是 base 目录内的相对路径（不能以 / 开头或含 ..）；"
+                                   "base 默认是记忆目录，可用 MSC_ECHO_DIR 更改")
+    final = "/".join(p.parts)
+    if final != f"{memory.slug}-回响":
+        clash = db.query(Memory).filter(Memory.slug == final).first()
+        if clash and clash.id != memory.id:
+            raise HTTPException(status_code=422, detail="保存路径与现有记忆的 slug 冲突，请换个文件名")
+
+    target = (base / f"{final}.md").resolve()
+    if not str(target).startswith(str(base.resolve())):
+        raise HTTPException(status_code=422, detail="保存路径越界")
+    (target.parent).mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    return write_memory_file(
+        slug=final, name=f"回响·{memory.name}",
+        description=f"对记忆「{memory.slug}」的回响评注（模型 {answer_model}）",
+        body=text, tags=["echo"], priority="medium", category="reference",
+        lifespan="permanent", created=now, updated=now, memory_dir=base)
+
+
 @router.post("/echo")
 def echo(data: EchoRequest, request: Request, db: Session = Depends(get_db)):
-    """A 500-800 character commentary on one memory — never written back, the
-    user keeps the last word."""
+    """A 500-800 character commentary on one memory. It runs on the echo card
+    when configured (its own model API), else the chat card. Saving as a
+    markdown memory file is opt-in — the Web UI turns it on, the raw API does
+    not — and the user keeps the last word either way."""
     _require_auth(request, db)
     if not settings.rag_enabled:
         raise HTTPException(status_code=503, detail="RAG 已关闭（MSC_RAG_ENABLED=false）")
+    if data.save:
+        _guard_write()
 
-    chat_cfg = get_config(db, "chat")
-    if not chat_cfg.enabled or not (chat_cfg.base_url or "").strip() or not (chat_cfg.model or "").strip():
-        raise HTTPException(status_code=503, detail="评注需要先在模型卡片里配置 chat 模型")
+    chat_cfg, card = _echo_config(db)
+    if chat_cfg is None:
+        raise HTTPException(status_code=503, detail="评注需要先配置评注（echo）或 chat 模型卡")
 
     memory = _resolve_memory(db, data.slug)
     context = f"{memory.body or memory.description or ''}"[: int(chat_cfg.max_input_chars or 12000)]
@@ -405,8 +451,12 @@ def echo(data: EchoRequest, request: Request, db: Session = Depends(get_db)):
         answer = llm.chat(chat_cfg, messages, max_tokens=1600)
     except llm.LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
-    return {"slug": memory.slug, "name": memory.name, "body": answer["text"],
-            "model": answer["model"], "latency_ms": answer["latency_ms"]}
+    out = {"slug": memory.slug, "name": memory.name, "body": answer["text"],
+           "model": answer["model"], "card": card, "latency_ms": answer["latency_ms"]}
+    if data.save:
+        out["saved_to"] = str(_save_echo(db, memory, answer["text"], answer["model"],
+                                         data.save_path))
+    return out
 
 
 @router.get("/heatmap")

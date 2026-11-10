@@ -43,6 +43,10 @@ os.environ.update({
     "MSC_EMBED_BASE_URL": "", "MSC_EMBED_MODEL": "", "MSC_EMBED_API_KEY": "",
     "MSC_RERANK_BASE_URL": "", "MSC_RERANK_MODEL": "", "MSC_RERANK_API_KEY": "",
     "MSC_WHISPER_BASE_URL": "", "MSC_WHISPER_MODEL": "", "MSC_WHISPER_API_KEY": "",
+    # Echo runs on its own card only when set; unset = falls back to chat.
+    "MSC_ECHO_BASE_URL": "", "MSC_ECHO_MODEL": "", "MSC_ECHO_API_KEY": "",
+    # Empty = echo md lands in the memory dir (the documented default).
+    "MSC_ECHO_DIR": "",
 })
 
 

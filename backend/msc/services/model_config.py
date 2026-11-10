@@ -1,5 +1,5 @@
 """Read/write the model cards — one row per purpose (chat, embed, rerank,
-whisper).
+whisper, echo).
 
 ``.env`` only seeds the first row of each purpose — after that the database is
 the source of truth, so a user on another machine can point MSC at their own
@@ -18,7 +18,7 @@ AUTO_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CATEGORIES = ("config", "project", "user", "knowledge", "reference")
 PRIORITIES = ("low", "medium", "high", "critical")
 
-PURPOSES = ("chat", "embed", "rerank", "whisper")
+PURPOSES = ("chat", "embed", "rerank", "whisper", "echo")
 
 # Columns the API may write. api_key is handled separately: an omitted key keeps
 # the stored one, an empty string clears it.
@@ -31,7 +31,8 @@ EDITABLE = (
 BOOL_FIELDS = ("enabled", "auto_enabled", "archive_sources")
 
 DEFAULT_LABELS = {"chat": "本地模型", "embed": "嵌入模型",
-                  "rerank": "重排模型", "whisper": "语音转写"}
+                  "rerank": "重排模型", "whisper": "语音转写",
+                  "echo": "评注模型"}
 
 
 def _now() -> str:
@@ -40,6 +41,15 @@ def _now() -> str:
 
 def _env_seed(purpose: str) -> dict:
     """First-run values for a purpose card, from .env (empty = unconfigured)."""
+    if purpose == "echo":
+        # A chat-style card that can point at a different model than the main
+        # chat; seeded empty so it falls back to the chat card until set.
+        return dict(
+            base_url=settings.echo_base_url, model=settings.echo_model,
+            api_key=settings.echo_api_key, temperature=settings.llm_temperature,
+            max_tokens=1600, timeout_seconds=settings.llm_timeout_seconds,
+            max_input_chars=settings.llm_max_input_chars,
+        )
     prefixes = {"embed": "embed_", "rerank": "rerank_", "whisper": "whisper_"}
     prefix = prefixes.get(purpose)
     if not prefix:

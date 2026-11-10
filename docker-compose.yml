@@ -55,6 +55,11 @@ services:
       - MSC_WHISPER_BASE_URL=${MSC_WHISPER_BASE_URL:-}
       - MSC_WHISPER_MODEL=${MSC_WHISPER_MODEL:-}
       - MSC_WHISPER_API_KEY=${MSC_WHISPER_API_KEY:-}
+      - MSC_ECHO_BASE_URL=${MSC_ECHO_BASE_URL:-}
+      - MSC_ECHO_MODEL=${MSC_ECHO_MODEL:-}
+      - MSC_ECHO_API_KEY=${MSC_ECHO_API_KEY:-}
+      # Where echo commentaries (save=true) land; empty = the memory directory.
+      - MSC_ECHO_DIR=${MSC_ECHO_DIR:-}
       - MSC_RAG_RECALL_TOP=${MSC_RAG_RECALL_TOP:-30}
       - MSC_RAG_RERANK_TOPN=${MSC_RAG_RERANK_TOPN:-10}
       - MSC_RAG_RRF_K=${MSC_RAG_RRF_K:-60}

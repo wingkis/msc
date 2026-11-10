@@ -9,6 +9,7 @@ import base64
 import hashlib
 import random
 import struct
+from pathlib import Path
 
 from msc.config import get_settings
 from msc.services import llm, rag_providers
@@ -65,7 +66,7 @@ def _embed_card(client, **patch):
 def test_purpose_cards_are_seeded_and_independent(client):
     cards = client.get("/api/v1/model/cards").json()
     purposes = {c["purpose"] for c in cards}
-    assert purposes == {"chat", "embed", "rerank", "whisper"}
+    assert purposes == {"chat", "embed", "rerank", "whisper", "echo"}
     # The chat card keeps 2.x behaviour: env-seeded, unconfigured in tests.
     chat = next(c for c in cards if c["purpose"] == "chat")
     assert chat["base_url"] == "" and chat["ready"] is False
@@ -416,6 +417,65 @@ def test_echo_comments_without_writing(client, monkeypatch):
 
     assert client.post("/api/v1/rag/echo", json={"slug": "nope-missing"}).status_code == 404
     client.put("/api/v1/model", json={"base_url": "", "model": ""})  # leave chat unconfigured
+
+
+def test_echo_prefers_dedicated_echo_card(client, monkeypatch):
+    seen = {}
+    def spy(cfg, messages, max_tokens=None):
+        seen["base_url"] = cfg.base_url
+        return {"text": "评注与长文正文。", "model": cfg.model, "finish_reason": "stop",
+                "usage": {}, "latency_ms": 5, "reasoning_only": False}
+    monkeypatch.setattr(llm, "chat", spy)
+
+    slug = _make(client, "Echo Card Target", body="值得回响的一段")
+    # Only chat configured: echo falls back to chat.
+    client.put("/api/v1/model", json={"base_url": "http://chat.test:1234", "model": "fake/chat"})
+    assert client.post("/api/v1/rag/echo", json={"slug": slug}).json()["card"] == "chat"
+
+    # Set the echo card: it now wins, pointing at its own API.
+    client.put("/api/v1/model?purpose=echo",
+               json={"base_url": "http://echo.test:9999", "model": "special/echo"})
+    result = client.post("/api/v1/rag/echo", json={"slug": slug}).json()
+    assert result["card"] == "echo"
+    assert seen["base_url"] == "http://echo.test:9999"
+
+    client.put("/api/v1/model?purpose=echo", json={"base_url": "", "model": ""})
+    client.put("/api/v1/model", json={"base_url": "", "model": ""})
+
+
+def test_echo_save_writes_md_that_sync_adopts(client, monkeypatch, tmp_path):
+    from msc.config import get_settings
+    from msc.workers import sync_worker
+    echo_base = tmp_path / "echo-out"
+    monkeypatch.setattr(get_settings(), "echo_dir", str(echo_base))
+    monkeypatch.setattr(llm, "chat", _fake_chat_ok())
+    client.put("/api/v1/model", json={"base_url": "http://chat.test:1234", "model": "fake/chat"})
+    slug = _make(client, "Savable Echo", body="存下来的评注")
+
+    result = client.post("/api/v1/rag/echo", json={"slug": slug, "save": True}).json()
+    written = Path(result["saved_to"])
+    assert written == echo_base / f"{slug}-回响.md"
+    assert written.exists()
+    assert "评注与长文正文" in written.read_text(encoding="utf-8")
+
+    # Custom filename, and a traversal attempt is rejected.
+    named = client.post("/api/v1/rag/echo", json={"slug": slug, "save": True,
+                                                   "save_path": "mine"}).json()
+    assert Path(named["saved_to"]) == echo_base / "mine.md"
+    bad = client.post("/api/v1/rag/echo", json={"slug": slug, "save": True,
+                                                 "save_path": "../escape"})
+    assert bad.status_code == 422
+    assert not (tmp_path / "escape.md").exists()
+
+    # With base = the memory dir, the saved echo becomes a real memory next cycle.
+    monkeypatch.setattr(get_settings(), "echo_dir", "")
+    mem = client.post("/api/v1/rag/echo", json={"slug": slug, "save": True,
+                                                 "save_path": "adopted-echo"}).json()
+    assert Path(mem["saved_to"]).parent == Path(get_settings().memory_dir)
+    sync_worker.run_sync_cycle()
+    got = client.get("/api/v1/memories/adopted-echo")
+    assert got.status_code == 200 and "回响" in got.json()["name"]
+    client.put("/api/v1/model", json={"base_url": "", "model": ""})
 
 
 def test_heatmap_counts_by_day(client):

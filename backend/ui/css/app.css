@@ -274,6 +274,8 @@ html, body {
   transition: all 0.15s;
 }
 .memory-card:hover { border-color: var(--primary); background: var(--bg-hover); }
+.echo-inline-btn { margin-left: auto; align-self: center; opacity: 0; transition: opacity 0.15s; white-space: nowrap; }
+.memory-card:hover .echo-inline-btn { opacity: 1; }
 .memory-priority-dot {
   width: 8px;
   height: 8px;

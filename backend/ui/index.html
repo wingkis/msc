@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.3.0-1">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.3.0-2">
 </head>
 <body>
   <!-- Header -->
@@ -303,6 +303,15 @@
                 <input type="text" id="echo-instruction" placeholder="当时的取舍现在还成立吗">
               </div>
             </div>
+            <div class="form-row">
+              <div class="form-group setting-item">
+                <input type="checkbox" id="echo-save" checked><label for="echo-save">存成 md 记忆文件（存进记忆目录，自动入库）</label>
+              </div>
+              <div class="form-group">
+                <label>文件名（相对记忆目录，留空＝slug-回响）</label>
+                <input type="text" id="echo-save-path" placeholder="{slug}-回响">
+              </div>
+            </div>
             <div class="sync-controls">
               <button class="btn btn-primary" id="echo-btn" onclick="runEcho()">写评注</button>
               <span id="echo-status" class="sync-result"></span>
@@ -501,6 +510,24 @@
               <button class="btn btn-primary" onclick="saveRagCard('whisper')">保存</button>
               <button class="btn" onclick="testRagCard('whisper')">测试</button>
               <div id="rag-whisper-status" class="sync-result"></div>
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>🪞 回响评注模型（可选）</h3>
+            <div class="setting-hint">评注专用的独立模型 API；<b>留空自动回退 chat 卡</b>。评注可存成 md 记忆文件（默认存进记忆目录，下个同步周期自动入库成为普通记忆）。</div>
+            <div class="model-form">
+              <div class="form-group"><label>API 地址</label><input type="text" id="rag-echo-base-url"></div>
+              <div class="form-group"><label>模型名</label><input type="text" id="rag-echo-name"></div>
+              <div class="form-group"><label>API Key</label><input type="password" id="rag-echo-key" placeholder="留空＝不修改"></div>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="rag-echo-enabled"><label for="rag-echo-enabled">启用</label>
+              <input type="checkbox" id="rag-echo-key-clear"><label for="rag-echo-key-clear">清除密钥</label>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveRagCard('echo')">保存</button>
+              <button class="btn" onclick="testRagCard('echo')">测试</button>
+              <div id="rag-echo-status" class="sync-result"></div>
             </div>
           </div>
           <div class="settings-card">
@@ -713,9 +740,9 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.3.0-1"></script>
-  <script src="/ui/js/app.js?v=2.3.0-1"></script>
-  <script src="/ui/js/graph.js?v=2.3.0-1"></script>
+  <script src="/ui/js/api.js?v=2.3.0-2"></script>
+  <script src="/ui/js/app.js?v=2.3.0-2"></script>
+  <script src="/ui/js/graph.js?v=2.3.0-2"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

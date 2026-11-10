@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     whisper_base_url: str = ""
     whisper_model: str = ""
     whisper_api_key: str = ""
+    # Echo (评注) can run on its own model card; unset it falls back to chat.
+    echo_base_url: str = ""
+    echo_model: str = ""
+    echo_api_key: str = ""
+    # Where /rag/echo's markdown lands when save=true. Empty = the memory
+    # directory, so an echo becomes a first-class memory on the next sync.
+    echo_dir: str = ""
     # Fusion tuning, overridable per key in the rag_settings table.
     rag_recall_top: int = 30
     rag_rerank_topn: int = 10
