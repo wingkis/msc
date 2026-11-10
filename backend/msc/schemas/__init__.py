@@ -93,6 +93,11 @@ class GraphEdge(BaseModel):
 class GraphResponse(BaseModel):
     nodes: List[GraphNode]
     edges: List[GraphEdge]
+    # A degree cap silently hides edges, so say how many: an 84-node memory set
+    # carries ~2.3k auto-linked edges and hairballs the layout completely.
+    edges_total: int = 0
+    edges_dropped: int = 0
+    max_degree: int = Field(0, description="the cap that was applied; 0 = unlimited")
 
 
 class RegisterRequest(BaseModel):

@@ -241,3 +241,74 @@ def test_auto_link_rebuild_replaces_keyword_edges(client):
     assert rebuilt["relations_created"] > 0
     relation = client.get("/api/v1/memories/link-a/relate").json()
     assert any(r["relation_type"] == "keyword" for r in relation)
+
+
+# ── Degree cap: the hairball fix ─────────────────────────────────────
+
+def _graph_ids_by_slug(data):
+    return {n["slug"]: n["id"] for n in data["nodes"]}
+
+
+def test_graph_without_max_degree_still_returns_every_edge(client):
+    hub = client.post("/api/v1/memories", json=_payload(name="Cap Free Hub",
+                                                       slug="cap-free-hub")).json()["slug"]
+    leaf = client.post("/api/v1/memories", json=_payload(name="Cap Free Leaf",
+                                                        slug="cap-free-leaf")).json()["slug"]
+    assert client.post(f"/api/v1/memories/{hub}/relate?target={leaf}").status_code == 200
+
+    data = client.get("/api/v1/memories/graph").json()
+    assert data["max_degree"] == 0 and data["edges_dropped"] == 0
+    assert data["edges_total"] == len(data["edges"])
+
+
+def test_graph_max_degree_caps_every_node(client):
+    hub = client.post("/api/v1/memories", json=_payload(name="Degree Hub",
+                                                       slug="degree-hub")).json()["slug"]
+    for i in range(5):
+        leaf = client.post("/api/v1/memories",
+                           json=_payload(name=f"Degree Leaf {i}",
+                                         slug=f"degree-leaf-{i}")).json()["slug"]
+        assert client.post(f"/api/v1/memories/{hub}/relate?target={leaf}").status_code == 200
+
+    full = client.get("/api/v1/memories/graph").json()
+    hub_id = _graph_ids_by_slug(full)[hub]
+    assert sum(1 for e in full["edges"] if hub_id in (e["source"], e["target"])) == 5
+
+    capped = client.get("/api/v1/memories/graph", params={"max_degree": 2}).json()
+    degrees = {}
+    for edge in capped["edges"]:
+        degrees[edge["source"]] = degrees.get(edge["source"], 0) + 1
+        degrees[edge["target"]] = degrees.get(edge["target"], 0) + 1
+    assert max(degrees.values()) <= 2
+    assert capped["max_degree"] == 2
+    assert capped["edges_dropped"] == capped["edges_total"] - len(capped["edges"]) >= 3
+    # Nodes are never dropped by a cap: only edges are.
+    assert len(capped["nodes"]) == len(full["nodes"])
+
+
+def test_graph_degree_cap_prefers_curated_relations(client):
+    """An auto-linked keyword edge must lose to a hand-made one when there is
+    room for only one."""
+    words = "quorum replication fencing"
+    names = ["Keyword Node One", "Keyword Node Two", "Keyword Node Three"]
+    slugs = []
+    for i, name in enumerate(names):
+        created = client.post("/api/v1/memories", json={
+            "name": name, "slug": f"keyword-node-{i}", "body": words,
+            "category": "project", "priority": "medium"})
+        slugs.append(created.json()["slug"])
+    assert client.post("/api/v1/memories/graph/auto-link",
+                       params={"min_freq": 2, "max_coverage": 1.0, "min_shared": 2}).status_code == 200
+
+    # hand-made edge on top of the keyword mesh
+    assert client.post(f"/api/v1/memories/{slugs[0]}/relate?target={slugs[1]}").status_code == 200
+
+    full = client.get("/api/v1/memories/graph").json()
+    first = _graph_ids_by_slug(full)[slugs[0]]
+    mine = [e for e in full["edges"] if first in (e["source"], e["target"])]
+    assert any(e["relation_type"] == "related" for e in mine)
+    assert any(e["relation_type"] == "keyword" for e in mine)
+
+    capped = client.get("/api/v1/memories/graph", params={"max_degree": 1}).json()
+    mine = [e for e in capped["edges"] if first in (e["source"], e["target"])]
+    assert len(mine) == 1 and mine[0]["relation_type"] == "related"

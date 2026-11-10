@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.4（msc-pic 分支）
+
+- **图谱不再疯转** — 现网 84 节点 / 2363 条边（其中 2341 条是自动关联产生的 `keyword` 边），最大度数 81：枢纽节点让 vis-network 的物理模拟永不收敛，整张图一直在转。`GET /api/v1/memories/graph` 新增 `max_degree`（默认 0＝不限制，agent 契约不变）：按类型权重再时间裁剪 `depends_on > summarizes > relates_to/related > keyword`，同权重取最新，且只有两端都还有余量才保留该边；响应新增 `edges_total` / `edges_dropped` / `max_degree`，度数上限只裁边、从不删节点。
+- **图谱页控件** — 控制条新增「每节点 ≤3/4/6/8/12 关联」下拉（默认 ≤6，另有"不限制（会很挤）"）与「重新布局」按钮；右侧 `#graph-note` 实时显示「显示 X / Y 条关联（每节点 ≤N，省略 M 条）」或布局状态。
+- **布局跑完就冻结** — 原来 `stabilization: {iterations: 100}` 此后再没管过 physics，图会永远微微转动。现在 300 轮 stabilization 结束即 `physics.enabled=false` 并自动 `fit()`，节点仍可单独拖动，「重新布局」用 `network.stabilize()` 再排一次；斥力/阻尼调稳（gravitationalConstant -1200、damping 0.5、avoidOverlap 0.35、springLength 90、minVelocity 1.2）。
+- 测试 152 个（新增：无 `max_degree` 时不裁任何边、`max_degree=2` 时每个节点度数 ≤2 且节点数不变、`max_degree=1` 时手工 `related` 边胜过自动 `keyword` 边；界面侧 `test_graph_view_can_cap_edges_per_node` 钉住控件与"稳定后关闭 physics"。另修一处潜在陷阱：`test_selected_digest_creates_memory_and_archives_sources` 的计数算术假设 `/memories` 不分页，而它默认只返回 50 条，已改为显式 `limit=500`）。
+
 ### 2.5.3（msc-pic 分支）
 
 - **「依据」格式钉死** — 真机跑出来写成 `直接记载 ← slug`（标签在前，读不出结论是什么）。模板补一行结构示例 `照抄这个结构，把内容换成你自己的：某条结论 ← slug-甲, slug-乙（综合推断）`，小模型照着填即可，测试同时守住这两行。

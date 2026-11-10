@@ -110,7 +110,9 @@ def test_selected_digest_creates_memory_and_archives_sources(client, monkeypatch
           archive_sources=False)
 
     slugs = [_make(client, "Digest Source Alpha"), _make(client, "Digest Source Beta")]
-    before = client.get("/api/v1/memories").json()
+    # /memories pages at 50 by default; the arithmetic below needs the real
+    # corpus size, so ask for the whole thing.
+    before = client.get("/api/v1/memories", params={"limit": 500}).json()
 
     result = client.post("/api/v1/summarize/selected", json={
         "slugs": slugs, "archive_sources": True, "name": "手动小结 Alpha Beta"}).json()
@@ -130,7 +132,7 @@ def test_selected_digest_creates_memory_and_archives_sources(client, monkeypatch
     for slug in slugs:
         assert client.get(f"/api/v1/memories/{slug}").status_code == 404
 
-    after = client.get("/api/v1/memories").json()
+    after = client.get("/api/v1/memories", params={"limit": 500}).json()
     assert len(after) == len(before) - len(slugs) + 1
 
     # The archive is undoable: the digest itself stays put.

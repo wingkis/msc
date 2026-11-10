@@ -117,9 +117,14 @@ const API = {
   },
 
   // Graph / vocab
-  getGraph(center) {
-    const qs = center ? `?center=${encodeURIComponent(center)}` : '';
-    return apiFetch(`/memories/graph${qs}`);
+  // maxDegree caps edges per node server-side: the auto-linker can produce
+  // thousands of keyword edges and one hub then spins the layout forever.
+  getGraph(center, maxDegree) {
+    const params = {};
+    if (center) params.center = center;
+    if (maxDegree) params.max_degree = maxDegree;
+    const qs = new URLSearchParams(params).toString();
+    return apiFetch('/memories/graph' + (qs ? '?' + qs : ''));
   },
   autoLinkGraph({ minFreq = 3, maxCoverage = 0.3, minShared = 3, rebuild = false } = {}) {
     return apiFetch(`/memories/graph/auto-link?min_freq=${minFreq}&max_coverage=${maxCoverage}&min_shared=${minShared}&rebuild=${rebuild}`,

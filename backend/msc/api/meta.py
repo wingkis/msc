@@ -85,7 +85,7 @@ READ
   GET  /meta                          vocabularies, tags, counts
   GET  /tags                          tag names + usage counts
   GET  /stats                         counts by category/priority/source
-  GET  /memories/graph                relation graph
+  GET  /memories/graph                relation graph (?max_degree=N caps edges per node; 0 = all)
   GET  /versions/{{slug}}             edit history (only the latest snapshot is kept)
 
 WRITE

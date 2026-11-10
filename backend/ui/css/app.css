@@ -582,6 +582,9 @@ a:hover { text-decoration-color: currentColor; }
   margin-bottom: 12px;
 }
 .graph-controls .search-box.small { flex: 1 1 160px; min-width: 0; }
+/* How many of the stored edges are actually drawn, and what the layout is
+   doing right now. */
+.graph-note { color: var(--text-dim); margin-left: auto; white-space: nowrap; }
 .graph-container {
   flex: 1;
   background: var(--bg-card);

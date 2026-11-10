@@ -46,12 +46,47 @@ async function autoLinkGraph() {
   }
 }
 
+// Layout runs to a fixed number of rounds and then physics is switched off.
+// Left running (the old config), a hub node with 80 edges kept the whole
+// picture rotating and it never settled.
+const GRAPH_STABILIZE_ROUNDS = 300;
+
+function graphDegreeCap() {
+  const select = document.getElementById('graph-degree-select');
+  const value = select ? parseInt(select.value, 10) : 6;
+  return Number.isFinite(value) ? value : 6;
+}
+
+function setGraphNote(text) {
+  const note = document.getElementById('graph-note');
+  if (note) note.textContent = text || '';
+}
+
+function graphDegreeChanged() {
+  loadGraph();
+}
+
+function relayoutGraph() {
+  if (!graphNetwork) { loadGraph(); return; }
+  setGraphNote('重新布局中…');
+  graphNetwork.setOptions({
+    physics: { enabled: true, stabilization: { enabled: true, iterations: GRAPH_STABILIZE_ROUNDS } }
+  });
+  graphNetwork.stabilize(GRAPH_STABILIZE_ROUNDS);
+}
+
 async function loadGraph() {
+  const cap = graphDegreeCap();
   try {
-    const data = await API.getGraph();
+    const data = await API.getGraph(null, cap);
     allGraphData = data;
     filteredGraphData = data;
     renderGraph(data);
+    if (data.edges_total != null && data.edges_total > data.edges.length) {
+      setGraphNote(`显示 ${data.edges.length} / ${data.edges_total} 条关联（每节点 ≤${cap}，省略 ${data.edges_dropped} 条）`);
+    } else {
+      setGraphNote(`${data.edges.length} 条关联`);
+    }
   } catch (e) {
     console.error('Graph load error:', e);
     renderGraphFallback(allGraphData, String(e.message || e));
@@ -134,8 +169,12 @@ function renderGraph(data) {
     },
     physics: {
       enabled: true,
-      stabilization: { iterations: 100 },
-      barnesHut: { gravitationalConstant: -3000, springConstant: 0.04, springLength: 120 }
+      stabilization: { enabled: true, iterations: GRAPH_STABILIZE_ROUNDS, updateInterval: 25, fit: true },
+      barnesHut: {
+        theta: 0.7, damping: 0.5, avoidOverlap: 0.35,
+        gravitationalConstant: -1200, springConstant: 0.03, springLength: 90
+      },
+      minVelocity: 1.2, timestep: 0.4
     },
     interaction: {
       hover: true,
@@ -148,6 +187,15 @@ function renderGraph(data) {
   };
 
   graphNetwork = new vis.Network(container, { nodes: visNodes, edges: visEdges }, options);
+
+  // Freeze once the layout has settled: dragging a node still works, the rest
+  // of the graph just stays where it is. 重新布局 runs another stabilise pass.
+  setGraphNote('正在布局…');
+  graphNetwork.on('stabilizationIterationsDone', () => {
+    if (!graphNetwork) return;
+    graphNetwork.setOptions({ physics: { enabled: false, stabilization: false } });
+    graphNetwork.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
+  });
 
   // Click handler
   graphNetwork.on('click', function(params) {

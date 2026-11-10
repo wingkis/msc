@@ -180,3 +180,20 @@ def test_search_page_offers_a_digest_of_the_hits(client):
     for selector in (".search-digest", ".search-digest-head", ".search-digest-body",
                      ".search-digest-actions"):
         assert selector in css, selector
+
+
+def test_graph_view_can_cap_edges_per_node(client):
+    """The auto-linker writes thousands of keyword edges; one hub then keeps
+    the Vis.js layout rotating forever. The cap control and the freeze-on-settle
+    behaviour are one feature, so they are pinned together."""
+    html, js = _sources()
+    for marker in ('id="graph-degree-select"', 'onchange="graphDegreeChanged()"',
+                   'onclick="relayoutGraph()"', 'id="graph-note"'):
+        assert marker in html, marker
+    assert "max_degree" in js
+    assert "graphDegreeChanged" in js and "relayoutGraph" in js
+    # physics must be switched off once the layout settles
+    assert re.search(r"physics:\s*\{\s*enabled:\s*false", js), "layout never freezes"
+    assert "stabilizationIterationsDone" in js
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    assert ".graph-note" in css

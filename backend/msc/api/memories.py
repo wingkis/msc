@@ -278,8 +278,46 @@ def list_memories(
 
 # ── Graph (MUST be before /{slug} route) ──────────────────────────────
 
+# Hand-written relations outrank auto-linked ones when a degree cap has to
+# drop edges: a curated 'depends_on' is worth more than a keyword co-occurrence.
+_RELATION_RANK = {"depends_on": 0, "summarizes": 1, "relates_to": 2, "related": 2}
+
+
+def _cap_degrees(candidates: List[tuple], max_degree: int) -> List[GraphEdge]:
+    """Keep at most ``max_degree`` edges per node, strongest first.
+
+    ``candidates`` are (rank, created_at, relation) triples. An edge survives
+    only while both endpoints still have room — one hub with 80 edges is what
+    makes the Vis.js layout spin forever, and capping the degree is what makes
+    the picture readable again.
+    """
+    if max_degree <= 0:
+        return [GraphEdge(source=rel.memory_id_a, target=rel.memory_id_b,
+                          relation_type=rel.relation_type) for _, _, rel in candidates]
+
+    # Two stable passes: newest first, then by relation weight. So a curated
+    # edge beats an auto-linked one, and the newest of a kind wins the tie.
+    ordered = sorted(candidates, key=lambda c: c[1], reverse=True)
+    ordered = sorted(ordered, key=lambda c: c[0])
+
+    room: dict = {}
+    kept: List[GraphEdge] = []
+    for _, _, rel in ordered:
+        a, b = rel.memory_id_a, rel.memory_id_b
+        if room.get(a, 0) >= max_degree or room.get(b, 0) >= max_degree:
+            continue
+        room[a] = room.get(a, 0) + 1
+        room[b] = room.get(b, 0) + 1
+        kept.append(GraphEdge(source=a, target=b, relation_type=rel.relation_type))
+    return kept
+
+
 @router.get("/graph", response_model=GraphResponse)
-def get_graph(center: Optional[str] = Query(None), db: Session = Depends(get_db)):
+def get_graph(center: Optional[str] = Query(None),
+              max_degree: int = Query(0, ge=0, le=100,
+                                      description="cap edges per node (0 = unlimited); "
+                                                  "curated relations outrank auto-linked ones"),
+              db: Session = Depends(get_db)):
     """Get graph data for Vis.js visualization."""
     if center:
         center_mem = db.query(Memory).filter(Memory.slug == center, Memory.archived == 0).first()
@@ -298,7 +336,7 @@ def get_graph(center: Optional[str] = Query(None), db: Session = Depends(get_db)
              for mem in memories]
     memory_ids = {m.id for m in memories}
     # Relations are stored in both directions, so fold each pair into one edge.
-    edges, seen = [], set()
+    candidates, seen = [], set()
     for rel in db.query(MemoryRelation).filter(
         MemoryRelation.memory_id_a.in_(memory_ids), MemoryRelation.memory_id_b.in_(memory_ids)
     ).all():
@@ -306,9 +344,11 @@ def get_graph(center: Optional[str] = Query(None), db: Session = Depends(get_db)
         if key in seen:
             continue
         seen.add(key)
-        edges.append(GraphEdge(source=rel.memory_id_a, target=rel.memory_id_b,
-                               relation_type=rel.relation_type))
-    return GraphResponse(nodes=nodes, edges=edges)
+        candidates.append((_RELATION_RANK.get(rel.relation_type, 9), rel.created_at or "", rel))
+
+    edges = _cap_degrees(candidates, max_degree)
+    return GraphResponse(nodes=nodes, edges=edges, edges_total=len(candidates),
+                         edges_dropped=len(candidates) - len(edges), max_degree=max_degree)
 
 
 @router.post("/graph/auto-link")
