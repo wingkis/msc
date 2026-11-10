@@ -18,7 +18,7 @@ from msc.models import PicSetting
 _log = logging.getLogger("msc.pic")
 
 PIC_TUNABLES = ("scan_seconds", "thumb_batch", "rescan_hours", "thumb_px",
-                "caption_batch", "embed_batch")
+                "caption_batch", "embed_batch", "caption_paused")
 
 # Filename patterns that mean "this is a screenshot, not a camera photo".
 _SCREENSHOT_MARKS = ("screenshot", "screen_shot", "screen shot", "screencapture",
@@ -47,7 +47,9 @@ def _pic_defaults() -> dict:
             # 1 by default: captioning shares a busy local GPU (the vision card
             # usually sits on the same box that answers chat). Raise it when
             # the endpoint can take it.
-            "caption_batch": 1, "embed_batch": 8}
+            "caption_batch": 1, "embed_batch": 8,
+            # 1 = the vision stage rests: thumb/scan keep flowing, queue waits.
+            "caption_paused": 0}
 
 
 def pic_settings(db: Session) -> dict:

@@ -253,7 +253,13 @@ def _captions(db, report: dict) -> None:
     The batch is 1 by default and the whole stage stops on the first model
     error (card noted, retry_at backoff) — a busy or down multimodal endpoint
     must not burn the tick, and the states stay queued for the next one.
+
+    caption_paused (the 暂停图像描述 switch on the 照片源 settings card)
+    parks this stage outright: scan and thumbs keep flowing, but zero vision
+    calls leave the container while the model is busy elsewhere.
     """
+    if pic_setting(db, "caption_paused"):
+        return
     cfg = get_config(db, "vision")
     if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
         return  # keep the queue; configuring the card backfills later

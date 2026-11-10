@@ -277,6 +277,7 @@ class PicSettingsUpdate(BaseModel):
     thumb_px: Optional[int] = Field(None, ge=64, le=2048)
     caption_batch: Optional[int] = Field(None, ge=1, le=32)
     embed_batch: Optional[int] = Field(None, ge=1, le=64)
+    caption_paused: Optional[int] = Field(None, ge=0, le=1)  # 0/1 switch
 
 
 class PicItemsBatch(BaseModel):

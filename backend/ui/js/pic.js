@@ -149,6 +149,13 @@ function renderPicStatusLine(status) {
   if (c.discovered) parts.push(picChip('pic-chip-warn', `待缩略图 <b>${c.discovered}</b>`));
   if (c.failed) parts.push(picChip('pic-chip-bad', `失败 <b>${c.failed}</b>`));
   const scanning = (status.sources || []).filter(s => s.state === 'scanning').length;
+  // The 暂停图像描述 switch is visible from the gallery too: chip + live sync
+  // of the settings-page button, whoever flipped it from either page.
+  if (status.settings && status.settings.caption_paused !== undefined) {
+    const paused = !!status.settings.caption_paused;
+    if (paused !== picCaptionPaused) { picCaptionPaused = paused; picPaintCaptionPauseBtn(); }
+  }
+  if (picCaptionPaused) parts.push(picChip('pic-chip-dim', '描述已暂停'));
   if (status.missing) parts.push(picChip('pic-chip-dim', `缺失 <b>${status.missing}</b>`));
   if (status.trashed) parts.push(picChip('pic-chip-dim', `回收站 <b>${status.trashed}</b>`));
   if (scanning) parts.push(picChip('pic-chip-live', `${scanning} 个源正在扫描`));
@@ -744,7 +751,30 @@ async function loadPicSettings() {
     document.getElementById('pic-set-thumb-batch').value = s.thumb_batch ?? '';
     document.getElementById('pic-set-rescan').value = s.rescan_hours ?? '';
     document.getElementById('pic-set-thumb-px').value = s.thumb_px ?? '';
+    picCaptionPaused = !!s.caption_paused;
+    picPaintCaptionPauseBtn();
   } catch (e) { /* kill switch off — leave the fields empty */ }
+}
+
+// Park the vision stage without touching any source card: scan and thumbs
+// keep flowing, caption queue waits, zero vision calls while the model rests.
+let picCaptionPaused = false;
+
+function picPaintCaptionPauseBtn() {
+  const btn = document.getElementById('pic-cap-pause-btn');
+  if (btn) btn.textContent = picCaptionPaused ? '恢复图像描述' : '暂停图像描述';
+}
+
+async function picToggleCaptionPause() {
+  const out = document.getElementById('pic-cap-pause-status');
+  try {
+    const r = await API.picUpdateSettings({ caption_paused: picCaptionPaused ? 0 : 1 });
+    picCaptionPaused = !!((r.settings || {}).caption_paused);
+    picPaintCaptionPauseBtn();
+    if (out) out.textContent = picCaptionPaused
+      ? '已暂停：待描述的照片原地排队'
+      : '已恢复：下一轮（≤15 秒）继续';
+  } catch (e) { if (out) out.textContent = e.message; }
 }
 
 async function savePicSettings() {

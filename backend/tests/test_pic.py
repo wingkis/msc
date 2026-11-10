@@ -1014,3 +1014,64 @@ def test_replaced_file_requeues_and_drops_the_stale_vector(client, db, photos_di
     db.query(PicItem).filter(PicItem.source_id == sid).delete()
     db.query(PicSource).filter(PicSource.id == sid).delete()
     db.commit()
+
+
+def test_caption_pause_switch(client, db, photos_dir, monkeypatch):
+    """暂停图像描述: the vision stage parks outright — no model call, no
+    backoff churn — while scan/thumbs keep flowing, and the same queue
+    resumes in place when the switch flips back."""
+    from msc.models import PicItem, PicSource
+    from msc.services import llm
+    from msc.workers import pic_worker
+
+    client.put("/api/v1/model?purpose=vision",
+               json={"base_url": "http://vision.test:8080", "model": "fake-vl"})
+    assert client.put("/api/v1/pic/settings",
+                      json={"caption_paused": 1}).status_code == 200
+    assert client.get("/api/v1/pic/status").json()["settings"]["caption_paused"] == 1
+    assert client.put("/api/v1/pic/settings",
+                      json={"caption_paused": 2}).status_code == 422
+
+    # One queued photo, fully owned by this test: a source whose root cannot
+    # be walked keeps the row out of scan/GC reach (the stage under test is
+    # source-independent), and clearing the table first makes the caption
+    # queue deterministic — lowest id goes first.
+    db.query(PicItem).delete()
+    db.commit()
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": "pause-src", "kind": "local",
+        "root_path": str(photos_dir / "gone-xyz")}).json()["id"]
+    rel = f"thumbs/{sid}/pause-test.webp"
+    thumb = Path(os.environ["MSC_PIC_DIR"]) / rel
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), "red").save(thumb, "WEBP")
+    item = PicItem(source_id=sid, rel_path="pause.jpg",
+                   origin_uri=f"pic://{sid}/pause.jpg", name="pause.jpg",
+                   ext="jpg", kind="photo", state="thumb_ready",
+                   thumb_path=rel, archived=0, missing=0, error_count=0,
+                   discovered_at="2026-01-01", updated_at="2026-01-01")
+    db.add(item)
+    db.commit()
+    item_id = item.id
+
+    def explode(cfg, messages, max_tokens=None):
+        raise AssertionError("caption_paused must not reach the vision card")
+
+    monkeypatch.setattr(llm, "chat", explode)
+    report = pic_worker.run_once()
+    assert report is None or not report.get("error")  # explode never fired
+    db.expire_all()
+    parked = db.get(PicItem, item_id)
+    assert parked.state == "thumb_ready" and parked.retry_at is None
+
+    # Flip back: the untouched queue advances on the very next pass.
+    assert client.put("/api/v1/pic/settings",
+                      json={"caption_paused": 0}).status_code == 200
+    monkeypatch.setattr(llm, "chat", _caption_chat({}))
+    pic_worker.run_once()
+    db.expire_all()
+    assert db.get(PicItem, item_id).state in ("captioned", "embedded")
+
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()
