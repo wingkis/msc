@@ -1024,3 +1024,45 @@ html, body {
 .heat-2 { background: rgba(34, 197, 94, 0.55); }
 .heat-3 { background: rgba(34, 197, 94, 0.78); }
 .heat-4 { background: #22c55e; }
+
+/* ── Photos (msc-pic) ─────────────────────────────────────────────── */
+.pic-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.pic-toolbar select, .pic-toolbar input {
+  background: var(--bg-secondary); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+}
+.pic-toolbar input#pic-month { width: 130px; }
+.pic-toolbar input#pic-search { width: 180px; }
+.pic-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px; align-items: stretch;
+}
+.pic-month-head {
+  grid-column: 1 / -1; font-weight: 600; color: var(--text-muted);
+  margin: 10px 0 2px; font-size: 14px;
+}
+.pic-tile {
+  position: relative; border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; background: var(--bg-secondary);
+  display: flex; flex-direction: column; min-height: 120px;
+}
+.pic-tile img { width: 100%; height: 120px; object-fit: cover; display: block; }
+.pic-placeholder {
+  width: 100%; height: 120px; display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); font-size: 20px;
+  background: repeating-linear-gradient(45deg, transparent, transparent 8px,
+              rgba(128,128,128,0.07) 8px, rgba(128,128,128,0.07) 16px);
+}
+.pic-tile-name {
+  font-size: 11px; padding: 4px 6px 2px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pic-tile-cap { font-size: 11px; padding: 0 6px 6px; color: var(--text); opacity: .75; }
+.state-thumb_ready .pic-tile-name::after { content: " · 待描述"; opacity: .55; }
+.state-captioned .pic-tile-name::after { content: " · 待索引"; opacity: .55; }
+.pic-badge {
+  position: absolute; top: 6px; right: 6px; background: var(--danger);
+  color: #fff; border-radius: 4px; padding: 1px 6px; font-size: 11px;
+}
+.state-failed .pic-placeholder { opacity: .5; }
+.pic-sentinel { height: 1px; }

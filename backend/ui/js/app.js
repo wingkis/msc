@@ -59,10 +59,11 @@ function navTo(page, searchInputId) {
       break;
     case 'graph': loadGraph(); break;
     case 'voice': initVoicePage(); break;
+    case 'pics': loadPics(); break;
     case 'insights': loadHeatmap(); break;
     // The digest half of the UI rides along: the card on settings, a short
     // status + recent runs on the dashboard.
-    case 'settings': loadSettings(); loadModelCard(); loadRagCards(); loadRagStatus(); break;
+    case 'settings': loadSettings(); loadModelCard(); loadRagCards(); loadRagStatus(); loadPicSources(); loadPicSettings(); break;
   }
 }
 

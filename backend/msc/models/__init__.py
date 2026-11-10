@@ -293,6 +293,130 @@ class RagSetting(Base):
     updated_at = Column(String, nullable=False)
 
 
+class PicSource(Base):
+    """Photo source card — the pic cousin of the model card.
+
+    A row is one folder or remote share the user linked from the Web UI:
+    a local path inside MSC_PIC_ROOTS, an SMB share, or a WebDAV URL.
+    Credentials live here (masked in the API, same policy as api_key).
+    ``scan_cursor`` is the resumable scan pointer: the last rel_path the
+    walker already inserted, NULL when a walk completed. Interrupting a
+    thousand-photo scan mid-walk costs nothing — the next tick resumes.
+    """
+
+    __tablename__ = "pic_sources"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="local")   # local | smb | webdav
+    # local: absolute path inside pic_roots. smb: host+share+subpath. webdav: url.
+    root_path = Column(String, default="")
+    host = Column(String, default="")
+    share = Column(String, default="")
+    subpath = Column(String, default="")
+    url = Column(String, default="")
+    username = Column(String, default="")
+    password = Column(String, default="")
+    enabled = Column(Integer, default=1)
+
+    # idle | scanning | paused | error — paused means "user stopped it", the
+    # scan cursor survives and resume picks the walk back up.
+    state = Column(String, default="idle")
+    scan_cursor = Column(String, nullable=True)
+    scan_epoch = Column(Integer, default=0)   # bumped by /scan to re-request a walk
+    last_scan_at = Column(String, nullable=True)
+    last_error = Column(String, nullable=True)
+    created_at = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('local','smb','webdav')", name="ck_pic_source_kind"),
+        CheckConstraint("state IN ('idle','scanning','paused','error')", name="ck_pic_source_state"),
+    )
+
+
+class PicItem(Base):
+    """One photo, one row — and the state column IS the pipeline queue.
+
+    discovered → thumb_ready → captioned → embedded, plus failed. Unlike
+    memories (whose text changes asynchronously behind a rag_dirty queue),
+    a photo's work state lives on the row itself: the pic_worker picks
+    anything lagging behind, so every stage commits independently and a
+    container restart resumes exactly where the last commit was.
+    Transient source errors back off via retry_at instead of failing the photo.
+    """
+
+    __tablename__ = "pic_items"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    source_id = Column(Integer, ForeignKey("pic_sources.id", ondelete="CASCADE"),
+                       nullable=False, index=True)
+    # POSIX path relative to the source root; unique per source so a resumed
+    # or repeated walk inserts nothing twice.
+    rel_path = Column(String, nullable=False)
+    origin_uri = Column(String, unique=True, nullable=False)  # pic://<sid>/<rel_path>
+    name = Column(String, nullable=False)
+    ext = Column(String, default="")
+    size_bytes = Column(Integer, default=0)
+    mtime = Column(String, default="")
+    # blake2b(size + first 1MB): dedup, burst-shot caption reuse, broken-file triage.
+    content_hash = Column(String, default="", index=True)
+    width = Column(Integer, default=0)
+    height = Column(Integer, default=0)
+    taken_at = Column(String, index=True, nullable=True)
+    taken_at_src = Column(String, default="")  # exif | exif_naive | mtime
+    kind = Column(String, default="photo")      # photo | screenshot
+    caption = Column(Text, default="")
+    tags = Column(String, default="")           # comma separated
+    thumb_path = Column(String, default="")     # pic_dir-relative: thumbs/<sid>/<id>.webp
+
+    state = Column(String, nullable=False, default="discovered")
+    error_count = Column(Integer, default=0)
+    retry_at = Column(String, nullable=True)
+    last_error = Column(String, nullable=True)
+
+    archived = Column(Integer, default=0)       # trash bin, same idea as Memory.archived
+    deleted_at = Column(String, nullable=True)
+    discovered_at = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "rel_path", name="uq_pic_source_path"),
+        CheckConstraint(
+            "state IN ('discovered','thumb_ready','captioned','embedded','failed')",
+            name="ck_pic_state",
+        ),
+        CheckConstraint("kind IN ('photo','screenshot')", name="ck_pic_kind"),
+    )
+
+
+class PicVector(Base):
+    """Photo caption embeddings — keyed by model exactly like Embedding.
+
+    Deliberately its own table: the embeddings self-heal SQL joins memories,
+    so photo ids living in there would silently cross-pollute memory search.
+    Photos are searched only by /pic/search; memories never see these rows.
+    """
+
+    __tablename__ = "pic_vectors"
+
+    pic_id = Column(Integer, ForeignKey("pic_items.id", ondelete="CASCADE"), primary_key=True)
+    model = Column(String, primary_key=True)
+    dim = Column(Integer, nullable=False)
+    vec = Column(LargeBinary, nullable=False)  # float32 little-endian, dim*4 bytes
+    embedded_at = Column(String, nullable=False)
+
+
+class PicSetting(Base):
+    """Pic pipeline tuning (thumb_batch, scan_seconds, ...) — env seeds, DB wins."""
+
+    __tablename__ = "pic_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+
+
 class SummaryRun(Base):
     """One row per digest attempt — the audit trail behind the model card.
 

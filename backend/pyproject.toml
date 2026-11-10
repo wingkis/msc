@@ -21,6 +21,8 @@ dependencies = [
     "aiofiles>=24.1.0",
     "rich>=13.0.0",
     "numpy>=1.26.0",
+    "pillow>=10.4.0",
+    "pillow-heif>=0.18.0",
 ]
 
 [project.optional-dependencies]

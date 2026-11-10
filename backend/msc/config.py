@@ -95,6 +95,20 @@ class Settings(BaseSettings):
     rag_rrf_k: int = 60
     rag_embed_batch: int = 16
 
+    # Photos (msc-pic): source cards, thumbnails, captioning. Kill switch:
+    # MSC_PIC_ENABLED=false keeps the pic_worker off and answers /pic/* with 503.
+    pic_enabled: bool = True
+    # Thumbnails live under the data volume: thumbs/<source_id>/<item_id>.webp.
+    pic_dir: Path = Path("/app/data/pics")
+    # Local source cards may only point inside these roots (comma separated).
+    # This is also the docker bind that makes photos visible to the container —
+    # add a matching volume in docker-compose.yml when changing it.
+    pic_roots: str = "/home/astro/photos"
+    # Longest edge of the generated webp thumbnail.
+    pic_thumb_px: int = 512
+    # Cap for GET /pic/item/{id}/original streaming responses; 0 = uncapped.
+    pic_max_original_mb: int = 256
+
     model_config = {"env_prefix": "MSC_", "env_file": ".env", "extra": "ignore"}
 
 

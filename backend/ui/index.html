@@ -31,6 +31,9 @@
         <a href="javascript:void(0)" data-page="voice" onclick="navTo('voice')" class="nav-link">
           <span class="nav-icon">🎙️</span> 语音
         </a>
+        <a href="javascript:void(0)" data-page="pics" onclick="navTo('pics')" class="nav-link">
+          <span class="nav-icon">📷</span> 照片
+        </a>
         <a href="javascript:void(0)" data-page="insights" onclick="navTo('insights')" class="nav-link">
           <span class="nav-icon">✨</span> 洞察
         </a>
@@ -275,6 +278,27 @@
       </div>
     </section>
 
+    <!-- Photos (msc-pic): 渐进摄入的照片墙，占位格与缩略图共用一个网格 -->
+    <section id="page-pics" class="page">
+      <div class="pic-toolbar">
+        <select id="pic-source-filter" onchange="picFilterChanged()">
+          <option value="">全部来源</option>
+        </select>
+        <select id="pic-kind-filter" onchange="picFilterChanged()">
+          <option value="">全部类型</option>
+          <option value="photo">照片</option>
+          <option value="screenshot">截图</option>
+        </select>
+        <input type="text" id="pic-month" placeholder="2024-05（按月）" onchange="picFilterChanged()">
+        <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
+        <button class="btn" onclick="loadPics()">刷新</button>
+        <span id="pic-counts" class="sync-result"></span>
+      </div>
+      <div id="pic-note" class="setting-hint"></div>
+      <div id="pic-grid" class="pic-grid"></div>
+      <div id="pic-sentinel" class="pic-sentinel"></div>
+    </section>
+
     <!-- Insights: 健康报告 / 奇遇长文 / 评注 / 热力图 -->
     <section id="page-insights" class="page">
       <div class="settings-page">
@@ -355,6 +379,73 @@
             <div class="setting-hint">
               局域网免登录：所有 API 和 Web UI 直接可用，没有 token 过期问题。<br>
               需要恢复鉴权时，在 <code>.env</code> 里设 <code>MSC_AUTH_ENABLED=true</code> 并重启容器。
+            </div>
+          </div>
+          <div class="settings-card">
+            <h3>🖼️ 照片源（msc-pic）</h3>
+            <div class="setting-hint">
+              添加本机目录或局域网共享（SMB/WebDAV）。worker 渐进扫描：先占位，再逐张生成缩略图，
+              随时可暂停/继续，中断后从断点接着走，不会重复。<br>
+              本地目录必须在 <code>MSC_PIC_ROOTS</code> 白名单内（默认 <code>/home/astro/photos</code>），并已挂载进容器。
+            </div>
+            <div id="pic-sources-list" class="log-list"></div>
+            <h4>添加照片源</h4>
+            <div class="form-row">
+              <div class="form-group">
+                <label>名称</label>
+                <input type="text" id="pic-src-name" placeholder="家庭相册">
+              </div>
+              <div class="form-group">
+                <label>类型</label>
+                <select id="pic-src-kind" onchange="picKindChanged()">
+                  <option value="local">本机目录</option>
+                  <option value="smb">SMB 共享</option>
+                  <option value="webdav">WebDAV</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" id="pic-field-local">
+              <label>目录路径（点“浏览”逐级点选，或手输白名单内的绝对路径）</label>
+              <div style="display:flex;gap:6px">
+                <input type="text" id="pic-src-path" placeholder="/home/astro/photos/2024" style="flex:1">
+                <button class="btn" onclick="picBrowsePick()">浏览…</button>
+              </div>
+              <select id="pic-browse-list" style="display:none;margin-top:6px" onchange="picBrowseChoose()"></select>
+            </div>
+            <div class="form-group" id="pic-field-smb" style="display:none">
+              <label>SMB：服务器 / 共享名 / 子目录</label>
+              <div class="form-row">
+                <input type="text" id="pic-src-host" placeholder="192.168.29.x">
+                <input type="text" id="pic-src-share" placeholder="photos">
+                <input type="text" id="pic-src-subpath" placeholder="2024/夏">
+              </div>
+              <div class="form-row">
+                <input type="text" id="pic-src-user" placeholder="用户名（留空＝访客）">
+                <input type="password" id="pic-src-pass" placeholder="密码">
+              </div>
+            </div>
+            <div class="form-group" id="pic-field-webdav" style="display:none">
+              <label>WebDAV 地址</label>
+              <input type="text" id="pic-src-url" placeholder="https://…/dav/photos">
+              <div class="form-row">
+                <input type="text" id="pic-src-user2" placeholder="用户名">
+                <input type="password" id="pic-src-pass2" placeholder="密码">
+              </div>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="picAddSource()">添加源</button>
+              <span id="pic-src-status" class="sync-result"></span>
+            </div>
+            <h4>摄入调参</h4>
+            <div class="form-row">
+              <div class="form-group"><label>每轮扫描秒数</label><input type="number" id="pic-set-scan-seconds" min="1" max="300"></div>
+              <div class="form-group"><label>缩略图批量</label><input type="number" id="pic-set-thumb-batch" min="1" max="200"></div>
+              <div class="form-group"><label>重扫间隔（小时）</label><input type="number" id="pic-set-rescan" min="1"></div>
+              <div class="form-group"><label>缩略图尺寸 px</label><input type="number" id="pic-set-thumb-px" min="64" max="2048"></div>
+            </div>
+            <div class="sync-controls">
+              <button class="btn" onclick="savePicSettings()">保存调参</button>
+              <span id="pic-settings-status" class="sync-result"></span>
             </div>
           </div>
           <div class="settings-card">
@@ -743,6 +834,7 @@
   <script src="/ui/js/api.js?v=2.3.1"></script>
   <script src="/ui/js/app.js?v=2.3.1"></script>
   <script src="/ui/js/graph.js?v=2.3.1"></script>
+  <script src="/ui/js/pic.js?v=2.3.1"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

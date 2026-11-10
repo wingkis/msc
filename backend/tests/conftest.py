@@ -47,6 +47,13 @@ os.environ.update({
     "MSC_ECHO_BASE_URL": "", "MSC_ECHO_MODEL": "", "MSC_ECHO_API_KEY": "",
     # Empty = echo md lands in the memory dir (the documented default).
     "MSC_ECHO_DIR": "",
+    # Photos (msc-pic) — pin roots/dir into the temp tree so the suite never
+    # touches /app/data or a real photo library. (MSC_PIC_ENABLED stays on:
+    # the state machine, resume and jail behaviour are under test.)
+    "MSC_PIC_ENABLED": "true",
+    "MSC_PIC_DIR": str(_TMP / "pics"),
+    "MSC_PIC_ROOTS": str(_TMP / "photos"),
+    "MSC_PIC_THUMB_PX": "64",
 })
 
 

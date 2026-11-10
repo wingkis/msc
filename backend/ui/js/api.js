@@ -247,5 +247,50 @@ const API = {
   },
   restoreDigestSources(slug) {
     return apiFetch(`/summarize/${encodeURIComponent(slug)}/restore-sources`, { method: 'POST' });
+  },
+
+  // Photos (msc-pic) — source cards, gallery, thumbnails. Web UI only.
+  picStatus() {
+    return apiFetch('/pic/status');
+  },
+  picUpdateSettings(data) {
+    return apiFetch('/pic/settings', { method: 'PUT', body: JSON.stringify(data) });
+  },
+  picListSources() {
+    return apiFetch('/pic/sources');
+  },
+  picCreateSource(data) {
+    return apiFetch('/pic/sources', { method: 'POST', body: JSON.stringify(data) });
+  },
+  picUpdateSource(id, data) {
+    return apiFetch(`/pic/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
+  picDeleteSource(id) {
+    return apiFetch(`/pic/sources/${id}`, { method: 'DELETE' });
+  },
+  picProbe(id) {
+    return apiFetch(`/pic/sources/${id}/probe`, { method: 'POST' });
+  },
+  picScan(id) {
+    return apiFetch(`/pic/sources/${id}/scan`, { method: 'POST' });
+  },
+  picPause(id) {
+    return apiFetch(`/pic/sources/${id}/pause`, { method: 'POST' });
+  },
+  picResume(id) {
+    return apiFetch(`/pic/sources/${id}/resume`, { method: 'POST' });
+  },
+  picBrowse(path = '') {
+    return apiFetch('/pic/browse?path=' + encodeURIComponent(path));
+  },
+  picItems(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return apiFetch('/pic/items?' + qs);
+  },
+  picItem(id) {
+    return apiFetch(`/pic/item/${id}`);
+  },
+  picThumbUrl(id) {
+    return `${API_BASE}/pic/item/${id}/thumb`;
   }
 };

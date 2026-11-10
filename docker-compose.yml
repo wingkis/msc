@@ -11,6 +11,11 @@ services:
       - /home/astro/msc/backups:/app/backups
       - /home/astro/.msc/memory:/home/astro/.msc/memory:rw
       - /home/astro/.claude/projects/-home-astro/memory:/home/astro/.claude/projects/-home-astro/memory:rw
+      # Photos (msc-pic): local source cards may only point inside MSC_PIC_ROOTS,
+      # and every root listed there must be bind-mounted here at the same path.
+      # :rw is required only by "彻底删除" (purge removes the original file);
+      # switch to :ro to keep originals strictly read-only.
+      - /home/astro/photos:/home/astro/photos:rw
     environment:
       - MSC_DB_PATH=/app/data/msc.db
       - MSC_MEMORY_DIR=/home/astro/.msc/memory
@@ -64,6 +69,12 @@ services:
       - MSC_RAG_RERANK_TOPN=${MSC_RAG_RERANK_TOPN:-10}
       - MSC_RAG_RRF_K=${MSC_RAG_RRF_K:-60}
       - MSC_RAG_EMBED_BATCH=${MSC_RAG_EMBED_BATCH:-16}
+      # Photos (msc-pic): kill switch + first-run seeds; same doctrine as RAG —
+      # .env seeds once, the Web UI and the pic_settings table win afterwards.
+      - MSC_PIC_ENABLED=${MSC_PIC_ENABLED:-true}
+      - MSC_PIC_ROOTS=${MSC_PIC_ROOTS:-/home/astro/photos}
+      - MSC_PIC_THUMB_PX=${MSC_PIC_THUMB_PX:-512}
+      - MSC_PIC_MAX_ORIGINAL_MB=${MSC_PIC_MAX_ORIGINAL_MB:-256}
     restart: unless-stopped
     # The access log is the audit trail of a no-login service — keep it, but
     # cap it so it cannot fill the disk.

@@ -11,13 +11,13 @@ UI = Path(__file__).resolve().parents[1] / "ui"
 def _sources():
     html = (UI / "index.html").read_text(encoding="utf-8")
     js = "".join((UI / "js" / name).read_text(encoding="utf-8")
-                 for name in ("api.js", "app.js", "graph.js"))
+                 for name in ("api.js", "app.js", "graph.js", "pic.js"))
     return html, js
 
 
 def test_assets_are_served(client):
     for path in ("/", "/ui/index.html", "/ui/js/app.js", "/ui/js/api.js",
-                 "/ui/js/graph.js", "/ui/css/app.css"):
+                 "/ui/js/graph.js", "/ui/js/pic.js", "/ui/css/app.css"):
         assert client.get(path).status_code == 200, path
 
 

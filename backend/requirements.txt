@@ -12,3 +12,5 @@ aiofiles>=24.1.0
 rich>=13.0.0
 jieba>=0.42.1
 numpy>=1.26.0
+pillow>=10.4.0
+pillow-heif>=0.18.0

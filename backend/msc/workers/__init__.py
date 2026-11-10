@@ -23,3 +23,8 @@ def start_workers():
         from msc.workers.rag_worker import start_rag_worker
         rag_thread = Thread(target=start_rag_worker, daemon=True)
         rag_thread.start()
+
+    if get_settings().pic_enabled:
+        from msc.workers.pic_worker import start_pic_worker
+        pic_thread = Thread(target=start_pic_worker, daemon=True)
+        pic_thread.start()

@@ -225,3 +225,42 @@ class RagImportRequest(BaseModel):
     # Bounded so one admin POST cannot balloon into gigabytes of base64;
     # a 50k-memory library imports in a handful of calls.
     entries: List[RagImportEntry] = Field(..., max_length=5000)
+
+
+# ── Photos (msc-pic) ─────────────────────────────────────────────────
+
+class PicSourceCreate(BaseModel):
+    """One photo source card. Which fields matter depends on kind:
+    local→root_path, smb→host/share/subpath, webdav→url."""
+    name: str = Field(..., min_length=1, max_length=100)
+    kind: str = Field("local", pattern="^(local|smb|webdav)$")
+    root_path: str = Field("", max_length=500)
+    host: str = Field("", max_length=200)
+    share: str = Field("", max_length=200)
+    subpath: str = Field("", max_length=500)
+    url: str = Field("", max_length=500)
+    username: str = Field("", max_length=200)
+    password: str = Field("", max_length=500)
+
+
+class PicSourceUpdate(BaseModel):
+    """Partial edit; like the model cards, an omitted password keeps the
+    stored one and "" clears it."""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    kind: Optional[str] = Field(None, pattern="^(local|smb|webdav)$")
+    root_path: Optional[str] = Field(None, max_length=500)
+    host: Optional[str] = Field(None, max_length=200)
+    share: Optional[str] = Field(None, max_length=200)
+    subpath: Optional[str] = Field(None, max_length=500)
+    url: Optional[str] = Field(None, max_length=500)
+    username: Optional[str] = Field(None, max_length=200)
+    password: Optional[str] = Field(None, max_length=500)
+    enabled: Optional[bool] = None
+
+
+class PicSettingsUpdate(BaseModel):
+    """Pipeline tuning; omitted keys keep their value. All positive integers."""
+    scan_seconds: Optional[int] = Field(None, ge=1, le=300)
+    thumb_batch: Optional[int] = Field(None, ge=1, le=200)
+    rescan_hours: Optional[int] = Field(None, ge=1, le=8760)
+    thumb_px: Optional[int] = Field(None, ge=64, le=2048)

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from msc.config import VERSION, get_settings
 from msc.api import memories, search, versions, sync, backup, auth, api_keys, prefix_routes, branches, users, meta
-from msc.api import summarize, rag
+from msc.api import summarize, rag, pic
 from msc.filesystem.indexer import build_index
 from msc.models import Memory, User, ApiKey, PrefixRoute
 from msc.database import get_db
@@ -186,6 +186,8 @@ app.include_router(meta.router, prefix="/api/v1", tags=["meta"])
 app.include_router(summarize.router, prefix="/api/v1", tags=["summarize"])
 # RAG (semantic search index, providers, voice, insights): same Web-UI-only rule.
 app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
+# Photos (msc-pic): source cards, thumbnail pipeline, gallery.
+app.include_router(pic.router, prefix="/api/v1/pic", tags=["pic"])
 
 
 # Agent-facing entry points: curl-able plain text, no HTML.
