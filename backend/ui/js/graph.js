@@ -11,16 +11,22 @@ function getPrioritySize(p) {
   return { critical: 10, high: 8, medium: 6, low: 4 }[p] || 6;
 }
 
+/* Greyscale, and deliberately the same ramp as --category-* in app.css: a
+   node and the badge next to it are the same grey. Category is written on the
+   node's tooltip and in the badge label, so hue carries no information here. */
 const CATEGORY_COLORS = {
-  config: '#3b82f6',
-  project: '#22c55e',
-  user: '#eab308',
-  knowledge: '#a855f7',
-  reference: '#6b7280'
+  config: '#dcdcdc',
+  project: '#b9b9b9',
+  user: '#979797',
+  knowledge: '#757575',
+  reference: '#565656'
 };
 
+// One label size for the whole UI, canvas included.
+const GRAPH_FONT_SIZE = 13;
+
 function getCategoryColor(cat) {
-  return CATEGORY_COLORS[cat] || '#6b7280';
+  return CATEGORY_COLORS[cat] || '#979797';
 }
 
 // One pass: memories sharing >=2 exact whole-word keywords (and keywords not
@@ -97,10 +103,10 @@ function renderGraph(data) {
     color: {
       background: getCategoryColor(n.category),
       border: getCategoryColor(n.category),
-      highlight: { background: getCategoryColor(n.category), border: '#fff' },
-      hover: { background: getCategoryColor(n.category), border: '#fff' }
+      highlight: { background: getCategoryColor(n.category), border: '#ffffff' },
+      hover: { background: getCategoryColor(n.category), border: '#ffffff' }
     },
-    font: { color: '#e4e6ed', size: 12, face: '-apple-system, sans-serif' },
+    font: { color: '#f4f4f4', size: GRAPH_FONT_SIZE, face: '-apple-system, sans-serif' },
     shape: 'dot'
   }));
 
@@ -108,7 +114,7 @@ function renderGraph(data) {
     from: e.source,
     to: e.target,
     arrows: { to: { enabled: e.relation_type === 'depends_on' } },
-    color: { color: 'rgba(139,143,163,0.4)' },
+    color: { color: 'rgba(162,162,162,0.4)' },
     smooth: { type: 'continuous', roundness: 0.2 },
     title: e.relation_type
   }));
@@ -117,14 +123,14 @@ function renderGraph(data) {
     nodes: {
       shape: 'dot',
       size: 8,
-      font: { size: 11, color: '#e4e6ed', face: '-apple-system, sans-serif' },
+      font: { size: GRAPH_FONT_SIZE, color: '#f4f4f4', face: '-apple-system, sans-serif' },
       borderWidth: 2,
       shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 4, x: 0, y: 0 }
     },
     edges: {
       width: 1.5,
       smooth: { type: 'continuous', roundness: 0.2 },
-      font: { size: 10, color: 'rgba(139,143,163,0.6)', face: '-apple-system, sans-serif' }
+      font: { size: GRAPH_FONT_SIZE, color: 'rgba(162,162,162,0.7)', face: '-apple-system, sans-serif' }
     },
     physics: {
       enabled: true,

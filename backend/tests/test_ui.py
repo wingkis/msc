@@ -116,3 +116,43 @@ def test_sync_indicator_state_classes_match_the_css(client):
     for state in ("ready", "syncing", "error"):
         assert f".sync-indicator.is-{state}" in css, state
         assert f"{state}:" in js, state          # SYNC_LABELS covers it
+
+
+COLOR_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)")
+
+
+def _channels(value):
+    if value.startswith("#"):
+        h = value[1:]
+        if len(h) in (3, 4):
+            return [int(c * 2, 16) for c in h[:3]]
+        return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    return [float(x) for x in re.findall(r"[\d.]+", value)[:3]]
+
+
+def test_ui_ships_only_black_white_and_grey(client):
+    """No hue anywhere: every colour literal must have equal channels. Hierarchy
+    is brightness, weight and hairline borders - a stray indigo is a regression."""
+    html, _ = _sources()
+    texts = [(UI / "css" / "app.css").read_text(encoding="utf-8"),
+             (UI / "js" / "graph.js").read_text(encoding="utf-8"), html]
+    for text in texts:
+        for value in COLOR_RE.findall(text):
+            r, g, b = _channels(value)
+            assert r == g == b, f"coloured value {value} came back"
+
+
+def test_one_font_size_for_the_whole_ui(client):
+    """Two steps used to sprawl into ten. --fs is the only text size in the app;
+    --fs-micro is the single exception, the header wordmark at half of it."""
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    assert set(re.findall(r"font-size:\s*([^;]+);", css)) == {"var(--fs)", "var(--fs-micro)"}
+    html, js = _sources()
+    assert "font-size" not in html + js          # no inline or scripted sizes
+    assert "--fs: 13px" in css and "--fs-micro: calc(var(--fs) / 2)" in css
+
+
+def test_graph_canvas_labels_use_the_same_one_size(client):
+    js = (UI / "js" / "graph.js").read_text(encoding="utf-8")
+    assert "const GRAPH_FONT_SIZE = 13;" in js
+    assert not re.search(r"font:\s*{[^}]*size:\s*\d", js)   # no per-label px
