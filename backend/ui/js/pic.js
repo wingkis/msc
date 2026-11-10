@@ -242,6 +242,18 @@ function picUpdateTile(tile, item) {
     img.addEventListener('load', () => img.classList.add('pic-loaded'));
     img.src = item.thumb_url;   // the tile is on screen already: no lazy dance
     placeholder.replaceWith(img);
+  } else if (item.thumb_available) {
+    // Same id, different bytes: thumb_url carries ?v=<content_hash>, so a
+    // changed version means the old picture must be refetched — never let a
+    // stale (or id-reused) tile survive an in-place update.
+    const img = tile.querySelector('img');
+    const shown = img && (img.getAttribute('src') || img.dataset.src);
+    if (img && shown && shown !== item.thumb_url) {
+      img.classList.remove('pic-loaded');
+      img.addEventListener('load', () => img.classList.add('pic-loaded'));
+      if (img.hasAttribute('data-src')) img.dataset.src = item.thumb_url;
+      else img.src = item.thumb_url;
+    }
   }
   let capEl = tile.querySelector('.pic-tile-cap');
   if (item.caption) {

@@ -223,3 +223,71 @@ def test_pic_queue_queries_are_index_seeks(client):
     # index alone answers the query); a bare SCAN of pic_items is the thing
     # this guards against, because that walk repeats on every worker tick.
     assert all(plan.startswith("SEARCH pic_items USING ") for plan in plans), plans
+
+
+PIC_LEGACY_SCHEMA = """
+CREATE TABLE pic_sources (id INTEGER PRIMARY KEY, name TEXT, root_path TEXT,
+                          enabled INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE pic_items (
+    id INTEGER NOT NULL, source_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
+    origin_uri TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL,
+    discovered_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uq_pic_source_path UNIQUE (source_id, rel_path),
+    CONSTRAINT ck_pic_state CHECK (state IN ('discovered','thumb_ready','captioned','embedded','failed')),
+    FOREIGN KEY(source_id) REFERENCES pic_sources (id) ON DELETE CASCADE
+);
+CREATE INDEX ix_pic_items_source_id ON pic_items (source_id);
+CREATE TABLE pic_vectors (pic_id INTEGER NOT NULL, model TEXT NOT NULL,
+                          dim INTEGER NOT NULL, vec BLOB NOT NULL,
+                          embedded_at TEXT NOT NULL,
+                          PRIMARY KEY (pic_id, model),
+                          FOREIGN KEY(pic_id) REFERENCES pic_items (id) ON DELETE CASCADE);
+INSERT INTO pic_sources (id, name, root_path) VALUES (1, 'lib', '/lib');
+INSERT INTO pic_items (id, source_id, rel_path, origin_uri, name, state, discovered_at, updated_at)
+VALUES (1, 1, 'a.jpg', 'pic://1/a.jpg', 'a.jpg', 'embedded', '2026-01-01', '2026-01-01'),
+       (2, 1, 'b.jpg', 'pic://1/b.jpg', 'b.jpg', 'embedded', '2026-01-01', '2026-01-01');
+INSERT INTO pic_vectors VALUES (2, 'm', 1, x'0000803f', '2026-01-01');
+"""
+
+
+def test_pic_ids_stop_being_reused(tmp_path, monkeypatch):
+    """Plain rowids hand a deleted max id to the next INSERT — and thumbs,
+    URLs and browser caches all key tiles by id, so the new photo wore the
+    deleted photo's picture. The rebuild makes pic_items AUTOINCREMENT and
+    provably continues past every id that ever existed."""
+    path = tmp_path / "legacy_pic.db"
+    con = sqlite3.connect(path)
+    con.executescript(PIC_LEGACY_SCHEMA)
+    con.commit()
+    con.close()
+
+    engine = create_engine(f"sqlite:///{path}")
+    monkeypatch.setattr(migrations, "engine", engine)
+
+    assert migrations.ensure_pic_id_autoincrement() is True
+    assert migrations.ensure_pic_id_autoincrement() is False  # idempotent
+
+    with engine.begin() as conn:
+        ddl = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name='pic_items'")).fetchone()[0]
+        assert "AUTOINCREMENT" in ddl.upper()
+        assert conn.execute(text(
+            "SELECT count(*) FROM pic_items")).scalar() == 2
+        # a vector written against the old table still joins to the new one
+        assert conn.execute(text(
+            "SELECT count(*) FROM pic_vectors WHERE pic_id IN "
+            "(SELECT id FROM pic_items)")).scalar() == 1
+        # secondary indexes survived the swap
+        idx = {row[0] for row in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pic_items'"))}
+        assert "ix_pic_items_source_id" in idx
+
+        # delete the top row and insert: the old id must NOT come back
+        conn.execute(text("DELETE FROM pic_items WHERE id = 2"))
+        conn.execute(text(
+            "INSERT INTO pic_items (source_id, rel_path, origin_uri, name, state, "
+            "discovered_at, updated_at) VALUES "
+            "(1, 'c.jpg', 'pic://1/c.jpg', 'c.jpg', 'discovered', '2026-01-01', '2026-01-01')"))
+        new_id = conn.execute(text("SELECT max(id) FROM pic_items")).scalar()
+        assert new_id == 3

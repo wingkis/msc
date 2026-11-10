@@ -314,6 +314,69 @@ def sweep_orphan_thumbs() -> int:
     return removed
 
 
+def ensure_pic_id_autoincrement() -> bool:
+    """Rebuild pic_items so a photo id is never handed out twice.
+
+    Thumbnails are keyed by id everywhere — thumbs/<src>/<id>.webp on disk,
+    /pic/item/<id>/thumb as the URL, and a 24 h browser cache on top of that.
+    Plain rowids let SQLite reuse the id of a deleted top row, so a fresh
+    scan of a newly added photo could wear the deleted photo's cached tile:
+    right caption, right original, wrong picture. AUTOINCREMENT keeps the
+    counter monotonic. Idempotent: a no-op once the keyword is in the DDL.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name='pic_items' AND type='table'"
+        )).fetchone()
+        if row is None or "AUTOINCREMENT" in (row[0] or "").upper():
+            return False
+
+        # Secondary indexes die with the old table: capture their DDL and
+        # replay it onto the renamed one.
+        idx_ddl = [r[0] for r in conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='pic_items' AND sql IS NOT NULL"))]
+        live = {r[1] for r in conn.execute(text('PRAGMA table_info("pic_items")'))}
+        cols = [c.name for c in Base.metadata.tables["pic_items"].columns if c.name in live]
+        collist = ", ".join(f'"{c}"' for c in cols)
+
+        conn.execute(text("""
+            CREATE TABLE pic_items_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                rel_path TEXT NOT NULL,
+                origin_uri TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                ext TEXT, size_bytes INTEGER, mtime TEXT, content_hash TEXT,
+                width INTEGER, height INTEGER, taken_at TEXT, taken_at_src TEXT,
+                kind TEXT, caption TEXT, tags TEXT, thumb_path TEXT,
+                state TEXT NOT NULL, error_count INTEGER, retry_at TEXT,
+                last_error TEXT, archived INTEGER, deleted_at TEXT,
+                discovered_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                last_seen_at TEXT, missing INTEGER,
+                CONSTRAINT uq_pic_source_path UNIQUE (source_id, rel_path),
+                CONSTRAINT ck_pic_state CHECK (state IN ('discovered','thumb_ready','captioned','embedded','failed')),
+                CONSTRAINT ck_pic_kind CHECK (kind IN ('photo','screenshot')),
+                FOREIGN KEY(source_id) REFERENCES pic_sources (id) ON DELETE CASCADE
+            )
+        """))
+        conn.execute(text(
+            f"INSERT INTO pic_items_new ({collist}) SELECT {collist} FROM pic_items"))
+        conn.execute(text("DROP TABLE pic_items"))
+        conn.execute(text("ALTER TABLE pic_items_new RENAME TO pic_items"))
+        # The copy seeded sqlite_sequence with the surviving max; pin it
+        # explicitly so the counter provably continues past every old id.
+        conn.execute(text(
+            "UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id), 0) FROM pic_items) "
+            "WHERE name = 'pic_items'"))
+        for ddl in idx_ddl:
+            conn.execute(text(ddl))
+        if conn.execute(text("PRAGMA foreign_key_check")).fetchall():
+            _log.warning("schema: foreign_key_check reported rows after the pic_items rebuild")
+    _log.info("schema: pic_items rebuilt with AUTOINCREMENT — ids are never reused")
+    return True
+
+
 def ensure_pic_defaults() -> int:
     """ALTER TABLE ADD COLUMN leaves NULLs on existing rows, and our filters
     speak == 0: a NULL missing/error_count silently drops live photos out of
@@ -380,6 +443,7 @@ def run_maintenance() -> dict:
         "relation_types_updated": ensure_relation_types(),
         "model_purpose_backfilled": ensure_model_purpose(),
         "embeddings_pruned": prune_broken_embeddings(),
+        "pic_id_autoincrement": ensure_pic_id_autoincrement(),
         "pic_defaults_backfilled": ensure_pic_defaults(),
         "pic_indexes": ensure_pic_indexes(),
         "pic_vectors_pruned": prune_broken_pic_vectors(),

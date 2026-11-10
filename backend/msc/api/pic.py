@@ -118,6 +118,15 @@ def _get_source(db: Session, source_id: int) -> PicSource:
 
 
 def _item_view(item: PicItem, source_name: str = "", dup: bool = False) -> dict:
+    # The tile URL carries the hash its bytes were rendered from: new content
+    # (a re-scanned replaced file, or a row that reappeared after the old one
+    # was purged) gets a new URL, so no 24 h browser cache can ever pair an
+    # old thumbnail picture with a new row's caption.
+    thumb_url = None
+    if item.thumb_path:
+        thumb_url = f"/api/v1/pic/item/{item.id}/thumb"
+        if item.content_hash:
+            thumb_url += f"?v={item.content_hash}"
     return {
         "id": item.id,
         "source_id": item.source_id,
@@ -136,7 +145,7 @@ def _item_view(item: PicItem, source_name: str = "", dup: bool = False) -> dict:
         "caption": (item.caption or "")[:200],
         "tags": item.tags or "",
         "thumb_available": bool(item.thumb_path),
-        "thumb_url": f"/api/v1/pic/item/{item.id}/thumb" if item.thumb_path else None,
+        "thumb_url": thumb_url,
         "content_hash": item.content_hash,
         "dup": dup,
         "origin_uri": item.origin_uri,
@@ -570,8 +579,9 @@ def item_detail(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/item/{item_id}/thumb")
 def item_thumb(item_id: int, db: Session = Depends(get_db)):
-    """The webp tile. Cacheable forever under the item id — regeneration on
-    rescan keeps the same path, and a thumb_px change re-renders in place."""
+    """The webp tile. Cacheable forever under id+content hash: callers ask
+    with ?v=<content_hash>, so a re-render (new bytes, thumb_px change) lands
+    under a fresh URL while unchanged photos keep hitting the cache."""
     _require_pic()
     row = db.get(PicItem, item_id)
     if row is None or not row.thumb_path:

@@ -352,6 +352,10 @@ class PicItem(Base):
 
     __tablename__ = "pic_items"
 
+    # sqlite_autoincrement: without it SQLite hands a deleted max id to the
+    # next insert, and thumbnails (file path, API URL, browser cache) all key
+    # a tile by id — a reused id would paint the deleted photo's cached tile
+    # over the new row. AUTOINCREMENT makes the counter monotonic for good.
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     source_id = Column(Integer, ForeignKey("pic_sources.id", ondelete="CASCADE"),
                        nullable=False, index=True)
@@ -397,6 +401,11 @@ class PicItem(Base):
             name="ck_pic_state",
         ),
         CheckConstraint("kind IN ('photo','screenshot')", name="ck_pic_kind"),
+        # Table-level SQLite dialect kwarg: a plain rowid lets SQLite hand a
+        # deleted max id to the next insert, and thumbnails (file path, API
+        # URL, 24 h browser cache) all key a tile by id — a reused id would
+        # paint the deleted photo's cached tile over the new row.
+        {"sqlite_autoincrement": True},
     )
 
 

@@ -943,3 +943,74 @@ def test_walk_writes_defaults_then_touches_existing_rows(client, db, photos_dir)
     db.query(PicItem).filter(PicItem.source_id == sid).delete()
     db.query(PicSource).filter(PicSource.id == sid).delete()
     db.commit()
+
+
+def test_tile_urls_carry_the_content_version(client, photos_dir):
+    """A photo id can outlive its bytes (purge + rescan, or an old database
+    that reused ids). The tile URL must move with the content, or a browser
+    cache paints the previous photo's picture over the new row — the exact
+   错位 the gallery showed on macOS."""
+    data = client.get("/api/v1/pic/items").json()
+    with_thumb = [i for i in data["items"] if i["thumb_url"]]
+    assert with_thumb
+    for item in with_thumb:
+        assert item["content_hash"]
+        assert item["thumb_url"] == (
+            f"/api/v1/pic/item/{item['id']}/thumb?v={item['content_hash']}")
+
+
+def test_replaced_file_requeues_and_drops_the_stale_vector(client, db, photos_dir):
+    """Same path, new bytes: thumb, caption and vector all describe a file
+    that no longer exists — the walk demotes the row and evicts the vector so
+    search and display can never keep answering with the old content."""
+    from msc.models import PicItem, PicSource, PicVector
+    from msc.picsources.base import PicEntry
+    from msc.services.rag import pack_vec
+    from msc.workers import pic_worker
+
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": "swap-src", "kind": "local", "root_path": str(photos_dir)}).json()["id"]
+    src = db.get(PicSource, sid)
+    walk = {"size": 10}
+
+    class OneFile:
+        kind = "local"
+
+        def probe(self):
+            return {"reachable": True, "root_ok": True, "error": None}
+
+        def iter_entries(self, since=None):
+            if since is not None and "z.jpg" <= since:
+                return
+            yield PicEntry(rel_path="z.jpg", name="z.jpg", size=walk["size"],
+                           mtime_iso="2024-01-01T00:00:00+00:00")
+
+        def close(self):
+            pass
+
+    report = {"scanned": 0, "thumbs": 0, "failed": 0, "errors": []}
+    pic_worker._scan(db, src, OneFile(), report)
+    item = db.query(PicItem).filter_by(source_id=sid, rel_path="z.jpg").one()
+    item.state, item.caption = "captioned", "旧照片的内容"
+    db.add(PicVector(pic_id=item.id, model="test-embed", dim=1,
+                     vec=pack_vec([1.0]), embedded_at="2026-01-01"))
+    db.commit()
+    item_id = item.id
+
+    # The file behind z.jpg is replaced (size moves): the next walk must
+    # rebuild everything derived from it.
+    walk["size"] = 42
+    src.last_scan_at, src.scan_cursor = None, None
+    db.commit()
+    report2 = {"scanned": 0, "thumbs": 0, "failed": 0, "errors": []}
+    pic_worker._scan(db, src, OneFile(), report2)
+    db.expire_all()
+    assert report2.get("replaced") == 1
+    reborn = db.get(PicItem, item_id)
+    assert reborn.state == "discovered" and (reborn.caption or "") == ""
+    assert reborn.size_bytes == 42
+    assert db.query(PicVector).filter_by(pic_id=item_id).count() == 0
+
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()

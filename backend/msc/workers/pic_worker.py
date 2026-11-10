@@ -91,6 +91,26 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
             if result.rowcount:
                 inserted += 1
             else:
+                # Same path, different file now (size or mtime moved): the old
+                # thumb, caption and vector describe bytes that no longer
+                # exist. Demote the row to discovered so the whole pipeline
+                # rebuilds it, and drop the stale vector NOW so semantic search
+                # can never answer with the replaced-away content. Runs before
+                # the touch below, which would overwrite the compared values.
+                swapped = db.execute(sql_text(
+                    "UPDATE pic_items SET state = 'discovered', caption = '', "
+                    "tags = '', error_count = 0, retry_at = NULL, "
+                    "last_error = NULL, updated_at = :p8 "
+                    "WHERE source_id = :p0 AND rel_path = :p1 AND state <> 'discovered' "
+                    "AND (size_bytes IS NOT :p5 OR mtime IS NOT :p6)"),
+                    {"p0": src.id, "p1": entry.rel_path, "p5": entry.size,
+                     "p6": entry.mtime_iso, "p8": now_iso})
+                if swapped.rowcount:
+                    db.execute(sql_text(
+                        "DELETE FROM pic_vectors WHERE pic_id = (SELECT id FROM pic_items "
+                        "WHERE source_id = :p0 AND rel_path = :p1)"),
+                        {"p0": src.id, "p1": entry.rel_path})
+                    report["replaced"] = report.get("replaced", 0) + 1
                 # Touch (or revive): the original is there RIGHT NOW. Size/mtime
                 # refresh too, so replaced files carry fresh metadata even when
                 # the row predates them. Only existing rows need this — a fresh
@@ -364,7 +384,7 @@ def run_once() -> dict | None:
         _embeds(db, report)
         worked = (report["scanned"] or report["thumbs"] or report["failed"]
                   or report.get("captioned") or report.get("embedded")
-                  or report["errors"])
+                  or report.get("replaced") or report["errors"])
         return report if worked else None
     except Exception as exc:  # the loop must survive anything
         db.rollback()
@@ -382,11 +402,12 @@ def start_pic_worker(interval: int = 15) -> None:
             if result and not result.get("error"):
                 touched = (result["scanned"] + result["thumbs"] + result["failed"]
                            + result.get("captioned", 0) + result.get("embedded", 0)
-                           + result.get("reused", 0))
+                           + result.get("reused", 0) + result.get("replaced", 0))
                 if touched or result["errors"]:
                     print(f"PIC: discovered {result['scanned']}, thumbs {result['thumbs']}, "
                           f"captioned {result.get('captioned', 0)}, "
                           f"embedded {result.get('embedded', 0)}, "
+                          f"replaced {result.get('replaced', 0)}, "
                           f"failed {result['failed']}"
                           + (f", errors: {result['errors'][:2]}" if result["errors"] else ""))
         except Exception as exc:
