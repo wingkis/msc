@@ -7,7 +7,7 @@ hold.
 """
 
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -19,7 +19,7 @@ from msc.schemas import ModelConfigUpdate, SummarizeRequest
 from msc.services import llm
 from msc.services.model_config import get_config, note_result, public_view, update_config
 from msc.services.summarizer import (
-    day_bounds, memories_in_window, restore_sources, run_summary,
+    SEARCH_GROUNDING, day_bounds, memories_in_window, restore_sources, run_summary,
 )
 
 router = APIRouter()
@@ -219,6 +219,24 @@ def summarize_window(day: Optional[str] = Query(None, description="YYYY-MM-DD, c
     }
 
 
+def _resolve_refs(db: Session, refs: List[str]) -> Tuple[List[Memory], List[str]]:
+    """Memory rows for slugs/ids, plus the references that resolved to nothing.
+
+    A digest over a search result set runs while the page still shows rows that
+    may have been deleted elsewhere, so partial resolution is normal."""
+    memories: List[Memory] = []
+    missing: List[str] = []
+    for ref in refs:
+        try:
+            memory = _resolve_memory(db, ref)
+        except HTTPException:
+            missing.append(ref)
+            continue
+        if memory not in memories:
+            memories.append(memory)
+    return memories, missing
+
+
 @router.post("/summarize/selected")
 def summarize_selected(data: SummarizeRequest, request: Request, db: Session = Depends(get_db)):
     """Summarise the memories the user ticked in the list."""
@@ -230,16 +248,7 @@ def summarize_selected(data: SummarizeRequest, request: Request, db: Session = D
     if not data.slugs:
         raise HTTPException(status_code=422, detail="要先选择至少一条记忆")
 
-    memories: List[Memory] = []
-    missing: List[str] = []
-    for ref in data.slugs:
-        try:
-            memory = _resolve_memory(db, ref)
-        except HTTPException:
-            missing.append(ref)
-            continue
-        if memory not in memories:
-            memories.append(memory)
+    memories, missing = _resolve_refs(db, data.slugs)
     if not memories:
         raise HTTPException(status_code=404,
                             detail=f"选中的记忆都不存在: {', '.join(missing[:5])}")
@@ -255,6 +264,49 @@ def summarize_selected(data: SummarizeRequest, request: Request, db: Session = D
         raise HTTPException(status_code=502, detail=str(exc))
 
     result["missing"] = missing
+    return result
+
+
+@router.post("/summarize/search")
+def summarize_search(data: SummarizeRequest, request: Request, db: Session = Depends(get_db)):
+    """Digest the memories the last search returned.
+
+    Two things set this apart from a manual selection. The model gets
+    ``SEARCH_GROUNDING``: the query already chose these rows, so inventing
+    context around the topic is the main way this goes wrong. And the sources
+    are never archived - the card's ``archive_sources`` switch is for the daily
+    digest, and quietly soft-deleting a search result set would be nasty."""
+    _require_auth(request, db)
+    if not data.dry_run:
+        _guard_write()
+    actor = _actor(request)
+
+    if not data.slugs:
+        raise HTTPException(status_code=422, detail="先搜索出结果，再点「搜索并总结」")
+
+    memories, missing = _resolve_refs(db, data.slugs)
+    if not memories:
+        raise HTTPException(status_code=404,
+                            detail=f"这些记忆已不存在: {', '.join(missing[:5])}")
+
+    query = (data.query or "").strip()
+    framing = f"搜索「{query}」的 {len(memories)} 条命中" if query else f"搜索结果的 {len(memories)} 条命中"
+    instruction = "\n".join(part for part in (SEARCH_GROUNDING, (data.instruction or "").strip()) if part)
+
+    try:
+        result = run_summary(
+            db, get_config(db), memories, actor=actor, kind="manual",
+            name=data.name or "", category=data.category or "", priority=data.priority or "",
+            tags=data.tags or ["summary", "search"], archive_sources=bool(data.archive_sources),
+            instruction=instruction, date_range=framing,
+            note=f"由搜索「{query}」的命中生成。" if query else "",
+            dry_run=data.dry_run,
+        )
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    result["missing"] = missing
+    result["query"] = query
     return result
 
 

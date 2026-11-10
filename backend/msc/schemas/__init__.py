@@ -175,6 +175,8 @@ class SummarizeRequest(BaseModel):
     """What the digest should cover. ``slugs`` for a manual pick, ``date`` for a day."""
     slugs: List[str] = Field(default_factory=list, max_length=300)
     date: Optional[str] = Field(None, description="YYYY-MM-DD in the card's timezone")
+    query: Optional[str] = Field(None, max_length=200,
+                                 description="the search that produced slugs; goes into the prompt and the digest body")
     name: Optional[str] = Field(None, max_length=200)
     category: Optional[str] = None
     priority: Optional[str] = None

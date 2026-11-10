@@ -164,3 +164,19 @@ def test_bare_links_stay_greyscale(client):
     css = (UI / "css" / "app.css").read_text(encoding="utf-8")
     assert re.search(r"^a \{\n  color: var\(--text\);", css, re.M), "no base link colour"
     assert "a:visited { color: var(--text); }" in css
+
+
+def test_search_page_offers_a_digest_of_the_hits(client):
+    """「搜索并总结」 works on the rows currently on screen, so the button, the
+    panel it writes into and the API method are one contract."""
+    html, js = _sources()
+    for marker in ('id="search-digest-btn"', 'id="search-digest"', 'onclick="searchAndSummarize()"'):
+        assert marker in html, marker
+    assert "API.summarizeSearch" in js and "/summarize/search" in js
+    for fn in ("searchAndSummarize", "renderSearchDigest", "hideSearchDigest",
+               "updateSearchDigestGate"):
+        assert f"function {fn}" in js, fn
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    for selector in (".search-digest", ".search-digest-head", ".search-digest-body",
+                     ".search-digest-actions"):
+        assert selector in css, selector

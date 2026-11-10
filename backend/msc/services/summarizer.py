@@ -50,6 +50,18 @@ TITLE: ...
 # One memory's body is never allowed to crowd out the rest of the digest.
 MAX_BODY_PER_MEMORY = 1200
 
+# A digest of search hits has a different failure mode from the daily one: the
+# query already picked the memories, so the model is tempted to explain the
+# topic from its own background knowledge instead of from what was retrieved.
+# The brief goes in through {instruction}, so a custom card template keeps working.
+SEARCH_GROUNDING = (
+    "这是一次搜索的命中集合，不是一个时间段。只依据上面列出的记忆写作："
+    "每条要点都要能在某条记忆原文里找到出处；记忆里没有的日期、数字、路径、"
+    "因果关系和动机一律不要补全或推测，也不要用记忆之外的背景知识来解释；"
+    "记忆之间说法不一致时并列写出并指明冲突；没有依据的地方在「待办与风险」"
+    "里写「记忆里没有」。"
+)
+
 _TITLE_RE = re.compile(r"^\s*(?:#{1}\s+|(?:TITLE|标题)\s*[::]\s*)(.{2,120}?)\s*$", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n(.*)\n```$", re.DOTALL)
 _AUTO_TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
@@ -301,10 +313,12 @@ def run_summary(db: Session, cfg: ModelConfig, memories: Sequence[Memory], *, ac
                 kind: str = "manual", period: str = "", name: str = "", category: str = "",
                 priority: str = "", tags: Optional[List[str]] = None,
                 archive_sources: Optional[bool] = None, instruction: str = "",
-                date_range: str = "", dry_run: bool = False) -> Dict:
+                date_range: str = "", note: str = "", dry_run: bool = False) -> Dict:
     """Summarise ``memories`` into one new memory.
 
-    Nothing is written before the model has answered, so a dead endpoint leaves
+    ``note`` is a line the body carries that the model did not write - which
+    search produced this digest, for instance. Nothing is written before the
+    model has answered, so a dead endpoint leaves
     the memory set exactly as it was. ``dry_run`` stops there on purpose.
     """
     if not memories:
@@ -338,9 +352,8 @@ def run_summary(db: Session, cfg: ModelConfig, memories: Sequence[Memory], *, ac
     digest_priority = priority or cfg.default_priority or "medium"
     archive = bool(cfg.archive_sources) if archive_sources is None else bool(archive_sources)
     when_local = local_now(cfg).strftime("%Y-%m-%d %H:%M %Z")
-    note = ""
     if dropped:
-        note = f"输入超出长度上限，有 {dropped} 条较旧的记忆未送入模型。"
+        note = (note + " " if note else "") + f"输入超出长度上限，有 {dropped} 条较旧的记忆未送入模型。"
     if answer.get("reasoning_only"):
         note = (note + " " if note else "") + "模型只输出了思考内容，已直接采用。"
 

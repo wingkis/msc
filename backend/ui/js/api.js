@@ -239,6 +239,11 @@ const API = {
   summarizeSelected(data) {
     return apiFetch('/summarize/selected', { method: 'POST', body: JSON.stringify(data) });
   },
+  // Digest of the current search hits. dry_run=true previews without writing;
+  // the server adds the grounding brief and never archives the sources here.
+  summarizeSearch(data) {
+    return apiFetch('/summarize/search', { method: 'POST', body: JSON.stringify(data) });
+  },
   summarizeDaily(data) {
     return apiFetch('/summarize/daily', { method: 'POST', body: JSON.stringify(data) });
   },

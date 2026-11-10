@@ -262,3 +262,51 @@ def test_auto_schedule_is_due_once_per_local_day():
 
     period, start, end = day_bounds(cfg, None)
     assert period and start < end
+
+
+# ── Digest of a search result set ────────────────────────────────────
+
+def test_search_digest_needs_something_to_summarise(client):
+    assert client.post("/api/v1/summarize/search", json={"query": "备份"}).status_code == 422
+    made = _make(client, "Search Digest Vanished")
+    gone = client.post("/api/v1/summarize/search", json={"slugs": ["no-such-slug"]})
+    assert gone.status_code == 404
+    assert client.get(f"/api/v1/memories/{made}").status_code == 200
+
+
+def test_search_digest_grounds_the_prompt_in_the_hits(client, monkeypatch):
+    calls = _fake_chat(monkeypatch)
+    slugs = [_make(client, "Search Digest Alpha", body="备份窗口是每天 03:15。"),
+             _make(client, "Search Digest Beta", body="disk I/O error 已修复")]
+
+    preview = client.post("/api/v1/summarize/search",
+                          json={"query": "备份", "slugs": slugs, "dry_run": True}).json()
+
+    prompt = calls[-1]["messages"][-1]["content"]
+    assert "搜索「备份」的 2 条命中" in prompt
+    assert "记忆里没有" in prompt                 # the grounding brief
+    assert "不要用记忆之外的背景知识" in prompt
+    for slug in slugs:
+        assert slug in prompt                    # every hit actually reached the model
+    assert preview["created"] is None and preview["dry_run"] is True
+    assert preview["query"] == "备份"
+
+
+def test_search_digest_keeps_its_sources_even_when_the_card_archives(client, monkeypatch):
+    _fake_chat(monkeypatch)
+    _card(client, archive_sources=True)          # the daily digest switch
+    slugs = [_make(client, "Search Keep One"), _make(client, "Search Keep Two")]
+
+    result = client.post("/api/v1/summarize/search",
+                         json={"query": "保留", "slugs": slugs}).json()
+
+    assert result["archived"] == []
+    for slug in slugs:
+        assert client.get(f"/api/v1/memories/{slug}").status_code == 200
+
+    digest = client.get(f"/api/v1/memories/{result['created']['slug']}").json()
+    assert {t["name"] for t in digest["tags"]} == {"summary", "search"}
+    assert "原始记忆保留未删除" in digest["body"]
+    assert "由搜索「保留」的命中生成。" in digest["body"]
+    for slug in slugs:
+        assert slug in digest["body"]            # the source list stays auditable

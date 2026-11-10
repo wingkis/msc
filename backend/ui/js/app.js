@@ -253,6 +253,11 @@ async function doSearch() {
       results.map(r => renderSearchResult(r)).join('');
     document.getElementById('search-results').style.display = 'flex';
     document.getElementById('search-empty').style.display = 'none';
+    // 「搜索并总结」 works on exactly what is on screen, so a new search both
+    // re-arms the button and clears the previous digest.
+    lastSearch = { q, slugs: results.map(r => r.slug).filter(Boolean) };
+    hideSearchDigest();
+    updateSearchDigestGate();
     // Semantic asked for but the provider failed: results are keyword-only.
     if (mode !== 'keyword' && window.mscLastSemanticError) {
       toast('语义搜索不可用，已退回关键词: ' + window.mscLastSemanticError, 'error');
@@ -262,6 +267,9 @@ async function doSearch() {
       `<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">搜索失败: ${escHtml(e.message)}</div></div>`;
     document.getElementById('search-results').style.display = 'flex';
     document.getElementById('search-empty').style.display = 'none';
+    lastSearch = { q, slugs: [] };
+    hideSearchDigest();
+    updateSearchDigestGate();
   }
 }
 
@@ -290,6 +298,75 @@ function renderSearchResult(r) {
               onclick="event.stopPropagation(); startEchoFor('${escHtml(r.slug)}')">回响</button>
     </div>
   `;
+}
+
+// ── Digest of the current search hits ───────────────────────────────
+// The server adds the grounding brief (only what the retrieved memories say)
+// and previews first: nothing reaches the corpus until 存为记忆 is clicked.
+let lastSearch = { q: '', slugs: [] };
+
+function updateSearchDigestGate() {
+  const btn = document.getElementById('search-digest-btn');
+  if (btn) btn.disabled = lastSearch.slugs.length === 0;
+}
+
+function hideSearchDigest() {
+  const box = document.getElementById('search-digest');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+}
+
+async function searchAndSummarize(save) {
+  if (!lastSearch.slugs.length) {
+    toast('先搜索出结果，再点「搜索并总结」', 'error');
+    return;
+  }
+  const box = document.getElementById('search-digest');
+  const btn = document.getElementById('search-digest-btn');
+  btn.disabled = true;
+  box.style.display = 'block';
+  box.innerHTML = '<div class="search-digest-head"><span>' +
+    (save ? '正在写入小结记忆…' : `模型正在读这 ${lastSearch.slugs.length} 条命中并写作…`) +
+    '</span></div><div class="loading-hint">本地模型，十几秒到一两分钟，期间不要刷新</div>';
+
+  try {
+    const result = await API.summarizeSearch({
+      query: lastSearch.q, slugs: lastSearch.slugs, dry_run: !save,
+      tags: ['summary', 'search'],
+    });
+    renderSearchDigest(result, !!save);
+    if (save && result.created) toast(`小结已存为 ${result.created.slug}`, 'info');
+  } catch (e) {
+    box.innerHTML = '<div class="search-digest-head"><span>总结失败</span></div>' +
+      `<div class="digest-error">${escHtml(e.message)}</div>` +
+      '<div class="setting-hint">模型没有回答，记忆库一条都没动。</div>';
+  } finally {
+    updateSearchDigestGate();
+  }
+}
+
+function renderSearchDigest(result, saved) {
+  const box = document.getElementById('search-digest');
+  const bits = [`模型 ${result.model || '?'}`, `取材 ${(result.sources || []).length} 条`,
+                `${result.latency_ms || 0}ms`];
+  if (result.dropped) bits.push(`超出输入上限，未送入 ${result.dropped} 条`);
+  if ((result.missing || []).length) bits.push(`已失效 ${result.missing.length} 条`);
+
+  const actions = saved
+    ? (result.created
+        ? `<a class="btn btn-sm" href="javascript:void(0)" ` +
+          `onclick="showMemoryDetail('${escHtml(result.created.slug)}')">打开这条小结</a>`
+        : '<span class="setting-hint">没有写入（模型没有输出内容）</span>')
+    : '<button class="btn btn-sm btn-primary" onclick="searchAndSummarize(true)">存为记忆</button>' +
+      '<span class="setting-hint">预览未写库；来源记忆不会被归档</span>';
+
+  box.innerHTML = `
+    <div class="search-digest-head">
+      <span>「${escHtml(result.query || lastSearch.q)}」· 搜索小结</span>
+      <span class="search-digest-meta">${escHtml(bits.join(' · '))}</span>
+      <button class="btn btn-sm btn-ghost" onclick="hideSearchDigest()">收起</button>
+    </div>
+    <div class="search-digest-body">${escHtml(result.body || '（模型没有输出内容）')}</div>
+    <div class="search-digest-actions">${actions}</div>`;
 }
 
 // Search-result echo button: prefill the insights echo panel and run it.

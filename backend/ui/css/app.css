@@ -516,6 +516,36 @@ a:hover { text-decoration-color: currentColor; }
   color: var(--text);
   font-size: var(--fs);
 }
+/* The digest of the hits sits above the hit list: same card language, a head
+   row, the markdown verbatim, and the save control at the bottom. */
+.search-digest {
+  margin: 0 0 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  text-align: left;
+}
+.search-digest-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.search-digest-head > span:first-child { font-weight: 600; }
+.search-digest-meta { color: var(--text-dim); }
+.search-digest-body {
+  padding: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.search-digest-actions {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
 .search-filters {
   display: flex;
   gap: 8px;
