@@ -41,20 +41,42 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _pic_defaults() -> dict:
+    return {"scan_seconds": 8, "thumb_batch": 16, "rescan_hours": 24,
+            "thumb_px": get_settings().pic_thumb_px,
+            # 1 by default: captioning shares a busy local GPU (the vision card
+            # usually sits on the same box that answers chat). Raise it when
+            # the endpoint can take it.
+            "caption_batch": 1, "embed_batch": 8}
+
+
+def pic_settings(db: Session) -> dict:
+    """Every tunable in ONE query.
+
+    The worker used to ask for thumb_px once per photo and /pic/status asked
+    six times per poll — a SELECT per key on every call, while a thousand-photo
+    ingest is committing on the same connection. Anything that needs more than
+    one key takes this instead of pic_setting().
+    """
+    out = _pic_defaults()
+    for row in db.query(PicSetting).all():
+        if row.key not in out:
+            continue
+        try:
+            out[row.key] = int(row.value)
+        except ValueError:
+            _log.warning("pic_settings.%s is not an integer: %r", row.key, row.value)
+    return out
+
+
 def pic_setting(db: Session, key: str) -> int:
-    settings = get_settings()
     row = db.query(PicSetting).filter(PicSetting.key == key).first()
     if row:
         try:
             return int(row.value)
         except ValueError:
             _log.warning("pic_settings.%s is not an integer: %r", key, row.value)
-    return {"scan_seconds": 8, "thumb_batch": 16, "rescan_hours": 24,
-            "thumb_px": settings.pic_thumb_px,
-            # 1 by default: captioning shares a busy local GPU (the vision card
-            # usually sits on the same box that answers chat). Raise it when
-            # the endpoint can take it.
-            "caption_batch": 1, "embed_batch": 8}[key]
+    return _pic_defaults()[key]
 
 
 def set_pic_setting(db: Session, key: str, value: int) -> None:
@@ -81,6 +103,28 @@ def source_counts(db: Session, source_id: int) -> dict:
         "SELECT state, count(*) FROM pic_items WHERE archived = 0 AND source_id = :p0 "
         "GROUP BY state"), {"p0": source_id}).fetchall()
     return {state: count for state, count in rows}
+
+
+def source_counts_all(db: Session) -> dict:
+    """{source_id: {state: count}} from one grouped query.
+
+    /pic/status and /pic/sources render every card on every poll; calling
+    source_counts() per card made that O(sources) queries for the same rows.
+    """
+    out: dict = {}
+    for source_id, state, count in db.execute(sql_text(
+            "SELECT source_id, state, count(*) FROM pic_items WHERE archived = 0 "
+            "GROUP BY source_id, state")):
+        out.setdefault(source_id, {})[state] = count
+    return out
+
+
+def lifecycle_counts(db: Session) -> dict:
+    """missing / trashed in one pass instead of two full COUNT scans."""
+    missing, trashed = db.execute(sql_text(
+        "SELECT sum(CASE WHEN archived = 0 AND missing = 1 THEN 1 ELSE 0 END), "
+        "sum(CASE WHEN archived = 1 THEN 1 ELSE 0 END) FROM pic_items")).fetchone()
+    return {"missing": int(missing or 0), "trashed": int(trashed or 0)}
 
 
 def guess_kind(name: str) -> str:
@@ -143,14 +187,19 @@ def pic_semantic_ids(db: Session, q: str, top: int):
     Same embed card as memories (bge-m3) but scans pic_vectors only — photos
     and memories stay in their own corpora on purpose.
     """
-    from msc.models import PicItem, PicVector
+    from msc.models import PicVector
     from msc.services.rag import embed_query, scan_vector_table
 
     vec, model, error = embed_query(db, q)
     if vec is None:
         return [], {}, error
-    live = {row[0] for row in db.query(PicItem.id).filter(
-        PicItem.archived == 0, PicItem.missing == 0).all()}
+    # The live-id gate only ever filters rows the cosine scan is about to read,
+    # so restrict it to photos that actually hold a vector for this model:
+    # the set is as small as the corpus, not one int per photo in the library.
+    live = {row[0] for row in db.execute(sql_text(
+        "SELECT i.id FROM pic_items i JOIN pic_vectors v "
+        "ON v.pic_id = i.id AND v.model = :p0 "
+        "WHERE i.archived = 0 AND i.missing = 0"), {"p0": model})}
     scored = scan_vector_table(db, PicVector, PicVector.pic_id, PicVector.model,
                                vec, model, top, live)
     return [pic_id for pic_id, _ in scored], dict(scored), None

@@ -186,3 +186,40 @@ def test_body_repair_never_touches_archived_memories(client, db, memory_dir):
 
     assert migrations.clean_existing_bodies() == []
     assert not (memory_dir / "gone-away.md").exists()
+
+
+def test_pic_queue_queries_are_index_seeks(client):
+    """pic_items.state is the ingest queue: three times a tick the worker asks
+    "what is still at stage X, oldest id first". A full walk of the photo table
+    per stage is what makes a 50k-photo library feel stuck, so the planner must
+    take an index — and re-running the maintenance pass must stay a no-op.
+    """
+    from msc.migrations import PIC_INDEXES, ensure_pic_indexes
+
+    assert ensure_pic_indexes() == len(PIC_INDEXES)
+    assert ensure_pic_indexes() == len(PIC_INDEXES)  # IF NOT EXISTS: idempotent
+
+    plans = []
+    with migrations.engine.connect() as conn:
+        conn.execute(text(
+            "INSERT INTO pic_items (source_id, rel_path, origin_uri, name, state, "
+            "archived, missing, error_count, discovered_at, updated_at) VALUES "
+            "(1, 'plan-a.jpg', 'pic://1/plan-a.jpg', 'plan-a.jpg', 'discovered', "
+            "0, 0, 0, '2026-01-01', '2026-01-01')"))
+        for sql in (
+            "SELECT id FROM pic_items WHERE state = 'discovered' AND archived = 0 "
+            "AND missing = 0 ORDER BY id LIMIT 16",
+            "SELECT id FROM pic_items WHERE state = 'thumb_ready' AND archived = 0 "
+            "AND missing = 0 ORDER BY id LIMIT 16",
+            "SELECT id FROM pic_items WHERE source_id = 1 AND state = 'discovered' "
+            "AND archived = 0 AND missing = 0 ORDER BY id LIMIT 16",
+        ):
+            rows = conn.execute(text("EXPLAIN QUERY PLAN " + sql)).fetchall()
+            # EXPLAIN QUERY PLAN columns are (selectid, order, from, detail).
+            plans.append(" ".join(str(row[3]) for row in rows))
+        conn.execute(text("DELETE FROM pic_items WHERE origin_uri = 'pic://1/plan-a.jpg'"))
+        conn.commit()
+    # SQLite writes SEARCH when it can take an index (COVERING INDEX = the
+    # index alone answers the query); a bare SCAN of pic_items is the thing
+    # this guards against, because that walk repeats on every worker tick.
+    assert all(plan.startswith("SEARCH pic_items USING ") for plan in plans), plans

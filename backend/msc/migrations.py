@@ -334,6 +334,38 @@ def ensure_pic_defaults() -> int:
     return fixed
 
 
+PIC_INDEXES = (
+    # The state column IS the ingest queue: every 15 s the worker asks "what is
+    # still at stage X, oldest id first" for thumbs, captions and embeds. Without
+    # this index that is a full table walk per stage per tick.
+    ("idx_pic_items_queue",
+     "CREATE INDEX IF NOT EXISTS idx_pic_items_queue "
+     "ON pic_items (state, archived, missing, id)"),
+    # _thumbs() walks one source at a time; the plain source_id index alone makes
+    # it read every photo of that source on each pass.
+    ("idx_pic_items_source_state",
+     "CREATE INDEX IF NOT EXISTS idx_pic_items_source_state "
+     "ON pic_items (source_id, state, archived, missing)"),
+)
+
+
+def ensure_pic_indexes() -> int:
+    """Queue indexes on pic_items — idempotent, and a no-op if the tables
+    aren't there (kill switch / brand-new database)."""
+    with engine.begin() as conn:
+        if "pic_items" not in set(inspect(engine).get_table_names()):
+            return 0
+        for _name, ddl in PIC_INDEXES:
+            conn.execute(text(ddl))
+        have = {row[0] for row in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type = 'index' "
+            "AND tbl_name = 'pic_items'"))}
+    made = [name for name, _ in PIC_INDEXES if name in have]
+    if made:
+        _log.info("schema: pic_items queue indexes ready (%s)", ", ".join(made))
+    return len(made)
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -349,6 +381,7 @@ def run_maintenance() -> dict:
         "model_purpose_backfilled": ensure_model_purpose(),
         "embeddings_pruned": prune_broken_embeddings(),
         "pic_defaults_backfilled": ensure_pic_defaults(),
+        "pic_indexes": ensure_pic_indexes(),
         "pic_vectors_pruned": prune_broken_pic_vectors(),
         "pic_thumbs_swept": sweep_orphan_thumbs(),
     }

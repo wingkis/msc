@@ -849,3 +849,97 @@ def test_ids_only_and_folder_filter(client, photos_dir):
     assert sub["total"] >= 1
     assert all(i["rel_path"].startswith("2024/") for i in sub["items"])
     assert client.get("/api/v1/pic/items", params={"folder": "../etc"}).status_code == 422
+
+
+def test_batched_pic_helpers_match_the_per_key_ones(client, db):
+    """pic_settings / source_counts_all / lifecycle_counts are batched
+    equivalents, not new semantics: they must agree with the per-key and
+    per-source calls they replaced in /pic/status and /pic/sources."""
+    from msc.models import PicItem, PicSource, PicSetting
+    from msc.services.pic_index import (
+        PIC_TUNABLES, lifecycle_counts, pic_setting, pic_settings,
+        set_pic_setting, source_counts, source_counts_all,
+    )
+
+    set_pic_setting(db, "thumb_batch", 42)
+    batched = pic_settings(db)
+    assert set(batched) == set(PIC_TUNABLES)
+    assert batched["thumb_batch"] == 42  # DB wins over the env default
+    assert all(batched[key] == pic_setting(db, key) for key in PIC_TUNABLES)
+
+    grouped = source_counts_all(db)
+    for sid in [row[0] for row in db.query(PicSource.id).all()]:
+        assert grouped.get(sid, {}) == source_counts(db, sid)
+
+    direct = {
+        "missing": db.query(PicItem).filter(PicItem.archived == 0,
+                                            PicItem.missing == 1).count(),
+        "trashed": db.query(PicItem).filter(PicItem.archived == 1).count(),
+    }
+    assert lifecycle_counts(db) == direct
+
+    status = client.get("/api/v1/pic/status").json()
+    assert status["settings"] == {key: batched[key] for key in PIC_TUNABLES}
+    assert status["missing"] == direct["missing"] and status["trashed"] == direct["trashed"]
+
+    db.query(PicSetting).filter(PicSetting.key == "thumb_batch").delete()
+    db.commit()
+
+
+def test_walk_writes_defaults_then_touches_existing_rows(client, db, photos_dir):
+    """The scan INSERT is raw SQL: it bypasses the ORM column defaults, so
+    missing/error_count/last_seen_at must be written explicitly — a NULL
+    missing hides a photo from the gallery AND from every queue. A second walk
+    inserts nothing and instead refreshes size/mtime and revives the row."""
+    from msc.models import PicItem, PicSource
+    from msc.picsources.base import PicEntry
+    from msc.workers import pic_worker
+
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": "touch-walk", "kind": "local", "root_path": str(photos_dir)}).json()["id"]
+    src = db.get(PicSource, sid)
+    walk = {"size": 10}
+
+    class TwoFiles:
+        kind = "local"
+
+        def probe(self):
+            return {"reachable": True, "root_ok": True, "error": None}
+
+        def iter_entries(self, since=None):
+            for rel in ("x.jpg", "y.jpg"):
+                if since is not None and rel <= since:
+                    continue
+                yield PicEntry(rel_path=rel, name=rel, size=walk["size"],
+                               mtime_iso="2024-01-01T00:00:00+00:00")
+
+        def close(self):
+            pass
+
+    report = {"scanned": 0, "thumbs": 0, "failed": 0, "errors": []}
+    pic_worker._scan(db, src, TwoFiles(), report)
+    db.expire_all()
+    rows = db.query(PicItem).filter(PicItem.source_id == sid).all()
+    assert len(rows) == 2 and report["scanned"] == 2
+    assert all(row.missing == 0 and row.error_count == 0 and row.archived == 0
+               and row.last_seen_at and row.size_bytes == 10 for row in rows)
+
+    # Second walk over the same paths: nothing new lands, the touch refreshes
+    # metadata and brings a vanished-then-back photo into the gallery.
+    one = db.get(PicItem, rows[0].id)
+    one.missing, one.size_bytes = 1, 7
+    src.last_scan_at, src.scan_cursor = None, None
+    db.commit()
+    walk["size"] = 999
+    report2 = {"scanned": 0, "thumbs": 0, "failed": 0, "errors": []}
+    pic_worker._scan(db, src, TwoFiles(), report2)
+    db.expire_all()
+    assert report2["scanned"] == 0  # INSERT OR IGNORE inserted nothing
+    assert db.query(PicItem).filter(PicItem.source_id == sid).count() == 2
+    revived = db.get(PicItem, one.id)
+    assert revived.missing == 0 and revived.size_bytes == 999 and revived.last_seen_at
+    assert db.get(PicSource, sid).state == "idle"
+
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()

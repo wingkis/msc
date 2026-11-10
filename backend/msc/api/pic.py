@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import and_, or_, text as sql_text
+from sqlalchemy import true as sql_true
 from sqlalchemy.orm import Session
 
 from msc.api.memories import _actor, _guard_write, _require_auth
@@ -30,8 +31,8 @@ from msc.schemas import (
 )
 from msc.services.model_config import get_config, public_view
 from msc.services.pic_index import (
-    PIC_TUNABLES, pic_semantic_ids, pic_setting, set_pic_setting,
-    source_counts, state_counts,
+    PIC_TUNABLES, lifecycle_counts, pic_semantic_ids, pic_settings,
+    set_pic_setting, source_counts, source_counts_all, state_counts,
 )
 from msc.services.rag import rrf_fusion, setting as rag_setting
 
@@ -153,6 +154,9 @@ def pic_status(db: Session = Depends(get_db)):
     """Kill switch, pipeline depth, per-state counts, effective tuning."""
     _require_pic()
     counts = state_counts(db)
+    lifecycle = lifecycle_counts(db)
+    per_source = source_counts_all(db)
+    tunables = pic_settings(db)
     return {
         "enabled": settings.pic_enabled,
         "roots": pic_roots(),
@@ -161,14 +165,13 @@ def pic_status(db: Session = Depends(get_db)):
         "pending_thumbs": counts.get("discovered", 0),
         "pending_captions": counts.get("thumb_ready", 0),
         "failed": counts.get("failed", 0),
-        "missing": db.query(PicItem).filter(PicItem.archived == 0,
-                                            PicItem.missing == 1).count(),
-        "trashed": db.query(PicItem).filter(PicItem.archived == 1).count(),
+        "missing": lifecycle["missing"],
+        "trashed": lifecycle["trashed"],
         "providers": {purpose: public_view(get_config(db, purpose))
                       for purpose in ("vision", "embed")},
-        "sources": [_source_view(row, source_counts(db, row.id))
+        "sources": [_source_view(row, per_source.get(row.id, {}))
                     for row in db.query(PicSource).order_by(PicSource.id).all()],
-        "settings": {key: pic_setting(db, key) for key in PIC_TUNABLES},
+        "settings": {key: tunables[key] for key in PIC_TUNABLES},
     }
 
 
@@ -183,7 +186,8 @@ def update_settings(data: PicSettingsUpdate, request: Request, db: Session = Dep
         if patch.get(key) is None:
             continue
         set_pic_setting(db, key, int(patch[key]))
-    return {"settings": {key: pic_setting(db, key) for key in PIC_TUNABLES}}
+    tunables = pic_settings(db)
+    return {"settings": {key: tunables[key] for key in PIC_TUNABLES}}
 
 
 # ── Source cards ─────────────────────────────────────────────────────
@@ -191,7 +195,8 @@ def update_settings(data: PicSettingsUpdate, request: Request, db: Session = Dep
 @router.get("/sources")
 def list_sources(db: Session = Depends(get_db)):
     _require_pic()
-    return [_source_view(row, source_counts(db, row.id))
+    per_source = source_counts_all(db)
+    return [_source_view(row, per_source.get(row.id, {}))
             for row in db.query(PicSource).order_by(PicSource.id).all()]
 
 
@@ -434,11 +439,14 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
         conditions.append(PicItem.taken_at <= taken_at_prefix(taken_to, end=True))
     if conditions:
         query = query.filter(and_(*conditions))
-    total = query.count()
+    # Count the base table, not the joined one: source_id is a NOT NULL FK to a
+    # primary key, so the pic_sources join can only add rows to a COUNT.
+    where = and_(*conditions) if conditions else sql_true()
+    total = db.query(PicItem).filter(where).count()
 
     if ids_only:
         # Select-all / empty-trash need the FULL id set, not just the page.
-        ids = [row[0] for row in db.query(PicItem.id).filter(and_(*conditions))
+        ids = [row[0] for row in db.query(PicItem.id).filter(where)
                .order_by(PicItem.id).limit(5000).all()]
         return {"total": total, "ids": ids, "truncated": total > len(ids)}
 
@@ -446,11 +454,19 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
                            PicItem.id.desc())
             .limit(limit).offset(offset).all())
     # Duplicate badge: same content hash appearing more than once (burst
-    # shots, re-saved copies). content_hash is indexed; one grouped query
-    # per page is cheap well past 10k photos.
-    dup_hashes = {row[0] for row in db.execute(sql_text(
-        "SELECT content_hash FROM pic_items WHERE archived = 0 AND content_hash <> '' "
-        "GROUP BY content_hash HAVING count(*) > 1"))}
+    # shots, re-saved copies). Only the hashes on THIS page are probed, so the
+    # indexed lookup stays O(page) instead of grouping the whole library on
+    # every gallery request (the UI polls this every 5 s).
+    page_hashes = list({item.content_hash for item, _ in rows if item.content_hash})
+    dup_hashes = set()
+    for start in range(0, len(page_hashes), 400):
+        chunk = page_hashes[start:start + 400]
+        marks = ", ".join(f":h{i}" for i in range(len(chunk)))
+        dup_hashes |= {row[0] for row in db.execute(sql_text(
+            "SELECT content_hash FROM pic_items WHERE archived = 0 "
+            f"AND content_hash IN ({marks}) "
+            "GROUP BY content_hash HAVING count(*) > 1"),
+            {f"h{i}": h for i, h in enumerate(chunk)})}
     return {"total": total, "limit": limit, "offset": offset,
             "items": [_item_view(item, name, item.content_hash in dup_hashes)
                       for item, name in rows]}
@@ -710,15 +726,25 @@ def purge_items(data: PicItemsPurge, request: Request, db: Session = Depends(get
         raise HTTPException(status_code=422,
                             detail="彻底删除会移除磁盘上的原图，需要 confirm=true 才执行")
 
+    # One fetch for the rows and one for their sources: emptying a trash bin of
+    # 500 photos used to be 1000 point SELECTs before the first unlink.
+    wanted = list(dict.fromkeys(data.ids))
+    items = {row.id: row for row in
+             db.query(PicItem).filter(PicItem.id.in_(wanted)).all()}
+    src_ids = {row.source_id for row in items.values()}
+    sources = ({row.id: row for row in
+                db.query(PicSource).filter(PicSource.id.in_(src_ids)).all()}
+               if src_ids else {})
+
     adapters: dict = {}
     purged, kept, errors = 0, 0, []
-    for item_id in data.ids:
-        item = db.get(PicItem, item_id)
+    for item_id in wanted:
+        item = items.get(item_id)
         if item is None:
             kept += 1
             continue
         try:
-            source = db.get(PicSource, item.source_id)
+            source = sources.get(item.source_id)
             if source is None:
                 raise SourceError("源卡片已删除，无法定位原图")
             adapter = adapters.setdefault(item.source_id, build_source(source))

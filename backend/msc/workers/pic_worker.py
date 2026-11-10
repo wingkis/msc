@@ -76,23 +76,32 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
             result = db.execute(sql_text(
                 "INSERT OR IGNORE INTO pic_items "
                 "(source_id, rel_path, origin_uri, name, ext, size_bytes, mtime, kind, "
-                " state, archived, error_count, discovered_at, updated_at) "
-                "VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, 'discovered', 0, 0, :p8, :p8)"),
+                " state, archived, missing, error_count, last_seen_at, "
+                " discovered_at, updated_at) "
+                "VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, "
+                " 'discovered', 0, 0, 0, :p8, :p8, :p8)"),
                 {"p0": src.id, "p1": entry.rel_path,
                  "p2": f"pic://{src.id}/{entry.rel_path}", "p3": entry.name,
                  "p4": entry.name.rsplit(".", 1)[-1].lower() if "." in entry.name else "",
                  "p5": entry.size, "p6": entry.mtime_iso,
                  "p7": guess_kind(entry.name), "p8": now_iso})
-            inserted += result.rowcount
-            # Touch (or revive): the original is there RIGHT NOW. Size/mtime
-            # refresh too, so replaced files carry fresh metadata even when
-            # the row predates them.
-            db.execute(sql_text(
-                "UPDATE pic_items SET last_seen_at = :p8, missing = 0, "
-                "size_bytes = :p5, mtime = :p6, updated_at = :p8 "
-                "WHERE source_id = :p0 AND rel_path = :p1"),
-                {"p0": src.id, "p1": entry.rel_path, "p5": entry.size,
-                 "p6": entry.mtime_iso, "p8": now_iso})
+            # missing/error_count/archived are written explicitly: a raw INSERT
+            # bypasses the ORM column defaults, and a NULL missing would drop
+            # the photo straight out of the gallery (see ensure_pic_defaults).
+            if result.rowcount:
+                inserted += 1
+            else:
+                # Touch (or revive): the original is there RIGHT NOW. Size/mtime
+                # refresh too, so replaced files carry fresh metadata even when
+                # the row predates them. Only existing rows need this — a fresh
+                # insert already carries all of it, which halves the statements
+                # on a first walk of a big share.
+                db.execute(sql_text(
+                    "UPDATE pic_items SET last_seen_at = :p8, missing = 0, "
+                    "size_bytes = :p5, mtime = :p6, updated_at = :p8 "
+                    "WHERE source_id = :p0 AND rel_path = :p1"),
+                    {"p0": src.id, "p1": entry.rel_path, "p5": entry.size,
+                     "p6": entry.mtime_iso, "p8": now_iso})
             walked += 1
             src.scan_cursor = entry.rel_path
             if walked % 200 == 0:
@@ -132,6 +141,7 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
     if src.state in ("paused", "error") or not src.enabled:
         return
     batch = pic_setting(db, "thumb_batch")
+    thumb_px = pic_setting(db, "thumb_px")
     now_iso = _now().isoformat()
     rows = (db.query(PicItem)
             .filter(PicItem.source_id == src.id, PicItem.state == "discovered",
@@ -161,7 +171,7 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
                 thumb = im
                 if im.mode not in ("RGB", "RGBA", "L", "P"):
                     thumb = im.convert("RGB")
-                thumb.thumbnail((pic_setting(db, "thumb_px"),) * 2)
+                thumb.thumbnail((thumb_px,) * 2)
                 rel_thumb = f"thumbs/{src.id}/{item.id}.webp"
                 target = Path(settings.pic_dir) / rel_thumb
                 target.parent.mkdir(parents=True, exist_ok=True)
