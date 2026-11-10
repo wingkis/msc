@@ -50,16 +50,41 @@ TITLE: ...
 # One memory's body is never allowed to crowd out the rest of the digest.
 MAX_BODY_PER_MEMORY = 1200
 
-# A digest of search hits has a different failure mode from the daily one: the
-# query already picked the memories, so the model is tempted to explain the
+# A search digest has a different job from the daily one, and a different
+# failure mode. The daily digest narrates a period; here the user typed a query
+# and wants it answered - a summary of the hits is not an answer. And because
+# the query already picked the memories, the model is tempted to explain the
 # topic from its own background knowledge instead of from what was retrieved.
-# The brief goes in through {instruction}, so a custom card template keeps working.
+SEARCH_PROMPT_TEMPLATE = """搜索查询：{query}
+
+下面是这次搜索的 {count} 条命中记忆（{date_range}）。用这些记忆回答上面的查询，
+而不是把它们复述一遍。
+
+严格按这个格式输出，第一行必须是 TITLE: <不超过 20 字的标题>：
+
+TITLE: ...
+
+## 回答
+直接回答查询：先给结论，再给支撑结论的具体事实（数字、路径、命令、版本、时间），
+3-8 句。查询是关键词而不是问句时，就回答「关于这个主题，这些记忆里说了什么」。
+
+## 依据
+- 每条结论一行，写成：结论 ← 该结论出处的 slug
+
+## 记忆里没有的
+- 查询问到、但这些记忆没有覆盖的部分；没有则写：无
+
+{instruction}
+记忆内容：
+
+{sources}
+"""
+
 SEARCH_GROUNDING = (
-    "这是一次搜索的命中集合，不是一个时间段。只依据上面列出的记忆写作："
-    "每条要点都要能在某条记忆原文里找到出处；记忆里没有的日期、数字、路径、"
-    "因果关系和动机一律不要补全或推测，也不要用记忆之外的背景知识来解释；"
-    "记忆之间说法不一致时并列写出并指明冲突；没有依据的地方在「待办与风险」"
-    "里写「记忆里没有」。"
+    "只依据上面列出的记忆回答查询：每条结论都要能在某条记忆的原文里找到出处；"
+    "记忆里没有的日期、数字、路径、因果关系和动机一律不要补全或推测，也不要"
+    "用记忆之外的背景知识来解释这个主题；记忆之间说法不一致时并列写出并指明"
+    "冲突；查询里问到了但没有依据的部分，明确写进「记忆里没有的」。"
 )
 
 _TITLE_RE = re.compile(r"^\s*(?:#{1}\s+|(?:TITLE|标题)\s*[::]\s*)(.{2,120}?)\s*$", re.IGNORECASE)
@@ -200,12 +225,18 @@ def source_block(memories: Sequence[Memory], max_input_chars: int) -> Tuple[str,
 
 
 def build_messages(cfg: ModelConfig, memories: Sequence[Memory], *, date_range: str = "",
-                   instruction: str = "") -> List[dict]:
+                   instruction: str = "", query: str = "", template: str = "") -> List[dict]:
+    """Prompt for one digest run.
+
+    ``template`` is the scenario default (daily/selected vs search); a template
+    saved on the card still wins, so the settings page keeps its override.
+    ``query`` reaches the search template as the question to answer."""
     block, kept, _ = source_block(memories, cfg.max_input_chars)
-    template = (getattr(cfg, "prompt_template", "") or "").strip() or PROMPT_TEMPLATE
+    template = (getattr(cfg, "prompt_template", "") or "").strip() or (template or PROMPT_TEMPLATE)
     fields = {
         "count": len(kept),
         "date_range": date_range or "手动选择",
+        "query": query or "",
         "instruction": f"额外要求：{instruction}\n" if instruction else "",
         "sources": block,
     }
@@ -313,7 +344,8 @@ def run_summary(db: Session, cfg: ModelConfig, memories: Sequence[Memory], *, ac
                 kind: str = "manual", period: str = "", name: str = "", category: str = "",
                 priority: str = "", tags: Optional[List[str]] = None,
                 archive_sources: Optional[bool] = None, instruction: str = "",
-                date_range: str = "", note: str = "", dry_run: bool = False) -> Dict:
+                date_range: str = "", note: str = "", query: str = "",
+                template: str = "", dry_run: bool = False) -> Dict:
     """Summarise ``memories`` into one new memory.
 
     ``note`` is a line the body carries that the model did not write - which
@@ -332,7 +364,8 @@ def run_summary(db: Session, cfg: ModelConfig, memories: Sequence[Memory], *, ac
                                slug=None, actor=actor)}
 
     _, kept, dropped = source_block(memories, cfg.max_input_chars)
-    messages = build_messages(cfg, kept, date_range=date_range, instruction=instruction)
+    messages = build_messages(cfg, kept, date_range=date_range, instruction=instruction,
+                              query=query, template=template)
 
     try:
         answer = llm.chat(cfg, messages)

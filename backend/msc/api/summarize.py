@@ -19,7 +19,8 @@ from msc.schemas import ModelConfigUpdate, SummarizeRequest
 from msc.services import llm
 from msc.services.model_config import get_config, note_result, public_view, update_config
 from msc.services.summarizer import (
-    SEARCH_GROUNDING, day_bounds, memories_in_window, restore_sources, run_summary,
+    SEARCH_GROUNDING, SEARCH_PROMPT_TEMPLATE, day_bounds, memories_in_window,
+    restore_sources, run_summary,
 )
 
 router = APIRouter()
@@ -271,11 +272,13 @@ def summarize_selected(data: SummarizeRequest, request: Request, db: Session = D
 def summarize_search(data: SummarizeRequest, request: Request, db: Session = Depends(get_db)):
     """Digest the memories the last search returned.
 
-    Two things set this apart from a manual selection. The model gets
-    ``SEARCH_GROUNDING``: the query already chose these rows, so inventing
-    context around the topic is the main way this goes wrong. And the sources
-    are never archived - the card's ``archive_sources`` switch is for the daily
-    digest, and quietly soft-deleting a search result set would be nasty."""
+    The user typed a query and wants it answered, so this route sends
+    ``SEARCH_PROMPT_TEMPLATE`` (answer / 依据 / 记忆里没有的) with the query in
+    the prompt, plus ``SEARCH_GROUNDING``: the query already chose these rows,
+    so explaining the topic from the model's own background knowledge is the
+    main way this goes wrong. The sources are never archived either - the
+    card's ``archive_sources`` switch belongs to the daily digest, and quietly
+    soft-deleting a search result set would be nasty."""
     _require_auth(request, db)
     if not data.dry_run:
         _guard_write()
@@ -290,7 +293,7 @@ def summarize_search(data: SummarizeRequest, request: Request, db: Session = Dep
                             detail=f"这些记忆已不存在: {', '.join(missing[:5])}")
 
     query = (data.query or "").strip()
-    framing = f"搜索「{query}」的 {len(memories)} 条命中" if query else f"搜索结果的 {len(memories)} 条命中"
+    framing = f"关键词命中 {len(memories)} 条" if query else f"选中 {len(memories)} 条"
     instruction = "\n".join(part for part in (SEARCH_GROUNDING, (data.instruction or "").strip()) if part)
 
     try:
@@ -298,7 +301,8 @@ def summarize_search(data: SummarizeRequest, request: Request, db: Session = Dep
             db, get_config(db), memories, actor=actor, kind="manual",
             name=data.name or "", category=data.category or "", priority=data.priority or "",
             tags=data.tags or ["summary", "search"], archive_sources=bool(data.archive_sources),
-            instruction=instruction, date_range=framing,
+            instruction=instruction, date_range=framing, query=query,
+            template=SEARCH_PROMPT_TEMPLATE,
             note=f"由搜索「{query}」的命中生成。" if query else "",
             dry_run=data.dry_run,
         )

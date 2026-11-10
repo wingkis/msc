@@ -325,7 +325,7 @@ async function searchAndSummarize(save) {
   btn.disabled = true;
   box.style.display = 'block';
   box.innerHTML = '<div class="search-digest-head"><span>' +
-    (save ? '正在写入小结记忆…' : `模型正在读这 ${lastSearch.slugs.length} 条命中并写作…`) +
+    (save ? '正在写入小结记忆…' : `模型正在读这 ${lastSearch.slugs.length} 条命中，回答「${lastSearch.q}」…`) +
     '</span></div><div class="loading-hint">本地模型，十几秒到一两分钟，期间不要刷新</div>';
 
   try {
@@ -338,7 +338,7 @@ async function searchAndSummarize(save) {
   } catch (e) {
     box.innerHTML = '<div class="search-digest-head"><span>总结失败</span></div>' +
       `<div class="digest-error">${escHtml(e.message)}</div>` +
-      '<div class="setting-hint">模型没有回答，记忆库一条都没动。</div>';
+      '<div class="setting-hint">模型没有回答，记忆库一条都没动。搜索没有命中时也不要点总结。</div>';
   } finally {
     updateSearchDigestGate();
   }
@@ -361,7 +361,7 @@ function renderSearchDigest(result, saved) {
 
   box.innerHTML = `
     <div class="search-digest-head">
-      <span>「${escHtml(result.query || lastSearch.q)}」· 搜索小结</span>
+      <span>回答：「${escHtml(result.query || lastSearch.q)}」</span>
       <span class="search-digest-meta">${escHtml(bits.join(' · '))}</span>
       <button class="btn btn-sm btn-ghost" onclick="hideSearchDigest()">收起</button>
     </div>

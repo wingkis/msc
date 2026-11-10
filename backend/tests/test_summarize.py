@@ -283,13 +283,40 @@ def test_search_digest_grounds_the_prompt_in_the_hits(client, monkeypatch):
                           json={"query": "备份", "slugs": slugs, "dry_run": True}).json()
 
     prompt = calls[-1]["messages"][-1]["content"]
-    assert "搜索「备份」的 2 条命中" in prompt
-    assert "记忆里没有" in prompt                 # the grounding brief
+    # The query goes in as the thing to answer, not as a label on a time range.
+    assert "搜索查询：备份" in prompt
+    assert "用这些记忆回答上面的查询" in prompt
+    assert "## 回答" in prompt and "## 依据" in prompt and "## 记忆里没有的" in prompt
+    assert "记忆里没有的日期、数字、路径" in prompt      # the grounding brief
     assert "不要用记忆之外的背景知识" in prompt
     for slug in slugs:
         assert slug in prompt                    # every hit actually reached the model
     assert preview["created"] is None and preview["dry_run"] is True
     assert preview["query"] == "备份"
+
+
+def test_search_digest_asks_a_question_not_a_period(client, monkeypatch):
+    """A keyword query is not a question; the template has to say what to do
+    then as well, or the model falls back to narrating a period."""
+    calls = _fake_chat(monkeypatch)
+    slugs = [_make(client, "Search Question Shape")]
+    client.post("/api/v1/summarize/search", json={"query": "备份", "slugs": slugs,
+                                                  "dry_run": True})
+    prompt = calls[-1]["messages"][-1]["content"]
+    assert "查询是关键词而不是问句时" in prompt
+    assert "## 摘要" not in prompt               # not the daily digest shape
+
+
+def test_a_card_template_still_overrides_the_search_shape(client, monkeypatch):
+    calls = _fake_chat(monkeypatch)
+    _card(client, prompt_template="自定义：{count} 条，查询 {query}\n{sources}")
+    slugs = [_make(client, "Search Custom Template")]
+    client.post("/api/v1/summarize/search", json={"query": "模板", "slugs": slugs,
+                                                  "dry_run": True})
+    prompt = calls[-1]["messages"][-1]["content"]
+    assert prompt.startswith("自定义：1 条，查询 模板")
+    for slug in slugs:
+        assert slug in prompt
 
 
 def test_search_digest_keeps_its_sources_even_when_the_card_archives(client, monkeypatch):

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.0">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.1">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -210,7 +210,7 @@
                    onkeydown="if(event.key==='Enter')doSearch()">
             <button class="btn btn-primary btn-lg" onclick="doSearch()">搜索</button>
             <button class="btn btn-lg" id="search-digest-btn" onclick="searchAndSummarize()" disabled
-                    title="把当前这一页搜索结果交给小结模型：只依据这些记忆写，不补全记忆之外的事实；先预览，不写库">搜索并总结</button>
+                    title="用当前这一页搜索结果回答上面的查询：模型只依据这些记忆作答，不补全记忆之外的事实；先预览，不写库">搜索并总结</button>
           </div>
           <div class="search-filters">
             <select id="search-mode-select" title="keyword＝FTS；semantic＝向量；hybrid＝两路 RRF 融合（未配置 embed 时自动退回 keyword）">
@@ -927,10 +927,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.0"></script>
-  <script src="/ui/js/app.js?v=2.5.0"></script>
-  <script src="/ui/js/graph.js?v=2.5.0"></script>
-  <script src="/ui/js/pic.js?v=2.5.0"></script>
+  <script src="/ui/js/api.js?v=2.5.1"></script>
+  <script src="/ui/js/app.js?v=2.5.1"></script>
+  <script src="/ui/js/graph.js?v=2.5.1"></script>
+  <script src="/ui/js/pic.js?v=2.5.1"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });
