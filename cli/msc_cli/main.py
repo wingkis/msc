@@ -15,7 +15,7 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-__version__ = "2.3.1"
+__version__ = "2.4.0"
 
 console = Console()
 err_console = Console(stderr=True)
