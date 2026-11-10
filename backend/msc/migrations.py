@@ -314,6 +314,26 @@ def sweep_orphan_thumbs() -> int:
     return removed
 
 
+def ensure_pic_defaults() -> int:
+    """ALTER TABLE ADD COLUMN leaves NULLs on existing rows, and our filters
+    speak == 0: a NULL missing/error_count silently drops live photos out of
+    the gallery AND out of every queue. Backfill the defaults once per column.
+    """
+    fixed = 0
+    with engine.begin() as conn:
+        if "pic_items" not in set(inspect(engine).get_table_names()):
+            return 0
+        fixed += conn.execute(text(
+            "UPDATE pic_items SET missing = 0 WHERE missing IS NULL")).rowcount
+        fixed += conn.execute(text(
+            "UPDATE pic_items SET error_count = 0 WHERE error_count IS NULL")).rowcount
+        fixed += conn.execute(text(
+            "UPDATE pic_items SET archived = 0 WHERE archived IS NULL")).rowcount
+    if fixed:
+        _log.info("schema: backfilled %d default value(s) on pic_items", fixed)
+    return fixed
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -328,6 +348,7 @@ def run_maintenance() -> dict:
         "relation_types_updated": ensure_relation_types(),
         "model_purpose_backfilled": ensure_model_purpose(),
         "embeddings_pruned": prune_broken_embeddings(),
+        "pic_defaults_backfilled": ensure_pic_defaults(),
         "pic_vectors_pruned": prune_broken_pic_vectors(),
         "pic_thumbs_swept": sweep_orphan_thumbs(),
     }
