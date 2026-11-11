@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.12">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.13">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -960,6 +960,8 @@
       <div class="modal-footer">
         <button class="btn" id="pic-detail-orig-btn" onclick="picToggleOriginal()">查看原图</button>
         <a class="btn btn-ghost" id="pic-detail-download" href="#" download><svg class="icon icon--sm" aria-hidden="true"><use href="#i-download"/></svg>下载原图</a>
+        <button class="btn" id="pic-detail-archive-btn" onclick="picArchiveCurrent()"
+                title="只把这张移进回收站，磁盘上的原图不动，可在回收站恢复"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg>移入回收站</button>
         <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
       </div>
     </div>
@@ -968,10 +970,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.12"></script>
-  <script src="/ui/js/app.js?v=2.5.12"></script>
-  <script src="/ui/js/graph.js?v=2.5.12"></script>
-  <script src="/ui/js/pic.js?v=2.5.12"></script>
+  <script src="/ui/js/api.js?v=2.5.13"></script>
+  <script src="/ui/js/app.js?v=2.5.13"></script>
+  <script src="/ui/js/graph.js?v=2.5.13"></script>
+  <script src="/ui/js/pic.js?v=2.5.13"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

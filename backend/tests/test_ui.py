@@ -295,3 +295,43 @@ def test_pic_tuning_row_cannot_widen_the_settings_page(client):
     assert "apiErrorText(data, res.status)" in api_js
     assert "new Error((data && data.detail)" not in api_js, \
         "a FastAPI validation list stringifies to [object Object]"
+
+
+def test_every_photo_can_be_trashed_from_the_page(client):
+    """Deleting one photo used to mean: find the checkbox, tick it, then hunt
+    for the floating bulk bar — and inside the detail modal there was no way
+    out at all. Pinned: the gallery tile carries a hover trash icon, the modal
+    footer carries 移入回收站, and both go through the soft delete (the row is
+    archived) rather than the purge path that removes the original file.
+    Purging still needs the typed DELETE prompt."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    pic_js = (UI / "js" / "pic.js").read_text(encoding="utf-8")
+    api_js = (UI / "js" / "api.js").read_text(encoding="utf-8")
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="pic-detail-archive-btn"' in html
+    assert 'onclick="picArchiveCurrent()"' in html
+    # trashed photos have nothing left to trash — the modal hides the button
+    assert "pic-detail-archive-btn" in pic_js and "picView === 'trash'" in pic_js
+
+    tile = re.search(r"function picTileHtml.*?\n}", pic_js, re.S).group(0)
+    assert 'class="pic-del"' in tile and "picArchiveOne(" in tile
+    assert "picView === ''" in tile, "the hover trash belongs to the gallery view only"
+    assert tile.count('class="pic-del"') == 1
+
+    one = re.search(r"async function picArchiveOne.*?\n}", pic_js, re.S).group(0)
+    assert "API.picDeleteItem(id)" in one and "picPurge" not in one
+    assert "picUndoArchive" in one and "picDeleteItem(id) {" in api_js
+    assert "/pic/item/${id}`, { method: 'DELETE' }" in api_js
+    undo = re.search(r"async function picUndoArchive.*?\n}", pic_js, re.S).group(0)
+    assert "'restore'" in undo and "picDeleteItem" not in undo
+    # hard delete keeps its double gate
+    assert "输入 DELETE 确认" in pic_js and "API.picPurge" in pic_js
+
+    declarations = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rule = re.search(r"\.pic-del \{[^}]*\}", declarations).group(0)
+    assert "position: absolute" in rule and "opacity: 0" in rule
+    assert ".pic-tile:hover .pic-del" in declarations
+    assert "@media (hover: none) { .pic-del { opacity: 1; } }" in declarations
+    # the fourth footer button must not squeeze out of the phone-width modal
+    assert ".pic-modal .modal-footer { flex-wrap: wrap; }" in declarations

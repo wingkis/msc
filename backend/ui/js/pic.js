@@ -232,6 +232,14 @@ function picTileHtml(item) {
     `<input type="checkbox" onchange="picToggleSelect(${item.id})" ` +
     `${picSelected.has(item.id) ? 'checked' : ''}></label>`;
   const dup = item.dup ? '<span class="pic-dup" title="与别的照片内容相同（连拍/副本）">副本</span>' : '';
+  // One photo at a time out of the wall: the checkbox is top-left, the trash
+  // bottom-right. Both live on the image and appear on hover, so 2000 tiles
+  // don't grow a button row under every caption.
+  const del = picView === ''
+    ? `<button class="pic-del" title="移入回收站（原图不动）" aria-label="移入回收站" ` +
+      `onclick="event.stopPropagation();picArchiveOne(${item.id})">` +
+      `<svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg></button>`
+    : '';
   let tileBtns = '';
   if (picView === 'trash') {
     tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
@@ -247,7 +255,7 @@ function picTileHtml(item) {
   return `<div class="pic-tile state-${state}${picSelected.has(item.id) ? ' is-selected' : ''}" ` +
     `data-id="${item.id}" title="${escHtml(item.rel_path)}" ` +
     `onclick="picOpenDetail(${item.id})">` +
-    `<div class="pic-tile-media">${inner}${check}${badge}${dup}${match}</div>${info}</div>`;
+    `<div class="pic-tile-media">${inner}${check}${badge}${dup}${match}${del}</div>${info}</div>`;
 }
 
 // Poll updates in place: same ids in the same order → mutate each tile's
@@ -574,6 +582,33 @@ async function picArchiveSelected() {
   loadPics();
 }
 
+// Soft delete of a single photo: same destination as 移入回收站 in the bulk
+// bar — the row is archived, the file on disk is not touched. Reversible from
+// the toast (撤销) or later from the 回收站 tab.
+async function picArchiveOne(id) {
+  try {
+    await API.picDeleteItem(id);
+  } catch (e) {
+    toast(e.message, 'error');
+    return false;
+  }
+  picSelected.delete(id);
+  toast('已移入回收站（原图未动）', 'success',
+        { actionLabel: '撤销', action: () => picUndoArchive(id) });
+  loadPics();
+  return true;
+}
+
+async function picUndoArchive(id) {
+  try {
+    await API.picBatch([id], 'restore');
+    toast('已恢复到相册', 'success');
+    loadPics();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 async function picRestoreSelected() {
   const r = await API.picBatch([...picSelected], 'restore');
   toast(`已恢复 ${r.changed} 张`, 'success');
@@ -614,6 +649,9 @@ function picOpenDetail(id) {
   picDetailList = Array.from(document.querySelectorAll('#pic-grid .pic-tile'))
     .map(tile => Number(tile.dataset.id));
   picDetailIndex = picDetailList.indexOf(id);
+  // A trashed photo has nothing left to trash; 恢复/彻底删除 stay on its tile.
+  const del = document.getElementById('pic-detail-archive-btn');
+  if (del) del.style.display = picView === 'trash' ? 'none' : '';
   return picShowItem(id);
 }
 
@@ -660,6 +698,21 @@ function picDetailHint(it) {
   hint.textContent = it.state === 'failed'
     ? `这张处理失败：${it.last_error || '未知原因'}`
     : '缩略图还没生成，worker 正在排队处理';
+}
+
+// 移入回收站 from inside the modal. The photo leaves the wall, so the modal
+// walks to its neighbour instead of keeping a tile that no longer exists open.
+async function picArchiveCurrent() {
+  const id = picDetailList[picDetailIndex];
+  if (id === undefined) return;
+  if (!await picArchiveOne(id)) return;
+  picDetailList.splice(picDetailIndex, 1);
+  if (!picDetailList.length) {
+    closePicDetail();
+    return;
+  }
+  picDetailIndex = Math.min(picDetailIndex, picDetailList.length - 1);
+  picShowItem(picDetailList[picDetailIndex]);
 }
 
 function picDetailStep(delta) {

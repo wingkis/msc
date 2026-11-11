@@ -326,6 +326,9 @@ const API = {
   picItem(id) {
     return apiFetch(`/pic/item/${id}`);
   },
+  picDeleteItem(id) {
+    return apiFetch(`/pic/item/${id}`, { method: 'DELETE' });
+  },
   picSearch(q, top = 24) {
     return apiFetch(`/pic/search?q=${encodeURIComponent(q)}&top=${top}`);
   },
