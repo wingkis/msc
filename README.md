@@ -220,6 +220,19 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 `embed_batch`（1–64，默认 8）＝每轮索引多少条描述。两个开关：`caption_paused`（暂停图像描述）压过
 `caption_burst`（全开连续描述）。`GET /api/v1/pic/status` 的 `settings` 会回读全部调参，UI 每 5 秒跟随。
 
+## 视觉描述模型（vision 卡片）
+
+「设置 → 视觉描述模型」就是描述照片那张卡：API 地址 / 模型名 / 密钥 / 最大输出 tokens / 超时 / 额外参数 JSON / 启用开关，
+存 DB，保存即生效（`MSC_VISION_*` 只是首次启动的种子）。和其它卡同一个接口：`GET /api/v1/model?purpose=vision`、
+`PUT /api/v1/model?purpose=vision`、`POST /api/v1/model/test?purpose=vision`。
+
+- 必须是**能吃图片**的 OpenAI 兼容 `/v1/chat/completions`：llama.cpp 要带 `--mmproj`（只挂纯文本模型时文字测试会过、描述会全失败），
+  所以这张卡的「测试」真的发一张 16×16 红图，并把 `/v1/models` 的模型名灌进「模型名」下拉——填错模型 id 是这里最常见的坑。
+- 地址/模型名留空或未启用时：扫描与缩略图照常，`thumb_ready` 原地排队，不做无谓重试；卡片填好后自动补发积压。
+- 状态可见处：卡片状态行（上次失败原因／就绪）、照片页状态条的 `视觉 <模型名>` 徽标（未填且队列非空时变成 `视觉模型未填 API`）。
+- 节流与并发不在这张卡（在「照片源」卡片）；单张描述变慢先调 `max_tokens`（思考型模型会把预算吃在思考上）与 `timeout_seconds`，
+  要关思考就在「额外请求参数 JSON」里填，例如 `{"reasoning": {"effort": "low"}}`。
+
 ## 常见故障
 
 | 现象 | 处理 |
@@ -232,6 +245,22 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | `.msc_index.json` 里有已删除条目 | `msc sync reindex`（同时重建 FTS 和文件索引） |
 
 ## 更新记录
+
+### 2.5.14（msc-pic 分支）
+
+- **视觉描述模型也有卡片了** — 描述照片的 `vision` 卡后端一直有（`GET /api/v1/model/cards` 里就在，`PUT /api/v1/model?purpose=vision` 也能写），
+  但设置页只渲染 chat/embed/rerank/whisper/echo 五张：想换"用哪个模型看图"只能手敲 curl 或改 `.env` 重建容器。现在设置页多一张
+  **视觉描述模型（照片 caption）** 卡片，走同一套 fill/save/test 机器（`loadRagCards()` 的 purpose 列表补上 `vision`，
+  每张卡的数字字段改成 `CARD_NUMBER_FIELDS` 按 purpose 映射，不再是 embed 的特例 if）：API 地址、模型名（带 `/v1/models` 下拉）、
+  API Key（掩码／留空＝不改／勾选清除）、最大输出 tokens（128–16384）、超时（5–1800）、额外请求参数 JSON、启用、清除密钥。
+  「测试（发一张红图）」沿用后端那个真发 16×16 PNG 的探针，通过后状态行显示模型答了什么与延迟，顺带把该服务的模型名灌进下拉
+  （echo 卡同样受益：它的探针也是 chat 形的）。输入框的 `min`/`max` 与 schema 一致，越界先夹取而不是弹 422（2.5.12 那条教训）。
+- **照片页会说出用哪个模型描述** — `/pic/status` 本来就带 `providers.vision`，现在照片页状态条多一个 `视觉 <模型名>` 徽标；
+  地址/模型名没填而队列里还有 `thumb_ready` 时改成红色 `视觉模型未填 API — 设置 → 视觉描述模型`，不再让"队列只涨不动"看起来像坏了。
+- **「照片源」卡片写明描述模型在哪改** — 两个开关那段 hint 上面补一行：模型 API 在下面的卡片里填，保存即生效。
+- 测试 169 个（新增 `test_the_vision_model_has_a_card_on_the_settings_page`：卡片九个 id、保存/测试接线、两个数字框的 min/max、
+  `CARD_PURPOSES` 含 vision、探针会灌模型名列表并回显回复、照片页两处徽标都在；`test_vision_card_writes_every_field_the_settings_page_sends`：
+  卡片要写的七个字段全落库、裸地址自动补 `http://`、越界 422、`/pic/status` 的 `providers.vision.ready` 随卡片空/满翻转）。
 
 ### 2.5.13（msc-pic 分支）
 

@@ -442,6 +442,41 @@ def test_vision_probe_sends_an_image(client, monkeypatch):
     assert report["ok"] is True and seen["has_image"] is True
 
 
+def test_vision_card_writes_every_field_the_settings_page_sends(client):
+    """The card's save handler sends base_url / model / api_key / max_tokens /
+    timeout_seconds / extra_json / enabled. A field the schema rejects would
+    read as a broken card, so the whole set round-trips, the schema bounds
+    match the input clamps in the HTML, and /pic/status exposes the card the
+    gallery chip reads — including not-ready, which is why a queue waits
+    instead of burning retries."""
+    saved = client.put("/api/v1/model?purpose=vision", json={
+        "base_url": "vision.test:8080", "model": "fake-vl", "api_key": "secret-key-1234",
+        "max_tokens": 900, "timeout_seconds": 240,
+        "extra_json": '{"reasoning": {"effort": "low"}}', "enabled": True}).json()
+    assert saved["base_url"] == "http://vision.test:8080"   # a bare host gets a scheme
+    assert (saved["max_tokens"], saved["timeout_seconds"]) == (900, 240)
+    assert saved["extra_json"] == '{"reasoning": {"effort": "low"}}'
+    assert saved["api_key_set"] and saved["api_key_masked"] != "secret-key-1234"
+    assert saved["ready"] is True
+
+    for patch in ({"max_tokens": 32}, {"max_tokens": 99999}, {"timeout_seconds": 3600}):
+        assert client.put("/api/v1/model?purpose=vision", json=patch).status_code == 422
+
+    vision = client.get("/api/v1/pic/status").json()["providers"]["vision"]
+    assert vision["model"] == "fake-vl" and vision["ready"] is True
+
+    # An unfilled card reads as not-ready — that is what the gallery chip says.
+    cleared = client.put("/api/v1/model?purpose=vision",
+                         json={"model": "", "base_url": "", "api_key": ""})
+    assert cleared.status_code == 200
+    assert client.get("/api/v1/pic/status").json()["providers"]["vision"]["ready"] is False
+
+    # ... and the card is one shared DB row: put back what the probe test left,
+    # the caption tests after this one drive the pipeline through it.
+    assert client.put("/api/v1/model?purpose=vision", json={
+        "base_url": "http://vision.test:8080", "model": "fake-vl"}).status_code == 200
+
+
 def test_caption_embed_and_search_flow(client, db, photos_dir, monkeypatch):
     from msc.models import PicItem, PicVector
     from msc.services import llm, rag_providers

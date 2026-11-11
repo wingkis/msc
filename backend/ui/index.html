@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.13">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.14">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -475,6 +475,8 @@
               <span id="pic-cap-pause-status" class="sync-result"></span>
             </div>
             <div class="setting-hint">
+              描述照片的那个多模态模型在下面的「视觉描述模型」卡片里填 API（地址 / 模型名 / 密钥 / 最大输出 / 超时），
+              保存即生效，不用改 <code>.env</code>、不用重启容器。<br>
               「暂停图像描述」只停视觉描述这一级（大模型忙时让它休息）：扫描和缩略图照常，
               待描述的照片原地排队，恢复后继续。
               <br>
@@ -648,6 +650,41 @@
             </div>
             <h4>最近小结</h4>
             <div id="summary-runs" class="log-list"></div>
+          </div>
+          <div class="settings-card">
+            <h3>视觉描述模型（照片 caption）</h3>
+            <div class="setting-hint">
+              照片墙上的中文描述就出自这里的模型：任意能吃图片的 OpenAI 兼容 <code>/v1/chat/completions</code>
+              （llama.cpp 必须挂多模态投影 <code>--mmproj</code> —— 纯文本服务文字测试会过，描述会全失败）。<br>
+              「测试」真的发一张 16×16 红图并回报模型答了什么，这一步过了待描述的照片才会真的开始跑；
+              顺带把该服务提供的模型名灌进下面的下拉。地址留空或未启用时扫描与缩略图照常，
+              描述级原地排队，配好后自动补发。<br>
+              节流与并发不在这张卡：在上面的「照片源」卡片（暂停图像描述 / 全开连续描述 / 描述并发）。
+            </div>
+            <div class="model-form">
+              <div class="form-group"><label>API 地址</label><input type="text" id="rag-vision-base-url" placeholder="http://192.168.29.50:8080"></div>
+              <div class="form-group">
+                <label>模型名</label>
+                <input type="text" id="rag-vision-name" list="rag-vision-model-options" placeholder="Qwen2.5-VL-7B-Instruct">
+                <datalist id="rag-vision-model-options"></datalist>
+              </div>
+              <div class="form-group"><label>API Key</label><input type="password" id="rag-vision-key" placeholder="留空＝不修改"></div>
+              <div class="form-group"><label>最大输出 tokens</label><input type="number" id="rag-vision-max-tokens" step="100" min="128" max="16384"></div>
+              <div class="form-group"><label>超时（秒）</label><input type="number" id="rag-vision-timeout" step="5" min="5" max="1800"></div>
+            </div>
+            <div class="form-group">
+              <label>额外请求参数 JSON（可选，思考型模型用它关思考）</label>
+              <input type="text" id="rag-vision-extra" placeholder='{"reasoning": {"effort": "low"}}'>
+            </div>
+            <div class="setting-item">
+              <input type="checkbox" id="rag-vision-enabled"><label for="rag-vision-enabled">启用</label>
+              <input type="checkbox" id="rag-vision-key-clear"><label for="rag-vision-key-clear">清除密钥</label>
+            </div>
+            <div class="sync-controls">
+              <button class="btn btn-primary" onclick="saveRagCard('vision')">保存</button>
+              <button class="btn" onclick="testRagCard('vision')">测试（发一张红图）</button>
+              <div id="rag-vision-status" class="sync-result"></div>
+            </div>
           </div>
           <div class="settings-card">
             <h3>嵌入模型（语义搜索）</h3>
@@ -970,10 +1007,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.13"></script>
-  <script src="/ui/js/app.js?v=2.5.13"></script>
-  <script src="/ui/js/graph.js?v=2.5.13"></script>
-  <script src="/ui/js/pic.js?v=2.5.13"></script>
+  <script src="/ui/js/api.js?v=2.5.14"></script>
+  <script src="/ui/js/app.js?v=2.5.14"></script>
+  <script src="/ui/js/graph.js?v=2.5.14"></script>
+  <script src="/ui/js/pic.js?v=2.5.14"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

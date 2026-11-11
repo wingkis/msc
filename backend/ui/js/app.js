@@ -1281,9 +1281,17 @@ async function restoreDigestSources(digestSlug) {
   }
 }
 
-// ── RAG provider cards ──────────────────────────────────────────────
+// ── Provider cards ──────────────────────────────────────────────────
 // Same fill/collect/save/test shape as the chat card, one prefix per purpose.
-const RAG_PURPOSES = ['embed', 'rerank', 'whisper', 'echo'];
+// vision (照片描述) belongs here too: the backend has served that card since
+// the pic branch landed, but the settings page never rendered it, so the
+// endpoint that captions the library could only be moved by hand.
+const CARD_PURPOSES = ['embed', 'rerank', 'whisper', 'echo', 'vision'];
+// purpose -> [[input id suffix, card field], ...] for the numbers a card shows.
+const CARD_NUMBER_FIELDS = {
+  embed: [['max-input', 'max_input_chars'], ['timeout', 'timeout_seconds']],
+  vision: [['max-tokens', 'max_tokens'], ['timeout', 'timeout_seconds']],
+};
 const ragCards = {};
 
 function ragField(purpose, field) {
@@ -1302,15 +1310,16 @@ function fillRagCard(card) {
     key.value = '';
     key.placeholder = card.api_key_set ? `已保存 ${card.api_key_masked}，留空＝不修改` : '留空＝不修改';
   }
-  if (p === 'embed') {
-    setFieldValue('rag-embed-max-input', card.max_input_chars);
-    setFieldValue('rag-embed-timeout', card.timeout_seconds);
-  }
+  (CARD_NUMBER_FIELDS[p] || []).forEach(([suffix, field]) =>
+    setFieldValue(`rag-${p}-${suffix}`, card[field]));
+  setFieldValue(`rag-${p}-extra`, card.extra_json);   // only vision/chat have one
   const box = ragField(p, 'status');
   if (box && !box.textContent) {
     if (card.last_error) box.innerHTML = `<span class="status-warn">上次失败: ${escHtml(card.last_error)}</span>`;
     else if (card.ready) {
       box.innerHTML = `<span class="status-ok">就绪${p === 'embed' && card.probed_dim ? ` · ${card.probed_dim} 维` : ''}</span>`;
+    } else if (p === 'vision') {
+      box.innerHTML = '<span class="status-warn">未填 API 地址／模型名 —— 照片只出缩略图，描述队列原地等着</span>';
     }
   }
 }
@@ -1318,7 +1327,7 @@ function fillRagCard(card) {
 async function loadRagCards() {
   try {
     const cards = await API.listModelCards();
-    cards.filter(c => RAG_PURPOSES.includes(c.purpose)).forEach(fillRagCard);
+    cards.filter(c => CARD_PURPOSES.includes(c.purpose)).forEach(fillRagCard);
   } catch (e) {
     console.warn('rag cards load failed:', e.message);
   }
@@ -1330,12 +1339,12 @@ function collectRagCard(purpose) {
     model: (ragField(purpose, 'name') || {}).value?.trim() || '',
     enabled: !!(ragField(purpose, 'enabled') || {}).checked,
   };
-  if (purpose === 'embed') {
-    const mi = parseInt((ragField('embed', 'max-input') || {}).value, 10);
-    const to = parseInt((ragField('embed', 'timeout') || {}).value, 10);
-    if (mi > 0) patch.max_input_chars = mi;
-    if (to > 0) patch.timeout_seconds = to;
-  }
+  (CARD_NUMBER_FIELDS[purpose] || []).forEach(([suffix, field]) => {
+    const value = parseInt((ragField(purpose, suffix) || {}).value, 10);
+    if (value > 0) patch[field] = value;      // blank keeps the stored value
+  });
+  const extra = ragField(purpose, 'extra');
+  if (extra) patch.extra_json = extra.value.trim();   // filled from the card on load
   const key = (ragField(purpose, 'key') || {}).value;
   if ((ragField(purpose, 'key-clear') || {}).checked) patch.api_key = '';
   else if (key) patch.api_key = key;
@@ -1359,9 +1368,18 @@ async function testRagCard(purpose) {
   if (box) box.textContent = '正在连接…';
   try {
     const report = await API.testModelCard(purpose);
+    // The chat-shaped probes (echo, vision) answer with a reply, and both
+    // report the model list — for vision that list is the whole point, the
+    // model id has to name a multimodal one the server actually loaded.
+    const options = document.getElementById(`rag-${purpose}-model-options`);
+    if (options && report.models && report.models.length) {
+      options.innerHTML = report.models.map(m => `<option value="${escHtml(m)}"></option>`).join('');
+    }
     if (report.ok) {
       const extra = purpose === 'embed' && report.probe ? ` · 维度 ${report.probe.dim}` : '';
-      if (box) box.innerHTML = `<span class="status-ok">可用${extra}</span>`;
+      const said = report.chat ? ` · ${report.chat.latency_ms || 0}ms · 回复「${escHtml(report.chat.reply || '')}」` : '';
+      if (box) box.innerHTML = `<span class="status-ok">可用${extra}</span>${said}`
+        + (report.models_error ? `<br>（${escHtml(report.models_error)}）` : '');
     } else {
       if (box) box.innerHTML = `<span class="status-bad">${escHtml(report.error || '探针未通过')}</span>`;
     }

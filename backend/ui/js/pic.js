@@ -196,6 +196,15 @@ function renderPicStatusLine(status) {
     parts.push(picChip('pic-chip-live',
       `描述全开${picCaptionWorkers > 1 ? ` <b>×${picCaptionWorkers}</b>` : ''}`));
   }
+  // /pic/status carries the vision card, so the gallery can say which model is
+  // doing the describing — and why an un-filled card leaves 待描述 growing
+  // forever instead of failing loudly.
+  const vision = (status.providers || {}).vision || {};
+  if (vision.model && vision.enabled) {
+    parts.push(picChip('pic-chip-dim', `视觉 ${escHtml(vision.model)}`));
+  } else if (c.thumb_ready) {
+    parts.push(picChip('pic-chip-bad', '视觉模型未填 API — 设置 → 视觉描述模型'));
+  }
   if (status.missing) parts.push(picChip('pic-chip-dim', `缺失 <b>${status.missing}</b>`));
   if (status.trashed) parts.push(picChip('pic-chip-dim', `回收站 <b>${status.trashed}</b>`));
   if (scanning) parts.push(picChip('pic-chip-live', `${scanning} 个源正在扫描`));

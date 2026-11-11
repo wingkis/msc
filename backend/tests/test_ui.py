@@ -335,3 +335,45 @@ def test_every_photo_can_be_trashed_from_the_page(client):
     assert "@media (hover: none) { .pic-del { opacity: 1; } }" in declarations
     # the fourth footer button must not squeeze out of the phone-width modal
     assert ".pic-modal .modal-footer { flex-wrap: wrap; }" in declarations
+
+
+def test_the_vision_model_has_a_card_on_the_settings_page(client):
+    """The caption model was the one purpose with no card: the backend served
+    purpose=vision since the pic branch landed, but the settings page rendered
+    embed/rerank/whisper/echo only, so the endpoint describing 16k photos could
+    only be moved by hand. Pinned: the card exists with every field the card
+    row can write, its buttons hit the shared save/test handlers with
+    purpose=vision, each number carries the schema's min/max so a typo clamps
+    instead of bouncing a 422, and the gallery says which model is live (and
+    shouts when an unfilled card is why 待描述 keeps growing)."""
+    html, js = _sources()
+    app_js = (UI / "js" / "app.js").read_text(encoding="utf-8")
+    pic_js = (UI / "js" / "pic.js").read_text(encoding="utf-8")
+
+    card = html.split("<h3>视觉描述模型", 1)[1].split('<div class="settings-card">', 1)[0]
+    for field in ("rag-vision-base-url", "rag-vision-name", "rag-vision-key",
+                  "rag-vision-max-tokens", "rag-vision-timeout", "rag-vision-extra",
+                  "rag-vision-enabled", "rag-vision-key-clear", "rag-vision-status",
+                  "rag-vision-model-options"):
+        assert f'id="{field}"' in card, field
+    assert 'onclick="saveRagCard(\'vision\')"' in card
+    assert 'onclick="testRagCard(\'vision\')"' in card
+    for field in ("rag-vision-max-tokens", "rag-vision-timeout"):
+        marker = f'id="{field}"'
+        tag = card[card.index(marker):card.index(">", card.index(marker)) + 1]
+        assert 'min="' in tag and 'max="' in tag, f"{field} needs a clamp range"
+
+    purposes = re.search(r"const CARD_PURPOSES = \[([^]]*)\]", app_js).group(1)
+    assert "vision" in purposes, "the card is filled by loadRagCards()"
+    assert "RAG_PURPOSES" not in app_js
+    # the numbers are per purpose, and vision writes max_tokens/timeout
+    fields = re.search(r"const CARD_NUMBER_FIELDS = \{(.*?)\n\};", app_js, re.S).group(1)
+    assert "max-tokens" in fields and "max_tokens" in fields
+    # the probe must name the models it found, and echo the reply it got
+    test_fn = re.search(r"async function testRagCard.*?\n}", app_js, re.S).group(0)
+    assert "rag-${purpose}-model-options" in test_fn and "report.models" in test_fn
+    assert "report.chat" in test_fn, "a red-square probe that answers nothing is not 可用"
+
+    # the photo page says which vision model is doing the work
+    assert "status.providers" in pic_js and "视觉 " in pic_js
+    assert "视觉模型未填 API" in pic_js
