@@ -405,7 +405,7 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
                include_missing: bool = Query(False),
                trash: bool = Query(False, description="（旧参数）等同 view=trash"),
                ids_only: bool = Query(False, description="只要 id 清单：全选/清空回收站用"),
-               limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
+               limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0),
                db: Session = Depends(get_db)):
     """Gallery page: placeholders and finished tiles together, newest-first
     by taken_at (photos still without EXIF sit at the end until thumb runs)."""

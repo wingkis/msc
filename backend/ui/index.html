@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.9">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.10">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -349,6 +349,13 @@
           </select>
           <input type="text" id="pic-month" placeholder="按月 2024-05" onchange="picFilterChanged()">
           <input type="text" id="pic-search" placeholder="文件名包含…" onchange="picFilterChanged()">
+          <select id="pic-page-size" onchange="picSetPageSize(this.value)"
+                  title="每页一次载入多少张（缩略图仍是滚动到才取）">
+            <option value="200">每页 200 张</option>
+            <option value="500">每页 500 张</option>
+            <option value="2000">每页 2000 张</option>
+            <option value="5000">每页 5000 张</option>
+          </select>
         </div>
       </div>
       <div id="pic-counts" class="pic-stats"></div>
@@ -944,10 +951,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.9"></script>
-  <script src="/ui/js/app.js?v=2.5.9"></script>
-  <script src="/ui/js/graph.js?v=2.5.9"></script>
-  <script src="/ui/js/pic.js?v=2.5.9"></script>
+  <script src="/ui/js/api.js?v=2.5.10"></script>
+  <script src="/ui/js/app.js?v=2.5.10"></script>
+  <script src="/ui/js/graph.js?v=2.5.10"></script>
+  <script src="/ui/js/pic.js?v=2.5.10"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

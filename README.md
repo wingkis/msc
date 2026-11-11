@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.10（msc-pic 分支）
+
+- **相册一次载入 2000 张** — 之前每页写死 200（`PIC_PAGE`），1.6 万张要滚 80 次；后端 `/pic/items?limit=` 又卡在 `le=1000`。现在筛选带里多一个「每页 200/500/2000/5000 张」下拉，默认 2000，选择记在 `localStorage`（`msc-pic-page-size`），后端上限提到 5000。
+- **代价其实很小** — 网格是懒加载（缩略图滚动到才取，`rootMargin: 200px`），所以加大页长只多花列表 JSON 与 DOM 节点：实测 1000 张 = 770 KB / 90 ms，2000 张约 1.5 MB；副本徽标的 `content_hash` 探测按 400 个一批分块，不会撞 SQLite 变量上限。缩略图流量仍只按可见区域发生。
+- **顺带修：轮询会把已翻页的尾部丢掉** — 5 秒轮询只取第一页，而 `picSyncGrid()` 之前要求 `tiles.length === items.length`，一旦用户翻到第二页就把整个网格重建成第一页（图片重新下载、滚动位置跳回顶部）。现在只对齐"返回区间"的前缀，尾部保持不动；只有第一页里的 id 真的错位时才整页重建。
+- 测试 163 个（新增 `test_gallery_page_size_goes_up_to_5000`：200/2000/5000 都被接受并回显 `limit`，5001 与 0 是 422 而不是静默夹取）。
+
 ### 2.5.7（msc-pic 分支）
 
 - **修：记忆页横向溢出，「多选」「小结所选」看不见** — 卡片摘要 `.memory-desc` 之前是 `white-space: nowrap`（内容取 body 前 200 字），它的 min-content 宽度会顺着 `.memory-content` → `.memory-card` → `.memories-main` 传给 `.memories-layout { grid-template-columns: 200px 1fr }` 里的 `1fr`（`1fr` 的最小值是 `auto`＝内容的 min-content），于是整页比窗口还宽，页头右侧的两个按钮落在视口外，只能横向拖动才看到。图谱/仪表盘没事，是因为它们的轨道写的是 `minmax(0, 1fr)`。

@@ -177,6 +177,19 @@ def test_gallery_listing(client, photos_dir):
     assert client.get("/api/v1/pic/items", params={"state": "bogus"}).status_code == 422
 
 
+def test_gallery_page_size_goes_up_to_5000(client, photos_dir):
+    """One big page is legal: the grid is lazy, so a long page costs listing
+    bytes and DOM nodes, not image downloads. Everything above the cap is a
+    422, not a silent clamp."""
+    total = client.get("/api/v1/pic/items").json()["total"]
+    for asked in (200, 2000, 5000):
+        page = client.get("/api/v1/pic/items", params={"limit": asked}).json()
+        assert page["limit"] == asked
+        assert len(page["items"]) == min(asked, total)
+    assert client.get("/api/v1/pic/items", params={"limit": 5001}).status_code == 422
+    assert client.get("/api/v1/pic/items", params={"limit": 0}).status_code == 422
+
+
 def test_transient_error_backs_off_not_failed(client, db, photos_dir, monkeypatch, tmp_path):
     """A vanished file is the wire's problem, not the photo's: discovered
     stays, retry_at moves into the future, error_count ticks up."""

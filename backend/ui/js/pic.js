@@ -7,7 +7,14 @@
 
 let picOffset = 0;
 let picTotal = 0;
-const PIC_PAGE = 200;
+// Tiles per page. The grid is lazy — thumbs only load as they scroll into
+// view — so a longer page costs listing bytes and DOM nodes, not image
+// downloads: 2000 tiles is ~1.5 MB and ~0.1 s on the LAN, and it walks a
+// 16k library in 8 scrolls instead of 80. The choice sticks per browser.
+const PIC_PAGE_CHOICES = [200, 500, 2000, 5000];
+const PIC_PAGE_KEY = 'msc-pic-page-size';
+const PIC_PAGE_DEFAULT = 2000;
+let picPage = picReadPageSize();
 let picObserver = null;
 let picPollTimer = null;
 let picSentinelOn = false;
@@ -19,8 +26,27 @@ let picLastStatus = null;    // last /pic/status payload, for cheap re-renders
 let picFoldersStamp = '';    // fingerprint of the folder list now in the select
 const picSelected = new Set();
 
+function picReadPageSize() {
+  const saved = Number(localStorage.getItem(PIC_PAGE_KEY));
+  return PIC_PAGE_CHOICES.includes(saved) ? saved : PIC_PAGE_DEFAULT;
+}
+
+function picPaintPageSize() {
+  const sel = document.getElementById('pic-page-size');
+  if (sel) sel.value = String(picPage);
+}
+
+// The cap is the backend's (limit <= 5000); a stray value falls back to the
+// default rather than sending a request FastAPI will reject with a 422.
+function picSetPageSize(value) {
+  const asked = Number(value);
+  picPage = PIC_PAGE_CHOICES.includes(asked) ? asked : PIC_PAGE_DEFAULT;
+  localStorage.setItem(PIC_PAGE_KEY, String(picPage));
+  loadPics();
+}
+
 function picFilterParams() {
-  const params = { limit: PIC_PAGE, offset: picOffset };
+  const params = { limit: picPage, offset: picOffset };
   const src = document.getElementById('pic-source-filter').value;
   if (src) params.source_id = src;
   const kind = document.getElementById('pic-kind-filter').value;
@@ -105,6 +131,7 @@ async function loadPics() {
   picSelected.clear();
   updatePicActions();
   updatePicTabs();
+  picPaintPageSize();
   initPicSentinel();
   const back = document.getElementById('pic-back-btn');
   if (back) back.style.display = 'none';
@@ -218,8 +245,11 @@ function picTileHtml(item) {
 function picSyncGrid(items) {
   const grid = document.getElementById('pic-grid');
   const tiles = Array.from(grid.querySelectorAll('.pic-tile'));
-  if (tiles.length !== items.length ||
-      items.some((it, i) => tiles[i].dataset.id !== String(it.id))) {
+  // The poll always asks for page one. Once the reader has scrolled past it,
+  // the grid holds more tiles than the poll returns: sync the overlapping
+  // prefix and keep the tail (an exact-length check here used to drop the
+  // loaded pages and jump the scroll position back to the top).
+  if (items.some((it, i) => !tiles[i] || tiles[i].dataset.id !== String(it.id))) {
     renderPicGrid(items, false);
     picOffset = items.length;  // keep the paging window aligned with what's rendered
     return;
@@ -318,7 +348,7 @@ function picUpdateEmptyState() {
   if (hint) hint.textContent = copy[1];
 }
 
-// Paging tail: PIC_PAGE tiles at a time, so the grid must say when the walk
+// Paging tail: picPage tiles at a time, so the grid must say when the walk
 // is over — and picLoadMore was, until now, never called by anything.
 function picRefreshTail() {
   const bar = document.getElementById('pic-loadmore');
@@ -358,7 +388,7 @@ function observeLazyPics() {
   document.querySelectorAll('#pic-grid img[data-src]').forEach(img => picObserver.observe(img));
 }
 
-// The grid only ever held the first PIC_PAGE photos: picLoadMore existed but
+// The grid only ever held the first page of photos: picLoadMore existed but
 // nothing called it. The sentinel under the grid now pulls the next page in
 // as it scrolls into view.
 function initPicSentinel() {
