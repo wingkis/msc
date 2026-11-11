@@ -11,9 +11,16 @@ Scan uses a per-source time budget instead of a row budget: walking a remote
 share is latency-bound, and the cursor makes stopping mid-walk free.
 Transient source errors (network hiccup) back off through retry_at; a file
 that cannot be decoded is marked failed so the queue can actually drain.
+
+The vision and embed stages are deliberately paced (caption_batch 1 per 15 s
+tick) because they usually share a GPU with the chat model. 能力全开
+(caption_burst) drops that pacing on request: both stages then run to a
+burst_seconds time budget, embed follows the captions, and the loop only
+idles BURST_GAP between passes. See _captions/_embeds.
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -28,10 +35,14 @@ from msc.services import llm, rag_providers
 from msc.services.model_config import get_config, note_result
 from msc.services.rag import pack_vec
 from msc.services.pic_index import (
-    content_hash, guess_kind, pic_setting, taken_at_from_image,
+    content_hash, guess_kind, pic_setting, pic_settings, taken_at_from_image,
 )
 
 settings = get_settings()
+
+# 全开模式 between passes: long enough to let a failing endpoint back off,
+# short enough that the queue never waits on a timer.
+BURST_GAP = 3
 
 
 def _now() -> datetime:
@@ -247,87 +258,138 @@ def _parse_caption(text: str):
     return caption, tags
 
 
+def _caption_call(cfg, thumb_path: str, name: str, rel_path: str) -> str:
+    """One vision call, and nothing else: no session, no ORM instance. That is
+    what makes it safe to run off the main thread when caption_workers > 1 —
+    llm.chat builds its own short-lived httpx client per call."""
+    thumb = Path(settings.pic_dir) / (thumb_path or "")
+    if not thumb_path or not thumb.is_file():
+        raise SourceError("缩略图文件缺失")
+    folder = rel_path.rsplit("/", 1)[0] or "/"
+    answer = llm.chat(cfg, [
+        {"role": "system", "content": _CAPTION_SYSTEM},
+        {"role": "user", "content": [
+            llm.image_part(thumb.read_bytes(), "image/webp"),
+            {"type": "text", "text": f"文件名：{name}（目录：{folder}）"},
+        ]},
+    ], max_tokens=int(cfg.max_tokens or 600))
+    return answer["text"]
+
+
+def _caption_apply(db, item, text: str, report: dict) -> None:
+    """Main thread only: write one answer into the row and commit."""
+    caption, tags = _parse_caption(text)
+    if not caption:
+        _backoff(item, llm.LLMError("模型没有给出描述"))
+        db.commit()
+        return
+    item.caption, item.tags = caption, tags
+    item.state, item.last_error = "captioned", None
+    item.updated_at = _now().isoformat()
+    report["captioned"] = report.get("captioned", 0) + 1
+    db.commit()
+
+
+def _caption_chunk(db, cfg, rows, workers: int, report: dict) -> bool:
+    """Caption one chunk. False means the endpoint is unhappy: the stage stops
+    for this pass, the failed item waits on its retry_at backoff, and the rest
+    of the queue is untouched until the next pass.
+
+    workers == 1 is the historic shape — one call at a time, abandoned at the
+    first model error. workers > 1 has that many requests on the wire at once,
+    so the answers that did arrive still get written while the failures back
+    off. A missing thumbnail is the item's own problem either way."""
+    if workers <= 1:
+        for item in rows:
+            try:
+                text = _caption_call(cfg, item.thumb_path, item.name, item.rel_path)
+            except SourceError as exc:
+                _backoff(item, exc)
+                db.commit()
+                continue
+            except llm.LLMError as exc:
+                note_result(db, cfg, error=str(exc))
+                _backoff(item, exc)
+                db.commit()
+                report["errors"].append(f"caption: {exc}")
+                return False
+            _caption_apply(db, item, text, report)
+        return True
+
+    targets = [(item, item.thumb_path, item.name, item.rel_path) for item in rows]
+    answers, broken = {}, []
+    with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
+        futures = {pool.submit(_caption_call, cfg, path, name, rel_path): item
+                   for (item, path, name, rel_path) in targets}
+        for future, item in futures.items():
+            try:
+                answers[item.id] = future.result()
+            except (SourceError, llm.LLMError) as exc:
+                broken.append((item, exc))
+    model_error = False
+    for item, exc in broken:
+        if isinstance(exc, llm.LLMError):
+            note_result(db, cfg, error=str(exc))
+            report["errors"].append(f"caption: {exc}")
+            model_error = True
+        _backoff(item, exc)
+        db.commit()
+    for item in rows:
+        if item.id in answers:
+            _caption_apply(db, item, answers[item.id], report)
+    return not model_error
+
+
 def _captions(db, report: dict) -> None:
-    """thumb_ready → captioned on the vision card, one photo per call.
+    """thumb_ready → captioned on the vision card.
 
-    The batch is 1 by default and the whole stage stops on the first model
-    error (card noted, retry_at backoff) — a busy or down multimodal endpoint
-    must not burn the tick, and the states stay queued for the next one.
+    Paced by default: one caption_batch (1) per pass, and the stage stops on
+    the first model error — a busy or down multimodal endpoint must not burn
+    the tick. That default is deliberate: the vision card usually shares its
+    GPU with whatever answers chat.
 
-    caption_paused (the 暂停图像描述 switch on the 照片源 settings card)
-    parks this stage outright: scan and thumbs keep flowing, but zero vision
-    calls leave the container while the model is busy elsewhere.
+    Two levers on the 照片源 settings card: caption_paused parks the stage
+    outright (scan/thumbs keep flowing, zero vision calls), and caption_burst
+    — 能力全开 — removes the pacing instead: keep pulling the queue until
+    burst_seconds of model time is used, caption_workers calls at a time.
     """
-    if pic_setting(db, "caption_paused"):
+    tunables = pic_settings(db)
+    if tunables["caption_paused"]:
         return
     cfg = get_config(db, "vision")
     if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
         return  # keep the queue; configuring the card backfills later
 
-    batch = max(1, pic_setting(db, "caption_batch"))
-    now_iso = _now().isoformat()
-    rows = (db.query(PicItem)
-            .filter(PicItem.state == "thumb_ready", PicItem.archived == 0,
-                    PicItem.missing == 0,
-                    or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
-            .order_by(PicItem.id).limit(batch).all())
-    for item in rows:
-        thumb = Path(settings.pic_dir) / (item.thumb_path or "")
-        if not item.thumb_path or not thumb.is_file():
-            _backoff(item, SourceError("缩略图文件缺失"))
-            db.commit()
-            continue
-        try:
-            answer = llm.chat(cfg, [
-                {"role": "system", "content": _CAPTION_SYSTEM},
-                {"role": "user", "content": [
-                    llm.image_part(thumb.read_bytes(), "image/webp"),
-                    {"type": "text", "text": f"文件名：{item.name}（目录：{item.rel_path.rsplit('/', 1)[0] or '/'}）"},
-                ]},
-            ], max_tokens=int(cfg.max_tokens or 600))
-        except llm.LLMError as exc:
-            note_result(db, cfg, error=str(exc))
-            _backoff(item, exc)
-            db.commit()
-            report["errors"].append(f"caption: {exc}")
-            return  # endpoint unhappy: stop, retry next tick
-        caption, tags = _parse_caption(answer["text"])
-        if not caption:
-            _backoff(item, llm.LLMError("模型没有给出描述"))
-            db.commit()
-            continue
-        item.caption, item.tags = caption, tags
-        item.state, item.last_error = "captioned", None
-        item.updated_at = _now().isoformat()
-        report["captioned"] = report.get("captioned", 0) + 1
-        db.commit()
+    burst = bool(tunables["caption_burst"])
+    workers = max(1, tunables["caption_workers"])
+    batch = max(1, tunables["caption_batch"])
+    if burst:
+        batch = max(batch, workers)  # a chunk smaller than the fan-out idles threads
+    deadline = time.monotonic() + max(15, tunables["burst_seconds"]) if burst else 0.0
+    while True:
+        now_iso = _now().isoformat()
+        rows = (db.query(PicItem)
+                .filter(PicItem.state == "thumb_ready", PicItem.archived == 0,
+                        PicItem.missing == 0,
+                        or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
+                .order_by(PicItem.id).limit(batch).all())
+        if not rows:
+            break
+        if not _caption_chunk(db, cfg, rows, workers, report):
+            return
+        if not burst or time.monotonic() >= deadline:
+            break
     note_result(db, cfg)
 
 
-def _embeds(db, report: dict) -> None:
-    """captioned → embedded with the active embed card; PicVector is keyed by
-    model exactly like the memory embeddings, and an embed-card switch
-    demotes stragglers so the self-heal re-embeds them."""
-    cfg = get_config(db, "embed")
-    if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
-        return
-    model_name = cfg.model.strip()
-
-    # Self-heal: embedded rows with no vector for the current model fall back
-    # to captioned and get re-embedded below (card switch, lost write).
-    db.execute(sql_text(
-        "UPDATE pic_items SET state = 'captioned' WHERE state = 'embedded' "
-        "AND archived = 0 "
-        "AND id NOT IN (SELECT pic_id FROM pic_vectors WHERE model = :p0)"),
-        {"p0": model_name})
-    db.commit()
-
-    batch = max(1, pic_setting(db, "embed_batch"))
+def _embed_chunk(db, cfg, model_name: str, batch: int, report: dict) -> bool:
+    """One embed call (a batch of captions → vectors). False = the embed card
+    is unhappy; those rows stay captioned and are retried next pass."""
     rows = (db.query(PicItem).filter(PicItem.state == "captioned", PicItem.archived == 0,
                                      PicItem.missing == 0)
             .order_by(PicItem.id).limit(batch).all())
     if not rows:
-        return
+        return True
 
     texts, pairs = [], []
     for item in rows:
@@ -339,14 +401,14 @@ def _embeds(db, report: dict) -> None:
             report["failed"] += 1
     db.commit()
     if not texts:
-        return
+        return True
 
     try:
         vectors = rag_providers.embed(cfg, texts)
     except llm.LLMError as exc:
         note_result(db, cfg, error=str(exc))
         report["errors"].append(f"embed: {exc}")
-        return  # states stay captioned; retried next tick
+        return False  # states stay captioned; retried next tick
 
     now_iso = _now().isoformat()
     for item, vec in zip(pairs, vectors):
@@ -361,7 +423,47 @@ def _embeds(db, report: dict) -> None:
         item.updated_at = now_iso
         report["embedded"] = report.get("embedded", 0) + 1
     db.commit()
-    note_result(db, cfg)
+    return True
+
+
+def _embeds(db, report: dict) -> None:
+    """captioned → embedded with the active embed card; PicVector is keyed by
+    model exactly like the memory embeddings, and an embed-card switch
+    demotes stragglers so the self-heal re-embeds them.
+
+    One embed_batch per pass normally. Under 能力全开 the captions arrive far
+    faster than one batch can drain, so this follows them to the same
+    burst_seconds budget instead of leaving a captioned backlog behind."""
+    cfg = get_config(db, "embed")
+    if not cfg.enabled or not (cfg.base_url or "").strip() or not (cfg.model or "").strip():
+        return
+    model_name = cfg.model.strip()
+
+    # Self-heal: embedded rows with no vector for the current model fall back
+    # to captioned and get re-embedded below (card switch, lost write).
+    db.execute(sql_text(
+        "UPDATE pic_items SET state = 'captioned' WHERE state = 'embedded' "
+        "AND archived = 0 "
+        "AND id NOT IN (SELECT pic_id FROM pic_vectors WHERE model = :p0)"),
+        {"p0": model_name})
+    db.commit()
+
+    tunables = pic_settings(db)
+    batch = max(1, tunables["embed_batch"])
+    burst = bool(tunables["caption_burst"])
+    deadline = time.monotonic() + max(15, tunables["burst_seconds"]) if burst else 0.0
+    embedded_before = report.get("embedded", 0)
+    while True:
+        wrote_before = (report.get("embedded", 0), report["failed"])
+        keep = _embed_chunk(db, cfg, model_name, batch, report)
+        if not keep:
+            break  # embed card unhappy: the rest waits for the next pass
+        if (report.get("embedded", 0), report["failed"]) == wrote_before:
+            break  # queue drained (or everything left is unembeddable)
+        if not burst or time.monotonic() >= deadline:
+            break
+    if report.get("embedded", 0) > embedded_before:
+        note_result(db, cfg)
 
 
 def run_once() -> dict | None:
@@ -388,6 +490,10 @@ def run_once() -> dict | None:
                 adapter.close()
         _captions(db, report)
         _embeds(db, report)
+        # Tells the loop below it may skip the idle timer; the stages already
+        # ran to their own budget, this is only about the gap between passes.
+        if pic_setting(db, "caption_burst"):
+            report["burst"] = 1
         worked = (report["scanned"] or report["thumbs"] or report["failed"]
                   or report.get("captioned") or report.get("embedded")
                   or report.get("replaced") or report["errors"])
@@ -401,8 +507,10 @@ def run_once() -> dict | None:
 
 
 def start_pic_worker(interval: int = 15) -> None:
-    print(f"Photo worker started (scan/thumb pass every {interval}s)")
+    print(f"Photo worker started (pass every {interval}s; {BURST_GAP}s while "
+          f"能力全开 has the queue)")
     while True:
+        gap = interval
         try:
             result = run_once()
             if result and not result.get("error"):
@@ -416,6 +524,11 @@ def start_pic_worker(interval: int = 15) -> None:
                           f"replaced {result.get('replaced', 0)}, "
                           f"failed {result['failed']}"
                           + (f", errors: {result['errors'][:2]}" if result["errors"] else ""))
+                    if result.get("burst"):
+                        print(f"PIC: 全开中（{result.get('captioned', 0)} 张描述 / "
+                              f"{result.get('embedded', 0)} 张索引）")
+                if touched and result.get("burst"):
+                    gap = BURST_GAP  # 能力全开: the queue continues, no 15 s pause
         except Exception as exc:
             print(f"Photo worker error: {exc}")
-        time.sleep(interval)
+        time.sleep(gap)

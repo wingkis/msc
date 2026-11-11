@@ -18,7 +18,8 @@ from msc.models import PicSetting
 _log = logging.getLogger("msc.pic")
 
 PIC_TUNABLES = ("scan_seconds", "thumb_batch", "rescan_hours", "thumb_px",
-                "caption_batch", "embed_batch", "caption_paused")
+                "caption_batch", "embed_batch", "caption_paused",
+                "caption_burst", "burst_seconds", "caption_workers")
 
 # Filename patterns that mean "this is a screenshot, not a camera photo".
 _SCREENSHOT_MARKS = ("screenshot", "screen_shot", "screen shot", "screencapture",
@@ -49,7 +50,17 @@ def _pic_defaults() -> dict:
             # the endpoint can take it.
             "caption_batch": 1, "embed_batch": 8,
             # 1 = the vision stage rests: thumb/scan keep flowing, queue waits.
-            "caption_paused": 0}
+            "caption_paused": 0,
+            # 能力全开 (a button on the 照片源 card, off by default — the paced
+            # default is what protects a GPU that is also answering chat).
+            # caption_burst 1 lifts the one-batch-per-tick pacing: the vision
+            # stage keeps pulling the queue until burst_seconds of model time
+            # is used, embed follows the same budget, and the worker idles
+            # seconds between passes instead of 15. caption_workers > 1 puts
+            # that many vision requests on the wire at once — it only pays off
+            # when the vision server has more than one slot, otherwise the
+            # extra requests just queue there, so 1 stays the default.
+            "caption_burst": 0, "burst_seconds": 300, "caption_workers": 1}
 
 
 def pic_settings(db: Session) -> dict:

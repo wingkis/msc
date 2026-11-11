@@ -1088,3 +1088,124 @@ def test_caption_pause_switch(client, db, photos_dir, monkeypatch):
     db.query(PicItem).filter(PicItem.source_id == sid).delete()
     db.query(PicSource).filter(PicSource.id == sid).delete()
     db.commit()
+
+
+def _burst_queue(client, db, photos_dir, name, count):
+    """``count`` thumb_ready photos with real webp thumbs, on a source whose
+    root cannot be walked: the caption stage is source-independent, so the
+    queue stays exactly as long as we made it."""
+    from msc.models import PicItem, PicSource  # noqa: F401 (PicSource unused)
+
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": name, "kind": "local",
+        "root_path": str(photos_dir / "gone-xyz")}).json()["id"]
+    ids = []
+    for n in range(count):
+        rel = f"thumbs/{sid}/{name}-{n}.webp"
+        thumb = Path(os.environ["MSC_PIC_DIR"]) / rel
+        thumb.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), "red").save(thumb, "WEBP")
+        item = PicItem(source_id=sid, rel_path=f"{name}-{n}.jpg",
+                       origin_uri=f"pic://{sid}/{name}-{n}.jpg",
+                       name=f"{name}-{n}.jpg", ext="jpg", kind="photo",
+                       state="thumb_ready", thumb_path=rel, archived=0, missing=0,
+                       error_count=0, discovered_at="2026-01-01", updated_at="2026-01-01")
+        db.add(item)
+        db.commit()
+        ids.append(item.id)
+    return sid, ids
+
+
+def _states(db, ids):
+    from msc.models import PicItem
+
+    db.expire_all()
+    return [db.get(PicItem, item_id).state for item_id in ids]
+
+
+def test_caption_burst_drains_the_queue_in_one_pass(client, db, photos_dir, monkeypatch):
+    """能力全开: the per-pass cap and the idle timer both step aside — one
+    run_once() keeps captioning inside its time budget — while the paced
+    default still does a single photo per pass. 暂停 keeps winning."""
+    from msc.models import PicItem, PicSource
+    from msc.services import llm
+    from msc.workers import pic_worker
+
+    client.put("/api/v1/model?purpose=vision",
+               json={"base_url": "http://vision.test:8080", "model": "fake-vl"})
+    sid, ids = _burst_queue(client, db, photos_dir, "burst", 4)
+    monkeypatch.setattr(llm, "chat", _caption_chat({}))
+
+    assert client.put("/api/v1/pic/settings",
+                      json={"caption_burst": 0, "caption_batch": 1}).status_code == 200
+    pic_worker.run_once()
+    assert _states(db, ids).count("thumb_ready") == 3  # paced: one per pass
+
+    assert client.put("/api/v1/pic/settings", json={
+        "caption_burst": 1, "burst_seconds": 15, "caption_batch": 1}).status_code == 200
+    pic_worker.run_once()
+    assert all(state in ("captioned", "embedded") for state in _states(db, ids))
+
+    # Paused wins over a burst: the queue parks, it does not run "全开" anyway.
+    assert client.put("/api/v1/pic/settings", json={"caption_paused": 1}).status_code == 200
+    _, more = _burst_queue(client, db, photos_dir, "burst-parked", 2)
+    pic_worker.run_once()
+    assert _states(db, more) == ["thumb_ready", "thumb_ready"]
+
+    for payload in ({"caption_burst": 2}, {"caption_workers": 9}, {"caption_workers": 0},
+                    {"burst_seconds": 10}, {"burst_seconds": 901}):
+        assert client.put("/api/v1/pic/settings", json=payload).status_code == 422
+
+    assert client.put("/api/v1/pic/settings",
+                      json={"caption_paused": 0, "caption_burst": 0}).status_code == 200
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()
+
+
+def test_caption_workers_run_several_vision_calls_at_once(client, db, photos_dir, monkeypatch):
+    """caption_workers is the knob that actually saturates the model: more than
+    one vision request on the wire at a time, every answer still written to its
+    own row, one commit per photo."""
+    import threading
+    import time as clock
+
+    from msc.models import PicItem, PicSource
+    from msc.services import llm
+    from msc.workers import pic_worker
+
+    client.put("/api/v1/model?purpose=vision",
+               json={"base_url": "http://vision.test:8080", "model": "fake-vl"})
+    sid, ids = _burst_queue(client, db, photos_dir, "fanout", 3)
+
+    live = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+    inner = _caption_chat({})
+
+    def slow_chat(cfg, messages, max_tokens=None):
+        with lock:
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
+        clock.sleep(0.3)
+        with lock:
+            live["now"] -= 1
+        return inner(cfg, messages, max_tokens=max_tokens)
+
+    monkeypatch.setattr(llm, "chat", slow_chat)
+    assert client.put("/api/v1/pic/settings", json={
+        "caption_burst": 1, "burst_seconds": 30,
+        "caption_batch": 3, "caption_workers": 3}).status_code == 200
+
+    started = clock.monotonic()
+    pic_worker.run_once()
+    elapsed = clock.monotonic() - started
+
+    assert all(state in ("captioned", "embedded") for state in _states(db, ids))
+    assert live["peak"] >= 2          # three workers, not one-at-a-time
+    assert elapsed < 0.85             # serial would be 3 x 0.3 s plus the pass
+
+    assert client.put("/api/v1/pic/settings", json={"caption_burst": 0,
+                                                    "caption_workers": 1}).status_code == 200
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()

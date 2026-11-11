@@ -176,13 +176,26 @@ function renderPicStatusLine(status) {
   if (c.discovered) parts.push(picChip('pic-chip-warn', `待缩略图 <b>${c.discovered}</b>`));
   if (c.failed) parts.push(picChip('pic-chip-bad', `失败 <b>${c.failed}</b>`));
   const scanning = (status.sources || []).filter(s => s.state === 'scanning').length;
-  // The 暂停图像描述 switch is visible from the gallery too: chip + live sync
-  // of the settings-page button, whoever flipped it from either page.
+  // The 暂停图像描述 / 全开连续描述 switches are visible from the gallery too:
+  // chips plus live sync of the settings-page buttons, whoever flipped them
+  // from either page. They are opposite levers, so only one chip shows.
   if (status.settings && status.settings.caption_paused !== undefined) {
     const paused = !!status.settings.caption_paused;
     if (paused !== picCaptionPaused) { picCaptionPaused = paused; picPaintCaptionPauseBtn(); }
   }
+  if (status.settings && status.settings.caption_burst !== undefined) {
+    const burst = !!status.settings.caption_burst;
+    if (burst !== picCaptionBurst || (status.settings.caption_workers || 1) !== picCaptionWorkers) {
+      picCaptionBurst = burst;
+      picCaptionWorkers = status.settings.caption_workers || 1;
+      picPaintCaptionBurstBtn();
+    }
+  }
   if (picCaptionPaused) parts.push(picChip('pic-chip-dim', '描述已暂停'));
+  else if (picCaptionBurst) {
+    parts.push(picChip('pic-chip-live',
+      `描述全开${picCaptionWorkers > 1 ? ` <b>×${picCaptionWorkers}</b>` : ''}`));
+  }
   if (status.missing) parts.push(picChip('pic-chip-dim', `缺失 <b>${status.missing}</b>`));
   if (status.trashed) parts.push(picChip('pic-chip-dim', `回收站 <b>${status.trashed}</b>`));
   if (scanning) parts.push(picChip('pic-chip-live', `${scanning} 个源正在扫描`));
@@ -781,8 +794,13 @@ async function loadPicSettings() {
     document.getElementById('pic-set-thumb-batch').value = s.thumb_batch ?? '';
     document.getElementById('pic-set-rescan').value = s.rescan_hours ?? '';
     document.getElementById('pic-set-thumb-px').value = s.thumb_px ?? '';
+    document.getElementById('pic-set-burst-seconds').value = s.burst_seconds ?? '';
+    document.getElementById('pic-set-caption-workers').value = s.caption_workers ?? '';
     picCaptionPaused = !!s.caption_paused;
     picPaintCaptionPauseBtn();
+    picCaptionBurst = !!s.caption_burst;
+    picCaptionWorkers = s.caption_workers || 1;
+    picPaintCaptionBurstBtn();
   } catch (e) { /* kill switch off — leave the fields empty */ }
 }
 
@@ -807,6 +825,40 @@ async function picToggleCaptionPause() {
   } catch (e) { if (out) out.textContent = e.message; }
 }
 
+// 能力全开: the opposite lever of 暂停. Each pass runs the vision stage to
+// burst_seconds of model time instead of one photo, embed follows the same
+// budget, and the gap between passes drops from 15 s to 3 s. Turning it on
+// also un-pauses the stage — a parked queue would sit there and the button
+// would look broken. caption_workers > 1 is the GPU-saturating knob: it only
+// helps when the vision server has more than one slot.
+let picCaptionBurst = false;
+let picCaptionWorkers = 1;
+
+function picPaintCaptionBurstBtn() {
+  const btn = document.getElementById('pic-cap-burst-btn');
+  if (btn) btn.textContent = picCaptionBurst ? '恢复描述节流' : '全开连续描述';
+}
+
+async function picToggleCaptionBurst() {
+  const out = document.getElementById('pic-cap-pause-status');
+  const wanted = picCaptionBurst ? 0 : 1;
+  try {
+    const patch = { caption_burst: wanted };
+    if (wanted) patch.caption_paused = 0;
+    const r = await API.picUpdateSettings(patch);
+    const s = r.settings || {};
+    picCaptionBurst = !!s.caption_burst;
+    picCaptionPaused = !!s.caption_paused;
+    picCaptionWorkers = s.caption_workers || 1;
+    picPaintCaptionBurstBtn();
+    picPaintCaptionPauseBtn();
+    if (out) out.textContent = picCaptionBurst
+      ? `已全开：每轮连续跑 ${s.burst_seconds || '?'} 秒描述＋索引，轮间歇 3 秒`
+        + `（并发 ${s.caption_workers || 1}，要更快就调「描述并发」）`
+      : '已恢复节流：每轮一批，轮间 15 秒';
+  } catch (e) { if (out) out.textContent = e.message; }
+}
+
 async function savePicSettings() {
   const out = document.getElementById('pic-settings-status');
   try {
@@ -815,6 +867,8 @@ async function savePicSettings() {
       thumb_batch: parseInt(document.getElementById('pic-set-thumb-batch').value) || undefined,
       rescan_hours: parseInt(document.getElementById('pic-set-rescan').value) || undefined,
       thumb_px: parseInt(document.getElementById('pic-set-thumb-px').value) || undefined,
+      burst_seconds: parseInt(document.getElementById('pic-set-burst-seconds').value) || undefined,
+      caption_workers: parseInt(document.getElementById('pic-set-caption-workers').value) || undefined,
     };
     const r = await API.picUpdateSettings(data);
     out.textContent = `已保存（${JSON.stringify(r.settings)}）`;

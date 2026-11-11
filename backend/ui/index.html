@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.10">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.11">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -471,11 +471,18 @@
             <div id="pic-sources-list" class="pic-src-list"></div>
             <div class="sync-controls">
               <button class="btn" id="pic-cap-pause-btn" onclick="picToggleCaptionPause()">暂停图像描述</button>
+              <button class="btn" id="pic-cap-burst-btn" onclick="picToggleCaptionBurst()">全开连续描述</button>
               <span id="pic-cap-pause-status" class="sync-result"></span>
             </div>
             <div class="setting-hint">
               「暂停图像描述」只停视觉描述这一级（大模型忙时让它休息）：扫描和缩略图照常，
               待描述的照片原地排队，恢复后继续。
+              <br>
+              「全开连续描述」是反方向的开关：机器空的时候把描述与索引的节流全部拆掉 ——
+              不再「每 15 秒一张」，而是按「全开时限」连续跑到时间用完，两轮之间只歇 3 秒，
+              索引级跟着描述走不留积压。想更猛就调大「描述并发」（同时向视觉模型发几个请求；
+              视觉服务只有一个槽位时加并发不会更快，只是排队）。两个开关会抢同一个 GPU，
+              别同时按；聊天/其它模型在忙时先「暂停」。
             </div>
             <h4>添加照片源</h4>
             <div class="form-row">
@@ -530,6 +537,8 @@
               <div class="form-group"><label>缩略图批量</label><input type="number" id="pic-set-thumb-batch" min="1" max="200"></div>
               <div class="form-group"><label>重扫间隔（小时）</label><input type="number" id="pic-set-rescan" min="1"></div>
               <div class="form-group"><label>缩略图尺寸 px</label><input type="number" id="pic-set-thumb-px" min="64" max="2048"></div>
+              <div class="form-group"><label>全开时限（秒/轮）</label><input type="number" id="pic-set-burst-seconds" min="15" max="900"></div>
+              <div class="form-group"><label>描述并发</label><input type="number" id="pic-set-caption-workers" min="1" max="8"></div>
             </div>
             <div class="sync-controls">
               <button class="btn" onclick="savePicSettings()">保存调参</button>
@@ -951,10 +960,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.10"></script>
-  <script src="/ui/js/app.js?v=2.5.10"></script>
-  <script src="/ui/js/graph.js?v=2.5.10"></script>
-  <script src="/ui/js/pic.js?v=2.5.10"></script>
+  <script src="/ui/js/api.js?v=2.5.11"></script>
+  <script src="/ui/js/app.js?v=2.5.11"></script>
+  <script src="/ui/js/graph.js?v=2.5.11"></script>
+  <script src="/ui/js/pic.js?v=2.5.11"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

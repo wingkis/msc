@@ -215,6 +215,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.5.11（msc-pic 分支）
+
+- **「全开连续描述」按钮（能力全开）** — 描述这一级默认是 `caption_batch=1`：每 15 秒一轮、每轮只描述一张，实测 ~25 秒/张，14131 张待描述要排将近十天。现在「设置 → 照片源」在「暂停图像描述」旁边多一个 **全开连续描述**：`caption_burst=1` 把节奏拆掉——`_captions` 在 `burst_seconds`（默认 300 秒，15–900）的时间预算里连续拉队列直到跑完或时限到，`_embeds` 按同一预算跟着走（不留 captioned 积压），worker 轮间歇从 15 秒降到 `BURST_GAP=3` 秒。
+- **并发描述数 `caption_workers`（1–8，默认 1）** — 时限再长也只是"连续"，单张延迟才是主成本。>1 时一批里同时向视觉卡发 N 个请求：`_caption_call` 只读快照值＋自己建 httpx client，不碰 session/ORM，写回和 commit 仍在主线程逐张做。视觉服务只有一个槽位时加并发不会更快（只是在那边排队），默认因此留 1。burst 下 `batch = max(caption_batch, caption_workers)`，否则多出来的线程只会空等。
+- **两个开关的关系** — 「暂停」优先于「全开」：paused 时 `_captions` 直接返回，burst 不会绕过它；UI 里按「全开」会顺手把 `caption_paused` 归零（否则原地排队，按钮看起来像坏的）。相册状态行显示 `描述全开 ×N` 或 `描述已暂停`，二者互斥；设置页与相册页谁改都跟随。
+- 测试 165 个（新增 `test_caption_burst_drains_the_queue_in_one_pass`：节流时一轮一张、全开时一轮跑穿队列、paused 仍然压过 burst、四个越界值都 422；`test_caption_workers_run_several_vision_calls_at_once`：并发峰值 ≥2、3×0.3 秒的串行假设不成立、每张各自写回）。
+
 ### 2.5.10（msc-pic 分支）
 
 - **相册一次载入 2000 张** — 之前每页写死 200（`PIC_PAGE`），1.6 万张要滚 80 次；后端 `/pic/items?limit=` 又卡在 `le=1000`。现在筛选带里多一个「每页 200/500/2000/5000 张」下拉，默认 2000，选择记在 `localStorage`（`msc-pic-page-size`），后端上限提到 5000。
