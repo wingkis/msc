@@ -280,7 +280,7 @@ class PicSettingsUpdate(BaseModel):
     caption_paused: Optional[int] = Field(None, ge=0, le=1)  # 0/1 switch
     caption_burst: Optional[int] = Field(None, ge=0, le=1)   # 0/1 能力全开 switch
     burst_seconds: Optional[int] = Field(None, ge=15, le=900)  # budget per pass
-    caption_workers: Optional[int] = Field(None, ge=1, le=8)  # vision calls at once
+    caption_workers: Optional[int] = Field(None, ge=1, le=64)  # vision calls at once
 
 
 class PicItemsBatch(BaseModel):

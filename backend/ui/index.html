@@ -540,7 +540,7 @@
               <div class="form-group"><label>重扫间隔（小时）</label><input type="number" id="pic-set-rescan" min="1" max="8760"></div>
               <div class="form-group"><label>缩略图尺寸 px</label><input type="number" id="pic-set-thumb-px" min="64" max="2048"></div>
               <div class="form-group"><label>全开时限（秒/轮）</label><input type="number" id="pic-set-burst-seconds" min="15" max="900"></div>
-              <div class="form-group"><label>描述并发</label><input type="number" id="pic-set-caption-workers" min="1" max="8"></div>
+              <div class="form-group"><label>描述并发</label><input type="number" id="pic-set-caption-workers" min="1" max="64"></div>
             </div>
             <div class="setting-hint">
               <b>每轮扫描秒数</b>：一次 walk 的时间预算，到点停在断点、下轮接着走（改大＝首轮入库更快，但那一轮更久）。
