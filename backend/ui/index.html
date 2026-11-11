@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.11">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.12">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -532,13 +532,21 @@
               <span id="pic-src-status" class="sync-result"></span>
             </div>
             <h4>摄入调参</h4>
-            <div class="form-row">
+            <div class="form-row pic-tuning">
               <div class="form-group"><label>每轮扫描秒数</label><input type="number" id="pic-set-scan-seconds" min="1" max="300"></div>
               <div class="form-group"><label>缩略图批量</label><input type="number" id="pic-set-thumb-batch" min="1" max="200"></div>
-              <div class="form-group"><label>重扫间隔（小时）</label><input type="number" id="pic-set-rescan" min="1"></div>
+              <div class="form-group"><label>重扫间隔（小时）</label><input type="number" id="pic-set-rescan" min="1" max="8760"></div>
               <div class="form-group"><label>缩略图尺寸 px</label><input type="number" id="pic-set-thumb-px" min="64" max="2048"></div>
               <div class="form-group"><label>全开时限（秒/轮）</label><input type="number" id="pic-set-burst-seconds" min="15" max="900"></div>
               <div class="form-group"><label>描述并发</label><input type="number" id="pic-set-caption-workers" min="1" max="8"></div>
+            </div>
+            <div class="setting-hint">
+              <b>每轮扫描秒数</b>：一次 walk 的时间预算，到点停在断点、下轮接着走（改大＝首轮入库更快，但那一轮更久）。
+              <b>缩略图批量</b>：每轮给多少张照片出图，纯 CPU 活，改大更吃 CPU/内存。
+              <b>重扫间隔</b>：隔多久把整个目录完整重走一遍（找新增/被删的原图）。
+              <b>缩略图尺寸 px</b>：webp 长边；改大更清晰但更占盘、画廊更慢，改了会对全部照片重出图。<br>
+              <b>全开时限</b>：「全开连续描述」按下后，每一轮让视觉模型连续跑多少秒（15–900，默认 300；跑满只歇 3 秒再续，直到队列空或关掉）。
+              <b>描述并发</b>：同时向视觉模型发几个请求（1–8）。只有视觉服务有多个槽位时才会更快 —— 单槽服务上多余请求只是在它那边排队，还把每张的等待拉长，所以除非确认有多槽，保持 1。
             </div>
             <div class="sync-controls">
               <button class="btn" onclick="savePicSettings()">保存调参</button>
@@ -960,10 +968,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.11"></script>
-  <script src="/ui/js/app.js?v=2.5.11"></script>
-  <script src="/ui/js/graph.js?v=2.5.11"></script>
-  <script src="/ui/js/pic.js?v=2.5.11"></script>
+  <script src="/ui/js/api.js?v=2.5.12"></script>
+  <script src="/ui/js/app.js?v=2.5.12"></script>
+  <script src="/ui/js/graph.js?v=2.5.12"></script>
+  <script src="/ui/js/pic.js?v=2.5.12"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

@@ -202,6 +202,24 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 只动活记忆，软删除的不会被“复活”成文件；正文清洗同时写回磁盘（文件 + `.msc_index.json` + 同步哈希）。
 
+## 照片摄入调参
+
+「设置 → 照片源 → 摄入调参」六个框（`PUT /api/v1/pic/settings`，存 DB，改完即生效，不用重建）。
+括号里是默认值／本机当前值。
+
+| 参数 | 意思 | 调大的代价 |
+|------|------|-----------|
+| 每轮扫描秒数 `scan_seconds`（8／15） | 一次目录 walk 的时间预算；到点停在游标处，下轮从断点续走（1–300） | 那一轮占用更久，首航大目录入库更快 |
+| 缩略图批量 `thumb_batch`（16／30） | 每轮为多少张占位图出 webp（1–200） | 纯 CPU＋磁盘活，瞬时占用高 |
+| 重扫间隔（小时）`rescan_hours`（24／24） | 隔多久把整个源完整重走一遍，用来发现新增与已消失的原图（1–8760） | 太小＝反复走目录的网络/CPU 开销 |
+| 缩略图尺寸 px `thumb_px`（本机 512） | webp 长边（64–2048）；改动会让全部照片重出图（`?v=` 变，缓存自动失效） | 大＝占盘、画廊慢；小＝看不清 |
+| 全开时限（秒/轮）`burst_seconds`（300） | 按下「全开连续描述」后，每一轮让视觉模型连续跑多少秒（15–900）；跑满只歇 3 秒再续，直到队列空或关掉 | 视觉 GPU 被连续占用，同机聊天会慢 |
+| 描述并发 `caption_workers`（1） | 一批里同时向视觉模型发几个请求（1–8）。只有服务端有多个槽位才更快；单槽上多余请求只是在那边排队，还会把每张的等待拉长 | 超时风险（卡片 `timeout_seconds`）与 GPU 争用 |
+
+另外两个只能走 API：`caption_batch`（1–32，默认 1）＝不启用全开时每轮描述几张 —— 默认 1 是因为视觉卡通常和聊天共用一块 GPU；
+`embed_batch`（1–64，默认 8）＝每轮索引多少条描述。两个开关：`caption_paused`（暂停图像描述）压过
+`caption_burst`（全开连续描述）。`GET /api/v1/pic/status` 的 `settings` 会回读全部调参，UI 每 5 秒跟随。
+
 ## 常见故障
 
 | 现象 | 处理 |
@@ -214,6 +232,13 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | `.msc_index.json` 里有已删除条目 | `msc sync reindex`（同时重建 FTS 和文件索引） |
 
 ## 更新记录
+
+### 2.5.12（msc-pic 分支）
+
+- **修：改完调参后设置页"跳歪"** — 保存成功时状态行写的是 `已保存（{…10 个键…}）`，约 200 字的 JSON 塞进 `.sync-controls` 那条 flex 行里，把整行的几何改掉、下面的卡片整体往下顶；六个调参字段用的是 `.form-row` 默认两列轨道。现在状态行自己占一行（`flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere`），措辞改成人话（`已保存：扫描 15 秒/轮 · 缩略图 30 张/轮 · … · 全开 300 秒/轮 · 描述按节奏走`），并把保存后的**服务端实际值**回写进输入框；调参行改 `.form-row.pic-tuning`：≥1000px 三列、600–1000 两列、≤600 单列，轨道一律 `minmax(0, 1fr)`；`.settings-grid` 也补上 `minmax(0, 1fr)` —— 裸 `1fr` 的最小值来自内容，一个长 token 就能把卡片连同页面撑宽（2.5.7 记忆页那个 bug 的同一类）。
+- **修：422 只回显 `[object Object]`** — FastAPI 的校验错误 `detail` 是**对象数组**，`new Error(data.detail)` 把它变成 `[object Object]`，所以「描述并发填 16」看起来像页面坏了。新增 `apiErrorText()`：数组拼成 `caption_workers: Input should be less than or equal to 8`，`apiFetch` / `/search` / `apiUpload` 三处统一走它。同时 `savePicSettings()` 按输入框自带的 `min`/`max` 先夹取（越界照样保存并说明"已夹到允许范围"），`重扫间隔` 补 `max=8760` 与后端一致。
+- **六个调参的说明写进 UI** — 摄入调参行下面多一段 hint，README「照片摄入调参」同步。
+- 测试 166 个（新增 `test_pic_tuning_row_cannot_widen_the_settings_page`：钉住 `.settings-grid` 与调参轨道都是 `minmax(0, 1fr)`、状态行 `min-width:0`＋`flex:1 1 100%`、六个输入框都带 `min`/`max`、保存不再 `JSON.stringify` 回显、`apiErrorText` 在三处生效）。
 
 ### 2.5.11（msc-pic 分支）
 

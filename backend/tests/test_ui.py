@@ -255,3 +255,43 @@ def test_memory_cards_fit_three_across_without_widening_the_page(client):
     for marker in ('id="filter-categories"', 'id="filter-priorities"', 'id="filter-branch"',
                    'id="filter-archived"', 'id="select-mode-btn"', 'id="memories-count"'):
         assert marker in section, marker
+
+
+def test_pic_tuning_row_cannot_widen_the_settings_page(client):
+    """Six 摄入调参 fields plus a status line in one flex row: a bare 1fr track
+    takes its minimum from its content, so a long value (or the old raw
+    JSON.stringify dump) widens the card, then the page — the row reads as
+    跳歪. Pinned: every settings/tuning track is minmax(0, 1fr), the status
+    lines own a line with min-width 0, the save handler reports the values the
+    server kept in words, and each field carries min/max so the client can
+    clamp a typo instead of bouncing a validation error."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    pic_js = (UI / "js" / "pic.js").read_text(encoding="utf-8")
+    api_js = (UI / "js" / "api.js").read_text(encoding="utf-8")
+    declarations = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    grid = re.search(r"\.settings-grid \{[^}]*\}", declarations).group(0)
+    assert "minmax(0, 1fr)" in grid, "a bare 1fr column inherits its min from content"
+
+    tuning = re.search(r"\.form-row\.pic-tuning \{[^}]*\}", declarations).group(0)
+    assert "repeat(3, minmax(0, 1fr))" in tuning
+    after = html.split('<div class="form-row pic-tuning">', 1)[1]
+    row = after.split('<div class="sync-controls">', 1)[0]
+    for field in ("pic-set-scan-seconds", "pic-set-thumb-batch", "pic-set-rescan",
+                  "pic-set-thumb-px", "pic-set-burst-seconds", "pic-set-caption-workers"):
+        marker = f'id="{field}"'
+        assert marker in row, marker
+        input_tag = row[row.index(marker):row.index(">", row.index(marker)) + 1]
+        assert 'min="' in input_tag and 'max="' in input_tag, f"{field} needs a clamp range"
+
+    for selector in ("#pic-settings-status", "#pic-cap-pause-status"):
+        rule = re.search(rf"{re.escape(selector)}[^{{]*\{{[^}}]*\}}", declarations).group(0)
+        assert "min-width: 0" in rule and "flex: 1 1 100%" in rule, selector
+
+    assert "JSON.stringify(r.settings)" not in pic_js
+    assert "function picSettingsSummary" in pic_js and "picSettingsSummary(s)" in pic_js
+    assert "function apiErrorText" in api_js
+    assert "apiErrorText(data, res.status)" in api_js
+    assert "new Error((data && data.detail)" not in api_js, \
+        "a FastAPI validation list stringifies to [object Object]"

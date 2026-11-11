@@ -859,20 +859,57 @@ async function picToggleCaptionBurst() {
   } catch (e) { if (out) out.textContent = e.message; }
 }
 
+// The six 摄入调参 fields in one place. An input's own min/max is the range
+// the API enforces, so clamp here instead of bouncing a validation error back;
+// and the status line reports what the server kept in words, not a
+// JSON.stringify blob that re-flowed the row it sits in.
+const PIC_TUNING_FIELDS = [
+  ['scan_seconds', 'pic-set-scan-seconds', '每轮扫描秒数'],
+  ['thumb_batch', 'pic-set-thumb-batch', '缩略图批量'],
+  ['rescan_hours', 'pic-set-rescan', '重扫间隔'],
+  ['thumb_px', 'pic-set-thumb-px', '缩略图尺寸'],
+  ['burst_seconds', 'pic-set-burst-seconds', '全开时限'],
+  ['caption_workers', 'pic-set-caption-workers', '描述并发'],
+];
+
+function picSettingsSummary(s) {
+  const stage = s.caption_paused ? '描述已暂停'
+    : s.caption_burst ? `描述全开（并发 ${s.caption_workers}）` : '描述按节奏走';
+  return `已保存：扫描 ${s.scan_seconds} 秒/轮 · 缩略图 ${s.thumb_batch} 张/轮 · ` +
+    `重扫 ${s.rescan_hours} 小时 · 缩略图 ${s.thumb_px} px · ` +
+    `描述 ${s.caption_batch} 张/轮 · 索引 ${s.embed_batch} 张/轮 · ` +
+    `全开 ${s.burst_seconds} 秒/轮 · ${stage}`;
+}
+
 async function savePicSettings() {
   const out = document.getElementById('pic-settings-status');
+  const data = {};
+  const clamped = [];
+  for (const [key, id, label] of PIC_TUNING_FIELDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const raw = String(el.value || '').trim();
+    if (!raw) continue;                  // blank means: leave that one alone
+    let value = parseInt(raw, 10);
+    if (!Number.isFinite(value)) continue;
+    const min = parseInt(el.min, 10);
+    const max = parseInt(el.max, 10);
+    if (Number.isFinite(min) && value < min) { value = min; clamped.push(label); }
+    if (Number.isFinite(max) && value > max) { value = max; clamped.push(label); }
+    data[key] = value;
+  }
   try {
-    const data = {
-      scan_seconds: parseInt(document.getElementById('pic-set-scan-seconds').value) || undefined,
-      thumb_batch: parseInt(document.getElementById('pic-set-thumb-batch').value) || undefined,
-      rescan_hours: parseInt(document.getElementById('pic-set-rescan').value) || undefined,
-      thumb_px: parseInt(document.getElementById('pic-set-thumb-px').value) || undefined,
-      burst_seconds: parseInt(document.getElementById('pic-set-burst-seconds').value) || undefined,
-      caption_workers: parseInt(document.getElementById('pic-set-caption-workers').value) || undefined,
-    };
     const r = await API.picUpdateSettings(data);
-    out.textContent = `已保存（${JSON.stringify(r.settings)}）`;
-  } catch (e) { out.textContent = e.message; }
+    const s = r.settings || {};
+    // Paint the values the server actually kept: a clamped 并发 should read
+    // back as 8, not stay a 16 that silently did nothing.
+    for (const [key, id] of PIC_TUNING_FIELDS) {
+      const el = document.getElementById(id);
+      if (el && s[key] !== undefined) el.value = s[key];
+    }
+    out.textContent = picSettingsSummary(s) +
+      (clamped.length ? `（已夹到允许范围：${[...new Set(clamped)].join('、')}）` : '');
+  } catch (e) { out.textContent = '保存失败：' + e.message; }
 }
 
 function picKindChanged() {

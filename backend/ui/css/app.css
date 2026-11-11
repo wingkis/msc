@@ -624,7 +624,7 @@ a:hover { text-decoration-color: currentColor; }
 /* ── Settings Page ──────────────────────────────── */
 .settings-page { max-width: 800px; margin: 0 auto; }
 .settings-page h1 { font-size: var(--fs); margin-bottom: 20px; }
-.settings-grid { display: grid; gap: 16px; }
+.settings-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 .settings-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1324,6 +1324,26 @@ a:hover { text-decoration-color: currentColor; }
 .pic-empty .setting-hint { margin-top: 6px; }
 .pic-loadmore { text-align: center; font-size: var(--fs); color: var(--text-dim); padding: 16px 0; }
 .pic-sentinel { height: 1px; }
+
+/* 摄入调参 carries six fields. Three columns on a wide settings page, two in
+   the middle, one on a phone — and every track is minmax(0, 1fr), because a
+   bare 1fr takes its minimum from its content: one long value would widen the
+   card, then the page, and the row would read as "跳歪". */
+.form-row.pic-tuning { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1000px) {
+  .form-row.pic-tuning { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .form-row.pic-tuning { grid-template-columns: minmax(0, 1fr); }
+}
+/* The photo settings status lines get a line of their own: the 保存调参 /
+   暂停 / 全开 buttons must not slide when a longer message lands, and any
+   long token has to wrap inside the card instead of pushing it wider. */
+#pic-settings-status, #pic-cap-pause-status {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* Bulk action bar: floats over the grid so it never pushes tiles around. */
 .pic-actionbar {

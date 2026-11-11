@@ -10,6 +10,24 @@ function getHeaders(extra = {}) {
   return { 'Content-Type': 'application/json', ...extra };
 }
 
+// FastAPI reports validation failures with detail as a LIST of objects, so
+// String(detail) gave "[object Object]" — an out-of-range 描述并发 looked like
+// a broken page rather than "8 is the max". Flatten it into readable text.
+function apiErrorText(data, status) {
+  const detail = data && data.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map(item => {
+      if (!item || !item.msg) return '';
+      const where = Array.isArray(item.loc)
+        ? item.loc.filter(part => part !== 'body').join('.') : '';
+      return where ? `${where}: ${item.msg}` : String(item.msg);
+    }).filter(Boolean);
+    if (parts.length) return parts.join('；');
+  }
+  return `HTTP ${status}`;
+}
+
 async function apiFetch(path, options = {}) {
   try {
     const res = await fetch(API_BASE + path, {
@@ -27,7 +45,7 @@ async function apiFetch(path, options = {}) {
         data = { detail: text.slice(0, 200) };
       }
     }
-    if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(apiErrorText(data, res.status));
     return data;
   } catch (e) {
     console.error('API error:', path, e);
@@ -106,7 +124,7 @@ const API = {
       const text = await res.text();
       let data = null;
       if (text) { try { data = JSON.parse(text); } catch (e) { data = { detail: text.slice(0, 200) }; } }
-      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(apiErrorText(data, res.status));
       const header = res.headers.get('X-Semantic-Error');
       window.mscLastSemanticError = header ? decodeURIComponent(header) : null;
       return data;
@@ -184,7 +202,7 @@ const API = {
     const text = await res.text();
     let data = null;
     if (text) { try { data = JSON.parse(text); } catch (e) { data = { detail: text.slice(0, 200) }; } }
-    if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(apiErrorText(data, res.status));
     return data;
   },
 
