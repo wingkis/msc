@@ -1,8 +1,9 @@
 """Pydantic schemas for API request/response."""
 
 from __future__ import annotations
+import json
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TagBase(BaseModel):
@@ -11,6 +12,55 @@ class TagBase(BaseModel):
 class TagResponse(TagBase):
     id: int
     model_config = {"from_attributes": True}
+
+
+MEMORY_STATUSES = ("active", "stale", "contradicted")
+# The kinds of pointer a later reader can actually re-check. A memory body is a
+# historical observation; a ref is the handle that lets someone prove or kill it.
+# `git:<sha>` `file:<path>` `url:<endpoint>` `mem:<slug>` `cmd:<line>`
+# `host:<name>`.
+REF_KINDS = ("git", "file", "url", "mem", "cmd", "host")
+
+
+def normalize_refs(values) -> List[str]:
+    """Validate and de-duplicate refs; anything without a known prefix raises.
+
+    Raising here (rather than filtering silently) means a typo'd ref becomes a
+    422 that names the allowed prefixes — an unverifiable ref is worse than no
+    ref, because it reads like a guarantee.
+    """
+    out: List[str] = []
+    for raw in values or []:
+        ref = str(raw).strip()[:500]
+        if not ref:
+            continue
+        kind, _, target = ref.partition(":")
+        if kind.lower() not in REF_KINDS or not target.strip():
+            raise ValueError(
+                f"ref {raw!r} needs a '<kind>:<target>' form with kind one of: "
+                f"{', '.join(REF_KINDS)}"
+            )
+        ref = f"{kind.lower()}:{target.strip()}"
+        if ref not in out:
+            out.append(ref)
+    return out
+
+
+def dump_refs(values) -> str:
+    return json.dumps(list(values or []), ensure_ascii=False)
+
+
+def parse_refs(stored) -> List[str]:
+    """Read back the JSON column defensively — a broken blob must not 500 a read."""
+    if not stored:
+        return []
+    if isinstance(stored, (list, tuple)):
+        return [str(v) for v in stored]
+    try:
+        data = json.loads(stored)
+    except (TypeError, ValueError):
+        return []
+    return [str(v) for v in data] if isinstance(data, list) else []
 
 
 class MemoryCreate(BaseModel):
@@ -26,6 +76,12 @@ class MemoryCreate(BaseModel):
     branch: str = ""
     tags: List[str] = []
     related_slugs: List[str] = []
+    refs: List[str] = []
+
+    @field_validator("refs", mode="before")
+    @classmethod
+    def _check_refs(cls, v):
+        return normalize_refs(v)
 
 
 class BatchMemories(BaseModel):
@@ -42,6 +98,12 @@ class MemoryUpdate(BaseModel):
     branch: Optional[str] = None
     tags: Optional[List[str]] = None
     related_slugs: Optional[List[str]] = None
+    refs: Optional[List[str]] = None
+
+    @field_validator("refs", mode="before")
+    @classmethod
+    def _check_refs(cls, v):
+        return None if v is None else normalize_refs(v)
 
 class MemoryResponse(BaseModel):
     id: int
@@ -58,6 +120,23 @@ class MemoryResponse(BaseModel):
     updated_at: str
     archived: int
     source: str
+    refs: List[str] = []
+    status: str = "active"
+    invalidated_at: Optional[str] = None
+    invalidated_reason: Optional[str] = None
+    verified_at: Optional[str] = None
+
+    @field_validator("refs", mode="before")
+    @classmethod
+    def _refs_from_column(cls, v):
+        return parse_refs(v)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _status_from_column(cls, v):
+        # Columns added by ALTER TABLE are NULL on pre-existing rows.
+        return v or "active"
+
     model_config = {"from_attributes": True}
 
 
@@ -143,6 +222,7 @@ class SearchRequest(BaseModel):
     branches: Optional[List[str]] = None
     limit: int = 20
     offset: int = 0
+    include_invalidated: bool = False
 
 class SearchResult(BaseModel):
     id: int
@@ -153,6 +233,56 @@ class SearchResult(BaseModel):
     priority: str
     tags: List[TagResponse] = []
     score: float
+
+
+class MemoryInvalidate(BaseModel):
+    """Mark a memory as contradicted by a re-check, optionally naming its successor."""
+    reason: str = Field(..., min_length=1, max_length=2000)
+    status: str = Field("contradicted", description="stale | contradicted")
+    superseded_by: Optional[str] = Field(None, description="Slug of the memory that replaces this one")
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, v):
+        if v not in ("stale", "contradicted"):
+            raise ValueError(f"invalid status {v!r}; allowed: stale, contradicted")
+        return v
+
+
+class MemoryVerdict(BaseModel):
+    """What a re-check concluded. `ok` clears an earlier invalidation."""
+    verdict: str = Field("ok", description="ok | stale | contradicted")
+    reason: str = Field("", max_length=2000)
+
+    @field_validator("verdict")
+    @classmethod
+    def _check_verdict(cls, v):
+        if v not in MEMORY_STATUSES and v != "ok":
+            raise ValueError(f"invalid verdict {v!r}; allowed: ok, {', '.join(MEMORY_STATUSES)}")
+        return "active" if v == "ok" else v
+
+
+class ProbeItem(BaseModel):
+    ref: str
+    kind: str
+    verdict: str          # ok | missing | unchecked
+    detail: str = ""
+
+
+class PreflightItem(BaseModel):
+    slug: str
+    status: str
+    refs: List[str] = []
+    probes: List[ProbeItem] = []
+    verdict: str          # active | contradicted | stale | uncheckable
+    detail: str = ""
+
+
+class PreflightResponse(BaseModel):
+    checked: int = 0
+    hidden: int = 0
+    budget_ms: int = 0
+    items: List[PreflightItem] = []
 
 
 class ModelConfigUpdate(BaseModel):

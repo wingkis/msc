@@ -32,6 +32,21 @@ class Memory(Base):
     last_sync_hash = Column(String, nullable=True)
     owner_id = Column(Integer, nullable=True)
 
+    # Provenance. A memory is a historical observation, not a verified fact, so
+    # the parts of it that a later reader can re-check are stored apart from the
+    # prose: refs holds checkable pointers (git:/file:/url:/mem:/cmd:/host:),
+    # status says whether a re-check has since contradicted it, and verified_at
+    # records the last time something confirmed it.
+    refs = Column(Text, default="")            # JSON array of "kind:value"
+    # Nullable on purpose: the upgrade path is ALTER TABLE ADD COLUMN, which
+    # cannot carry a NOT NULL default, so an existing database has NULL here and
+    # a fresh one would pretend otherwise. Reads are NULL-safe (validators +
+    # _live_status_pred), and ensure_provenance() backfills the values.
+    status = Column(String, default="active")
+    invalidated_at = Column(String, nullable=True)
+    invalidated_reason = Column(Text, nullable=True)
+    verified_at = Column(String, nullable=True)
+
     tags = relationship("Tag", secondary="memory_tags", back_populates="memories")
     versions = relationship("MemoryVersion", back_populates="memory", lazy="select")
     relations_out = relationship(
@@ -50,6 +65,10 @@ class Memory(Base):
         CheckConstraint("category IN ('config','project','user','knowledge','reference')", name="ck_category"),
         CheckConstraint("lifespan IN ('temporary','permanent')", name="ck_lifespan"),
         CheckConstraint("source IN ('msc','imported','claude')", name="ck_source"),
+        # Only fresh databases get this constraint: ALTER TABLE ADD COLUMN (the
+        # upgrade path for an existing db) cannot add a table-level CHECK, so the
+        # API validates the status vocabulary as well. See _validate_vocab.
+        CheckConstraint("status IN ('active','stale','contradicted')", name="ck_status"),
     )
 
 

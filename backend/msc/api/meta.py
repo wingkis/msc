@@ -11,6 +11,7 @@ from msc.auth.api_key import auth_status
 from msc.config import VERSION, get_settings
 from msc.database import get_db
 from msc.models import Memory, MemoryBranch, MemoryTag, Tag
+from msc.schemas import MEMORY_STATUSES, REF_KINDS
 
 settings = get_settings()
 router = APIRouter()
@@ -29,6 +30,11 @@ def _counts(db: Session) -> dict:
     return {
         "total": db.query(Memory).filter(Memory.archived == 0).count(),
         "archived": db.query(Memory).filter(Memory.archived == 1).count(),
+        # How much of the library a re-check has already contradicted. Worth
+        # stating: a corpus that never accumulates contradictions is a corpus
+        # nobody is checking, not a corpus that happens to be correct.
+        "contradicted": db.query(Memory).filter(
+            Memory.archived == 0, Memory.status == "contradicted").count(),
         "by_category": {r[0]: r[1] for r in db.query(Memory.category, func.count("*"))
                         .filter(Memory.archived == 0).group_by(Memory.category).all()},
         "by_priority": {r[0]: r[1] for r in db.query(Memory.priority, func.count("*"))
@@ -55,6 +61,8 @@ def meta(db: Session = Depends(get_db)):
             "category": list(CATEGORIES),
             "priority": list(PRIORITIES),
             "lifespan": list(LIFESPANS),
+            "status": list(MEMORY_STATUSES),
+            "ref_kind": list(REF_KINDS),
         },
         "branches": [b.name for b in db.query(MemoryBranch).order_by(MemoryBranch.name).all()],
         "tags": [{"name": name, "count": count} for name, count in tags],
@@ -75,13 +83,22 @@ Base: {base}/api/v1
 READ
   GET  /memories                      list (filters: category, priority, tag, branch,
                                       since=<ISO>, q=<text>, include_archived, order,
-                                      limit<=500, offset; X-Total-Count header)
+                                      limit<=500, offset, include_invalidated;
+                                      X-Total-Count + X-Contradicted-Hidden headers)
   GET  /memories/{{slug}}             one memory; slug, exact name, or unique fragment
+  GET  /memories/preflight            re-check stored refs (budget_ms<=8000, limit<=100,
+                                      category/priority/tag filters). Reports verdicts
+                                      only — it never writes. Server can reach url:/file:/
+                                      mem:; git:/cmd:/host: come back "unchecked"
   GET  /search?q=...                  full-text (safe with any characters) + filters
                                       mode=keyword|semantic|hybrid (default keyword;
                                       semantic modes need an embed provider, otherwise
                                       they degrade to keyword; hybrid results carry
-                                      a "match" field)
+                                      a "match" field); include_invalidated to also
+                                      recall contradicted ones.
+                                      X-Search-Status: ok|no_match|degraded|error —
+                                      a broken index is not the same answer as
+                                      "nothing matched".
   GET  /meta                          vocabularies, tags, counts
   GET  /tags                          tag names + usage counts
   GET  /stats                         counts by category/priority/source
@@ -97,6 +114,13 @@ WRITE
   PUT    /memories/{{slug}}           create-or-replace (upsert by default)
   POST   /memories/batch              {{"memories":[...], "upsert":true}} -> per-item result
   POST   /memories/{{slug}}/relate    link two memories
+  POST   /memories/{{slug}}/invalidate  a re-check contradicted this:
+                                        {{"reason":"why it no longer holds",
+                                          "status":"contradicted|stale",
+                                          "superseded_by":"other-slug"}}  (optional)
+  POST   /memories/{{slug}}/verify    outcome of a re-check. verdict "ok" is the ONLY
+                                      way back to active — editing a body never restores
+                                      {{"verdict":"ok|stale|contradicted","reason":"..."}}
   POST   /memories/graph/auto-link    connect memory pairs sharing >=min_shared exact
                                       keywords (default min_freq=3, max_coverage=0.3,
                                       min_shared=3, rebuild=false)
@@ -115,6 +139,13 @@ CONVENTIONS
   - category: {cats}
   - priority: {pris}
   - lifespan: {life}
+  - status: {statuses}. A memory is a historical observation, not a verified fact.
+  - refs: attach what a later reader can re-check — {refkinds}, each as
+    "<kind>:<target>" on the memory. An unverifiable ref is worse than none, so a
+    typo'd kind is a 422, not something quietly stored.
+  - Contradicted memories drop out of /memories and /search by default and stay
+    readable by slug; the drop is announced in X-Contradicted-Hidden, never quiet.
+    They are never deleted — a wrong belief is evidence.
   - Send "X-Agent: <your name>" on writes; it is recorded in the version history.
   - Bad vocabulary returns 422 with the allowed values, never a 500.
 
@@ -137,6 +168,8 @@ def help_body() -> str:
         cats=", ".join(CATEGORIES),
         pris=", ".join(PRIORITIES),
         life=", ".join(LIFESPANS),
+        statuses=" | ".join(MEMORY_STATUSES),
+        refkinds=" ".join(f"{k}:" for k in REF_KINDS),
     )
 
 
