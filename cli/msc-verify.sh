@@ -9,12 +9,18 @@
 # that corrupts it the first time two agents disagree about a timeout. Pass
 # --yes to write verdicts back (POST /verify, POST /invalidate).
 #
-# usage: MSC_URL=http://host:8000 msc-verify.sh [--yes] [--limit N] [slug ...]
+# usage: MSC_URL=http://host:8000 msc-verify.sh [--yes] [--brief] [--limit N] [slug ...]
+#
+# --brief prints one tab-separated line per memory plus a SUMMARY line, for a
+# caller that wants to mention the result instead of reading a table: the agent
+# hook runs it in the background at SessionStart and injects the summary. Human
+# prose goes to stderr in that mode, so stdout stays parseable.
 
 set -eu
 
 URL="${MSC_URL:-}"
 YES=0
+BRIEF=0
 LIMIT=20
 SLUGS=""
 
@@ -24,9 +30,10 @@ command -v sed  >/dev/null 2>&1 || { echo "msc-verify: sed is required"  >&2; ex
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes)   YES=1 ;;
+        --brief) BRIEF=1 ;;
         --url)   shift; URL="${1:-}" ;;
         --limit) shift; LIMIT="${1:-20}" ;;
-        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         -*)      echo "msc-verify: unknown option $1" >&2; exit 2 ;;
         *)       SLUGS="$SLUGS $1" ;;
     esac
@@ -51,6 +58,21 @@ probe_one() {
             printf 'unchecked\tthis checkout has no such object (%s)' "$(pwd)"
         fi ;;
       file)
+        # A path is a statement about *this* machine's filesystem. Judging a
+        # foreign one "gone" is the probe inventing staleness — the exact bug
+        # 2.6.1 fixed on the server for its own mount set, and running
+        # --yes from the wrong box would have contradicted a dozen good
+        # memories on evidence that only ever existed elsewhere.
+        _os=$(uname -s)
+        case "$_target" in
+          /home/*)  [ "$_os" = "Linux" ] || { printf 'unchecked\tnot a %s path (%s)' "$_os" "$_target"; return 0; } ;;
+          /Users/*) [ "$_os" = "Darwin" ] || { printf 'unchecked\tnot a %s path (%s)' "$_os" "$_target"; return 0; } ;;
+        esac
+        _owner=$(printf '%s' "$_target" | sed -n 's#^/\(home\|Users\)/\([^/]*\)/.*#\2#p')
+        if [ -n "$_owner" ] && [ "$_owner" != "$(id -un)" ]; then
+            printf 'unchecked\tbelongs to another user on another machine (%s)' "$_owner"
+            return 0
+        fi
         if [ -e "$_target" ]; then printf 'ok\tpath exists'
         else printf 'missing\tpath is gone: %s' "$_target"; fi ;;
       url)
@@ -88,13 +110,30 @@ probe_one() {
 
 refs_of() {
     # One ref per line, inner spaces intact: cmd: refs and file paths contain
-    # them, and stripping every space (or splitting the document on commas) both
+    # them, and splitting the document on commas (or stripping every space)
     # mangles values and drops the first entry glued to "refs": [.
-    curl -s -m 5 "$URL/api/v1/memories/$1?include_invalidated=true" \
-      | sed -n 's/.*"refs":[[:space:]]*\[\([^]]*\)\].*/\1/p' \
-      | sed 's/"[[:space:]]*,[[:space:]]*"/\n/g' \
-      | sed 's/^\[//; s/^"//; s/"$//; s/^[[:space:]]*//; s/[[:space:]]*$//' \
-      | sed -n '/^\(git\|file\|url\|mem\|cmd\|host\):/p'
+    #
+    # awk, not sed, and deliberately no \| alternation and no \n replacement:
+    # BSD sed (macOS) rejects both — GNU-only sed silently matched nothing
+    # here, so the whole client-side check reported "no refs" on every mac.
+    curl -s -m 5 "$URL/api/v1/memories/$1?include_invalidated=true" | awk '
+        {
+            line = $0
+            while (match(line, /"refs":[ \t]*\[[^]]*\]/)) {
+                chunk = substr(line, RSTART, RLENGTH)
+                sub(/^"refs":[ \t]*\[/, "", chunk)
+                sub(/\]$/, "", chunk)
+                n = split(chunk, parts, /","/)
+                for (i = 1; i <= n; i++) {
+                    p = parts[i]
+                    gsub(/^"|"$/, "", p)
+                    gsub(/^[ \t]+/, "", p)
+                    gsub(/[ \t]+$/, "", p)
+                    if (p ~ /^(git|file|url|mem|cmd|host):/) print p
+                }
+                line = substr(line, RSTART + RLENGTH)
+            }
+        }'
 }
 
 _write_bad() {
@@ -113,7 +152,10 @@ _write_ok() {
 check_slug() {
     _slug=$1
     _refs=$(refs_of "$_slug")
-    if [ -z "$_refs" ]; then echo "  (no refs — nothing to check)"; return 0; fi
+    if [ -z "$_refs" ]; then
+        [ "$BRIEF" = "1" ] || echo "  (no refs — nothing to check)"
+        return 0
+    fi
     _missing=""
     _checked=0
     _unchecked=0
@@ -124,7 +166,7 @@ check_slug() {
         _line=$(probe_one "$_ref")
         _verdict=${_line%%	*}
         _detail=${_line#*	}
-        printf '  %-46s %-9s %s\n' "$_ref" "$_verdict" "$_detail"
+        [ "$BRIEF" = "1" ] || printf '  %-46s %-9s %s\n' "$_ref" "$_verdict" "$_detail"
         case "$_verdict" in
           missing)   _missing="$_missing $_ref" ;;
           ok)        _checked=$((_checked + 1)) ;;
@@ -133,6 +175,22 @@ check_slug() {
     done <<REFS
 $_refs
 REFS
+    if [ "$BRIEF" = "1" ]; then
+        # one machine-readable line per memory; the hook only reads these
+        _missing_flat=$(echo "$_missing" | tr ' ' ',' | sed 's/^,//; s/,$//')
+        if [ -n "$_missing" ]; then
+            printf 'CONTRADICTED\t%s\t%s\n' "$_slug" "$_missing_flat"
+        elif [ "$_checked" = "0" ]; then
+            printf 'UNCHECKABLE\t%s\t%d\n' "$_slug" "$_unchecked"
+        else
+            printf 'CONFIRMED\t%s\t%d/%d\n' "$_slug" "$_checked" "$((_checked + _unchecked))"
+        fi
+        BRIEF_TOTAL=$((BRIEF_TOTAL + 1))
+        [ -z "$_missing" ] || BRIEF_CONTRADICTED=$((BRIEF_CONTRADICTED + 1))
+        [ "$_checked" = "0" ] && [ -z "$_missing" ] && BRIEF_UNCHECKABLE=$((BRIEF_UNCHECKABLE + 1))
+        [ "$_checked" != "0" ] && [ -z "$_missing" ] && BRIEF_CONFIRMED=$((BRIEF_CONFIRMED + 1))
+        return 0
+    fi
     if [ -n "$_missing" ]; then
         echo "  => contradicted by:$_missing"
         [ "$YES" = "1" ] && _write_bad "$_slug" "$_missing"
@@ -145,15 +203,34 @@ REFS
     return 0
 }
 
+BRIEF_TOTAL=0
+BRIEF_CONFIRMED=0
+BRIEF_CONTRADICTED=0
+BRIEF_UNCHECKABLE=0
+
+_say() {
+    # human chatter: stdout unless the output is being parsed
+    [ "$BRIEF" = "1" ] || echo "$@"
+}
+
 if [ -z "$SLUGS" ]; then
-    echo "msc-verify: scanning the $LIMIT most recently updated memories (with refs)"
+    _say "msc-verify: scanning the $LIMIT most recently updated memories (with refs)"
     SLUGS=$(curl -s -m 5 "$URL/api/v1/memories?include_invalidated=true&limit=$LIMIT" \
              | tr ',' '\n' | sed -n 's/^[[:space:]]*"slug":[[:space:]]*"\([^"]*\)".*/\1/p')
-    if [ -z "$SLUGS" ]; then echo "msc-verify: nothing to scan"; exit 0; fi
+    if [ -z "$SLUGS" ]; then
+        [ "$BRIEF" = "1" ] && printf 'SUMMARY\ttotal=0\n'
+        echo "msc-verify: nothing to scan"
+        exit 0
+    fi
 fi
 
-if [ "$YES" != "1" ]; then echo "msc-verify: dry-run (pass --yes to write verdicts back)"; fi
+if [ "$YES" != "1" ]; then _say "msc-verify: dry-run (pass --yes to write verdicts back)"; fi
 for _s in $SLUGS; do
-    echo "$_s"
+    [ "$BRIEF" = "1" ] || echo "$_s"
     check_slug "$_s"
 done
+
+if [ "$BRIEF" = "1" ]; then
+    printf 'SUMMARY\ttotal=%d confirmed=%d contradicted=%d uncheckable=%d\n' \
+        "$BRIEF_TOTAL" "$BRIEF_CONFIRMED" "$BRIEF_CONTRADICTED" "$BRIEF_UNCHECKABLE"
+fi
