@@ -10,6 +10,7 @@ from msc.filesystem.indexer import drop_index_entry, update_index_entry
 from msc.filesystem.md_reader import file_sync_hash
 from msc.filesystem.md_writer import delete_memory_file, write_memory_file
 from msc.models import Memory
+from msc.schemas import parse_refs
 
 
 def write_through(db, memory: Memory) -> None:
@@ -24,7 +25,8 @@ def write_through(db, memory: Memory) -> None:
                       body=memory.body or "", tags=tag_names, priority=memory.priority,
                       category=memory.category, lifespan=memory.lifespan,
                       branch=memory.branch or "", created=memory.created_at,
-                      updated=memory.updated_at)
+                      updated=memory.updated_at, refs=parse_refs(memory.refs),
+                      status=memory.status or "", invalidated_reason=memory.invalidated_reason or "")
     update_index_entry(slug=memory.slug, name=memory.name, description=memory.description or "",
                        tags=tag_names, priority=memory.priority, category=memory.category,
                        lifespan=memory.lifespan, created=memory.created_at,

@@ -21,7 +21,7 @@ from msc.api.memories import _actor, _guard_write, _require_auth, _resolve_memor
 from msc.config import get_settings
 from msc.database import get_db
 from msc.filesystem.md_writer import write_memory_file
-from msc.models import Embedding, Memory, RagCache
+from msc.models import Embedding, Memory, RagCache, contradicted_ids
 from msc.schemas import EchoRequest, RagImportRequest, RagSettingsUpdate
 from msc.services import llm, rag_providers
 from msc.services.model_config import get_config, note_result, public_view
@@ -50,17 +50,8 @@ def _embed_card(db: Session):
 
 
 def _contradicted_ids(db: Session) -> set:
-    """The ids a re-check has already contradicted.
-
-    One definition for every recall leg in this module, because the failure is
-    the same everywhere: a contradicted memory still has a vector, still matches
-    text, and so still surfaces — as a search hit, as a 「similar」 append
-    target, as daily-pick material. ``status = 'contradicted'`` is NULL-safe in
-    this direction: a legacy row upgraded in by ALTER TABLE carries NULL and
-    never matches, so old memories stay recallable.
-    """
-    return {row[0] for row in db.query(Memory.id).filter(
-        Memory.status == "contradicted").all()}
+    """See msc.models.contradicted_ids — one definition, now including digests."""
+    return contradicted_ids(db)
 
 
 # ── Status ───────────────────────────────────────────────────────────

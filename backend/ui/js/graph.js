@@ -206,20 +206,29 @@ function renderGraph(data) {
     return;
   }
 
-  const visNodes = data.nodes.map(n => ({
-    id: n.id,
-    label: n.slug,
-    title: `<strong>#${n.id} ${escHtml(n.name)}</strong><br>${n.category} · ${n.priority}`,
-    size: getPrioritySize(n.priority),
-    color: {
-      background: getCategoryColor(n.category),
-      border: getCategoryColor(n.category),
-      highlight: { background: getCategoryColor(n.category), border: '#ffffff' },
-      hover: { background: getCategoryColor(n.category), border: '#ffffff' }
-    },
-    font: { color: '#f4f4f4', size: GRAPH_FONT_SIZE, face: '-apple-system, sans-serif' },
-    shape: 'dot'
-  }));
+  const visNodes = data.nodes.map(n => {
+    // A contradicted node stays in the picture: the graph is where you see what
+    // a retired belief was still wired to. It goes grey, gets the state in its
+    // label, and says so in the tooltip — dropping it would hide the structure
+    // a re-check needs most.
+    const mark = n.status === 'contradicted' ? '已被推翻' : (n.status === 'stale' ? '已过时' : '');
+    const fill = mark ? '#5a5a5a' : getCategoryColor(n.category);
+    return {
+      id: n.id,
+      label: mark ? `${n.slug} · ${mark}` : n.slug,
+      title: `<strong>#${n.id} ${escHtml(n.name)}</strong><br>${n.category} · ${n.priority}`
+        + (mark ? '<br>' + mark + '：默认列表与搜索已跳过它，图谱刻意还画出来' : ''),
+      size: getPrioritySize(n.priority),
+      color: {
+        background: fill,
+        border: fill,
+        highlight: { background: fill, border: '#ffffff' },
+        hover: { background: fill, border: '#ffffff' }
+      },
+      font: { color: '#f4f4f4', size: GRAPH_FONT_SIZE, face: '-apple-system, sans-serif' },
+      shape: 'dot'
+    };
+  });
 
   const visEdges = data.edges.map(e => ({
     from: e.source,

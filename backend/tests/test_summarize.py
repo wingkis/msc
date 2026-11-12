@@ -104,6 +104,41 @@ def test_test_endpoint_reports_an_unreachable_model(client, monkeypatch):
 
 # ── Digests ──────────────────────────────────────────────────────────
 
+def test_a_contradicted_memory_is_never_digest_material(client, monkeypatch):
+    """A digest is a *writer*: whatever it folds in returns as one new active
+    memory that reads better than any of its sources. Leaving a contradicted
+    belief in that input laundered it — and the new row is harder to question
+    than the one a re-check already retired."""
+    calls = _fake_chat(monkeypatch)
+    _card(client, base_url="http://192.168.29.100:1234", model="openai/gpt-oss-20b",
+          archive_sources=False)
+    live = _make(client, "Digest Live")
+    retired = _make(client, "Digest Retired")
+    assert client.post(f"/api/v1/memories/{retired}/invalidate",
+                       json={"reason": "复核：端点已下线"}).status_code == 200
+
+    preview = client.post("/api/v1/summarize/selected",
+                          json={"slugs": [live, retired], "dry_run": True}).json()
+    assert [source["slug"] for source in preview["sources"]] == [live]
+    assert preview["contradicted_skipped"] == [retired]      # named, not swallowed
+    prompt = calls[0]["messages"][-1]["content"]
+    assert live in prompt and retired not in prompt
+
+    rejected = client.post("/api/v1/summarize/selected",
+                           json={"slugs": [retired], "dry_run": True})
+    assert rejected.status_code == 422 and "已被推翻" in rejected.json()["detail"]
+
+    # the digest says what it stands on, in a form preflight can re-check
+    result = client.post("/api/v1/summarize/selected", json={"slugs": [live]}).json()
+    digest = client.get(f"/api/v1/memories/{result['created']['slug']}").json()
+    assert digest["refs"] == [f"mem:{live}"]
+
+    # and the day preview reports what it left out instead of a quiet count
+    window = client.get("/api/v1/summarize/window").json()
+    assert window["contradicted_hidden"] >= 1
+    assert retired in [m["slug"] for m in window["contradicted"]]
+
+
 def test_selected_digest_creates_memory_and_archives_sources(client, monkeypatch):
     calls = _fake_chat(monkeypatch)
     _card(client, base_url="http://192.168.29.100:1234", model="openai/gpt-oss-20b",

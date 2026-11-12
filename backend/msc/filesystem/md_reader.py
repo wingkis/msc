@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from msc.config import get_settings
+from msc.schemas import REF_KINDS
 from msc.text import body_hash, normalize_tags, strip_stray_frontmatter
 
 settings = get_settings()
@@ -43,6 +44,31 @@ def parse_frontmatter(file_content: str) -> tuple[dict, str]:
     return frontmatter, body
 
 
+def parse_ref_list(value) -> List[str]:
+    """Parse a frontmatter `refs:` value, dropping anything malformed.
+
+    Strict parse would fail a whole file import over one mistyped prefix, and a
+    human editing markdown is exactly who that punishes. The API keeps its 422
+    for the same mistake: a machine writing a bad kind should be told, a person
+    editing a file should keep their memory.
+    """
+    if isinstance(value, (list, tuple)):
+        candidates = [str(v) for v in value]
+    else:
+        candidates = str(value or "").split(",")
+    out: List[str] = []
+    for raw in candidates:
+        item = raw.strip().strip('"\\\'')
+        if not item or ":" not in item:
+            continue
+        kind, _, target = item.partition(":")
+        kind = kind.strip().lower()
+        target = target.strip()
+        if kind in REF_KINDS and target and f"{kind}:{target}" not in out:
+            out.append(f"{kind}:{target}")
+    return out
+
+
 def read_memory_file(slug: str, memory_dir: Path = None) -> Optional[dict]:
     """Read a memory file and return parsed data.
 
@@ -64,6 +90,10 @@ def read_memory_file(slug: str, memory_dir: Path = None) -> Optional[dict]:
 
     # Tags may be a plain list, a comma separated string, or str(['a, b'])
     tags = normalize_tags(frontmatter.get("tags", ""))
+    # Absent and empty are different statements: a file written before refs
+    # existed must not clear the provenance already in the database, while
+    # `refs:` with nothing after it means "this memory has none".
+    raw_refs = frontmatter.get("refs")
 
     return {
         "slug": slug,
@@ -77,6 +107,11 @@ def read_memory_file(slug: str, memory_dir: Path = None) -> Optional[dict]:
         "branch": frontmatter.get("branch", ""),
         "created": frontmatter.get("created", ""),
         "updated": frontmatter.get("updated", ""),
+        "refs": None if raw_refs is None else parse_ref_list(raw_refs),
+        # Read-only in this direction; carried so a human reading the file (or
+        # a diff) can see the memory was contradicted.
+        "status": frontmatter.get("status", ""),
+        "invalidated_reason": frontmatter.get("invalidated_reason", ""),
         "file_path": str(file_path),
     }
 
@@ -96,7 +131,23 @@ def list_memory_files(memory_dir: Path = None) -> List[str]:
     ]
 
 
+def sync_digest(data: dict) -> str:
+    """The fingerprint of everything the import would copy out of a file.
+
+    Hashing the body alone was not enough: refs, tags, priority and category
+    arrive from the frontmatter, so a hand-edited `refs:` line left the digest
+    identical and the pull pass never looked at the file again. Provenance
+    edited by hand is the whole point of the file channel.
+    """
+    refs = data.get("refs")
+    parts = [data.get("body", "") or "", data.get("priority", "") or "",
+             data.get("category", "") or "", data.get("lifespan", "") or "",
+             data.get("branch", "") or "", ",".join(data.get("tags") or []),
+             "<unread>" if refs is None else ",".join(refs)]
+    return body_hash("\x1f".join(parts))
+
+
 def file_sync_hash(slug: str, memory_dir: Path = None) -> str:
     """What the pull pass would record for this file ('' when unreadable)."""
     data = read_memory_file(slug, memory_dir)
-    return body_hash(data["body"]) if data else ""
+    return sync_digest(data) if data else ""

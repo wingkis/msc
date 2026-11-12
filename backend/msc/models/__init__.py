@@ -485,3 +485,18 @@ class SummaryRun(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('manual','auto')", name="ck_summary_kind"),
     )
+
+
+def contradicted_ids(db) -> set:
+    """The memory ids a re-check has contradicted — the one NULL-safe definition.
+
+    Every recall leg needs this same set: keyword search, the RAG fusion legs,
+    the related recommendations, and the material a daily digest folds together.
+    Written once because ``status = 'contradicted'`` matches nothing on a legacy
+    row that ALTER TABLE left at NULL, which is the wanted reading — a memory
+    nobody has re-checked yet stays recallable. The tempting inverse,
+    ``status != 'contradicted'``, fails the same way and silently empties an
+    upgraded library of everything.
+    """
+    return {row[0] for row in db.query(Memory.id).filter(
+        Memory.status == "contradicted").all()}

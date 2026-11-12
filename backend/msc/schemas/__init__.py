@@ -163,6 +163,9 @@ class GraphNode(BaseModel):
     category: str
     priority: str
     color: str
+    # The graph is an audit surface, so a contradicted node is not dropped: the
+    # UI needs its status to draw it as retired instead of as a live fact.
+    status: str = "active"
 
 class GraphEdge(BaseModel):
     source: int

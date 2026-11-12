@@ -83,7 +83,9 @@ Base: {base}/api/v1
 READ
   GET  /memories                      list (filters: category, priority, tag, branch,
                                       since=<ISO>, q=<text>, include_archived, order,
-                                      limit<=500, offset, include_invalidated;
+                                      limit<=500, offset, include_invalidated,
+                                      ref=<kind>:<target> (impact lookup: which memories
+                                      cite one endpoint/path/commit);
                                       X-Total-Count + X-Contradicted-Hidden headers)
   GET  /memories/{{slug}}             one memory; slug, exact name, or unique fragment
   GET  /memories/preflight            re-check stored refs (budget_ms<=8000, limit<=100,

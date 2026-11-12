@@ -102,3 +102,53 @@ def test_sync_logs_grow(client):
     client.post("/api/v1/sync/push")
     logs = client.get("/api/v1/sync/logs").json()
     assert logs and logs[0]["direction"] in ("push", "pull", "sync")
+
+
+def test_refs_travel_both_ways_through_markdown(client, memory_dir):
+    """The README promises both sides can be edited. A file written before refs
+    existed must not clear what the database holds, while a hand-edited `refs:`
+    line has to arrive — and a hand-written file can finally carry provenance.
+    """
+    client.post("/api/v1/memories", json={"name": "Ref Roundtrip", "slug": "ref-roundtrip",
+                                          "body": "note", "refs": ["git:abc1234", "host:dgx"]})
+    client.post("/api/v1/sync/push")
+    path = memory_dir / "ref-roundtrip.md"
+    text = path.read_text(encoding="utf-8")
+    assert "refs:" in text and "git:abc1234" in text and "host:dgx" in text
+
+    path.write_text(text.replace("host:dgx", "host:dgx, url:http://192.168.29.50:8000/api/v1/health"),
+                    encoding="utf-8")
+    assert "ref-roundtrip" in client.post("/api/v1/sync/pull").json()["updated"]
+    refs = client.get("/api/v1/memories/ref-roundtrip").json()["refs"]
+    assert refs[-1] == "url:http://192.168.29.50:8000/api/v1/health"
+
+    # a file with no refs line says nothing about provenance, so it changes none
+    (memory_dir / "no-refs-line.md").write_text(
+        "---\nname: No Refs Line\nbody: x\n---\n\nplain file\n", encoding="utf-8")
+    client.post("/api/v1/sync/pull")
+    assert client.get("/api/v1/memories/no-refs-line").json()["refs"] == []
+
+    # malformed fragments are dropped instead of failing the import
+    path.write_text(path.read_text(encoding="utf-8").replace("git:abc1234", "commit:abc1234"),
+                    encoding="utf-8")
+    client.post("/api/v1/sync/pull")
+    assert "commit:abc1234" not in client.get("/api/v1/memories/ref-roundtrip").json()["refs"]
+
+
+def test_editing_a_file_never_uncontradicts_a_memory(client, memory_dir):
+    """status is mirrored into the file for readers and deliberately ignored on
+    the way back in: recovery is an act of checking, not of editing a line.
+    """
+    client.post("/api/v1/memories", json={"name": "Retired Note", "slug": "retired-note",
+                                          "body": "was true"})
+    client.post("/api/v1/memories/retired-note/invalidate", json={"reason": "复核不过"})
+    client.post("/api/v1/sync/push")
+
+    path = memory_dir / "retired-note.md"
+    text = path.read_text(encoding="utf-8")
+    assert "status: contradicted" in text and "invalidated_reason:" in text
+
+    path.write_text(text.replace("status: contradicted", "status: active"), encoding="utf-8")
+    client.post("/api/v1/sync/pull")
+    assert client.get("/api/v1/memories/retired-note",
+                      params={"include_invalidated": True}).json()["status"] == "contradicted"

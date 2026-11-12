@@ -286,6 +286,20 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.4（main）：把 372 号复核建议里成立的部分逐条打掉
+
+`msc-provenance-review-20261113`（记忆 id 372）只读复核了出处机制，给了 12 条建议。这一版执行其中七条，按重要性排：
+
+- **小结不再把已被推翻的记忆当原料（P0）** — `memories_in_window` 只过滤 `archived`，于是原件被推翻后仍会进每日小结的输入，摘要再落成**一条新的 active 记忆**：复核说过"这不成立了"，小结说"今天发生了这些"，而新落成那条比原件更难被质疑 —— 没人记得它曾被推翻。现在三条选材路径（当天窗口、手动勾选、搜索结果）都先分开可用作料与已推翻项：后者不进提示词、响应里 `contradicted_skipped` 点名、`/summarize/window` 报 `contradicted_hidden`、全自动小结把"另有 N 条未纳入"写进正文（那条路径没有别的听众）。全选都是被推翻的 → 422，并提示先 `verify`。
+- **小结自动挂出处** — 新建的小结记忆带 `refs=["mem:<来源 slug>"]`（上限 60）：`preflight` 从此能回答"这篇小结所依据的那几条还在不在"。
+- **相关推荐不再推出被推翻的记忆（P1）** — `/search/recommend/{slug}` 与 RAG 各腿同源（`models.contradicted_ids` 一处定义，NULL 安全）。**图谱刻意相反**：节点保留，`GraphNode` 带上 `status`，UI 画灰、标签写明"已被推翻" —— 图谱是复核面，一个退休信念还连着什么正是复核者最需要的结构。
+- **文件通道认识 refs（P1）** — `refs:` 写进 frontmatter，`status/invalidated_reason` 也镜像出去**但只读不回库**（复位是复核动作，不是改一行的动作）。真正的根因在同步指纹：`file_sync_hash` 以前只哈希正文，所以**手改 frontmatter 的行 pull 根本不会看** —— 现在指纹覆盖导入会读的每个字段。缺失的 `refs:` 键与空值区别对待：前者是"这文件没说话"，后者是"这条没有出处"；写坏的片段（`commit:`）丢弃而不是让整次导入失败。
+- **探针不再问自己（追加 #11）** — `url:` 指向本服务自身时回 `unchecked`：在自家请求处理里去探自家端点，是排在问自己的队后面，不是复核。
+- **超时不再算"没了"（追加 #12）** — 只有连不上/DNS 不解析才算 `missing`；超时与意外失败回 `unchecked`。一个活着但慢的服务（模型在跑、NAS 在转）不该被探针造出过时分。
+- **按出处反查（P2 #8）** — `GET /memories?ref=file:/etc/hosts` 回答"这个端点/文件/提交要没了，哪些记忆站在它上面"。JSON 数组按整元素匹配（`/etc/host` 不会命中 `/etc/hostname`），路径里的 `%` `_` 先转义，`X-Total-Count` 就是要影响的条数。
+
+没做的：`stale` 的时间衰减（#7）、`invalidate/verify` 的乐观锁与复核历史（#9）、`preflight` 的上万条量级优化（#10）—— 三条都记在 372 里等下一次排期。
+
 ### 2.6.3（main）：Web UI 里能推翻、能复核
 
 出处与三态自 2.6.0 起只在 API 里活着：线上 **113 条记忆 contradicted = 0**，不是库全对，是没人能触发 —— UI 不显示 `refs`/`status`，没有"显示被推翻的"开关，也没有复核按钮。这一版把那扇门开在页面上。

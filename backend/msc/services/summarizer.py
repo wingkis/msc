@@ -20,9 +20,15 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from msc.filesystem.write_through import delete_through, write_through
-from msc.models import Memory, MemoryRelation, MemoryVersion, ModelConfig, SummaryRun, Tag
+from msc.models import (Memory, MemoryRelation, MemoryVersion, ModelConfig,
+                      SummaryRun, Tag, contradicted_ids)
+from msc.schemas import dump_refs
 from msc.services import llm
 from msc.text import clean_body, normalize_tags
+
+# A digest over 500 rows is a wall of refs nobody reads; the newest sources
+# are the ones a re-check would act on anyway.
+REFS_PER_DIGEST = 60
 
 SYSTEM_PROMPT = "你是一个严谨的中文记忆库整理助手。只输出要求的 Markdown，不要寒暄。"
 
@@ -217,8 +223,25 @@ def due_period(cfg: ModelConfig, now: datetime, attempted: Sequence[str]) -> Opt
 
 # ── Collecting the input ─────────────────────────────────────────────
 
-def memories_in_window(db: Session, cfg: ModelConfig, period: str) -> List[Memory]:
-    """Live memories created or updated inside one local calendar day."""
+def window_memories(db: Session, cfg: ModelConfig, period: str) -> Tuple[List[Memory], List[Memory]]:
+    """(还能用的记忆, 同一天里已被推翻的记忆)。
+
+    A digest is not a reader of memory, it is a *writer*: whatever it folds in
+    comes back out as one new active memory that reads better than any of its
+    sources. Leaving a contradicted belief in that input laundered it — the
+    re-check said "this no longer holds", the digest said "here is what
+    happened today", and the new row is harder to question than the old one
+    because nobody remembers it was ever doubted. The dropped ones are counted
+    and named back to the caller rather than vanishing.
+    """
+    picked, retired = [], []
+    for memory in _rows_in_window(db, cfg, period):
+        (retired if (memory.status or "active") == "contradicted" else picked).append(memory)
+    return picked, retired
+
+
+def _rows_in_window(db: Session, cfg: ModelConfig, period: str) -> List[Memory]:
+    """Every memory created or updated inside one local calendar day."""
     _, start_iso, end_iso = day_bounds(cfg, date.fromisoformat(period))
     start = parse_ts(start_iso)
     end = parse_ts(end_iso)
@@ -234,6 +257,18 @@ def memories_in_window(db: Session, cfg: ModelConfig, period: str) -> List[Memor
             picked.append(memory)
     picked.sort(key=lambda m: m.updated_at or m.created_at or "")
     return picked
+
+
+def memories_in_window(db: Session, cfg: ModelConfig, period: str) -> List[Memory]:
+    """The live half of one local calendar day — what a digest may consume."""
+    return window_memories(db, cfg, period)[0]
+
+
+def split_contradicted(db: Session, memories: Sequence[Memory]) -> Tuple[List[Memory], List[Memory]]:
+    """Partition an explicit selection the same way the daily window is split."""
+    gone = contradicted_ids(db)
+    live = [m for m in memories if m.id not in gone]
+    return live, [m for m in memories if m.id in gone]
 
 
 def source_block(memories: Sequence[Memory], max_input_chars: int) -> Tuple[str, List[Memory], int]:
@@ -445,7 +480,11 @@ def run_summary(db: Session, cfg: ModelConfig, memories: Sequence[Memory], *, ac
     memory = Memory(slug=slug, name=digest_name, description=first_paragraph(markdown),
                     body=body, priority=digest_priority, category=digest_category,
                     lifespan="permanent", branch="", created_at=now, updated_at=now,
-                    source="msc")
+                    # mem: refs are the digest's provenance: preflight can answer
+                    # "are the memories this was folded from still live", and a
+                    # source that later gets contradicted shows up there.
+                    source="msc",
+                    refs=dump_refs([f"mem:{m.slug}" for m in kept][:REFS_PER_DIGEST]))
     db.add(memory)
     db.flush()
 

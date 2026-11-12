@@ -20,7 +20,7 @@ from msc.services import llm
 from msc.services.model_config import get_config, note_result, public_view, update_config
 from msc.services.summarizer import (
     SEARCH_GROUNDING, SEARCH_PROMPT_TEMPLATE, SEARCH_SYNTHESIS, day_bounds,
-    memories_in_window, restore_sources, run_summary,
+    restore_sources, run_summary, split_contradicted, window_memories,
 )
 
 router = APIRouter()
@@ -211,20 +211,30 @@ def summarize_window(day: Optional[str] = Query(None, description="YYYY-MM-DD, c
     a model call on it."""
     cfg = get_config(db)
     period, start, end = day_bounds(cfg, _parse_day(day))
-    memories = memories_in_window(db, cfg, period)
+    memories, retired = window_memories(db, cfg, period)
     return {
         "period": period, "start": start, "end": end, "count": len(memories),
+        # Named, not swallowed: the scope preview is where an operator finds out
+        # the day contained a belief a re-check had already retired.
+        "contradicted_hidden": len(retired),
+        "contradicted": [{"slug": m.slug, "name": m.name} for m in retired],
         "timezone": cfg.auto_timezone or "container",
         "memories": [{"id": m.id, "slug": m.slug, "name": m.name, "updated_at": m.updated_at}
                      for m in memories],
     }
 
 
-def _resolve_refs(db: Session, refs: List[str]) -> Tuple[List[Memory], List[str]]:
-    """Memory rows for slugs/ids, plus the references that resolved to nothing.
+def _resolve_refs(db: Session, refs: List[str]) -> Tuple[List[Memory], List[str], List[str]]:
+    """(可用记忆, 解析不到任何东西的引用, 已被推翻因而不能当料的那些 slug)。
 
     A digest over a search result set runs while the page still shows rows that
-    may have been deleted elsewhere, so partial resolution is normal."""
+    may have been deleted elsewhere, so partial resolution is normal. A
+    contradicted row resolves perfectly and still must not be fed in: a digest
+    is a *writer*, and whatever it folds in comes back out as one new active
+    memory that reads better than any of its sources — the re-check said "this
+    no longer holds", the digest says "here is what happened", and the new row
+    is harder to question than the one it came from.
+    """
     memories: List[Memory] = []
     missing: List[str] = []
     for ref in refs:
@@ -235,7 +245,8 @@ def _resolve_refs(db: Session, refs: List[str]) -> Tuple[List[Memory], List[str]
             continue
         if memory not in memories:
             memories.append(memory)
-    return memories, missing
+    live, retired = split_contradicted(db, memories)
+    return live, missing, [m.slug for m in retired]
 
 
 @router.post("/summarize/selected")
@@ -249,8 +260,12 @@ def summarize_selected(data: SummarizeRequest, request: Request, db: Session = D
     if not data.slugs:
         raise HTTPException(status_code=422, detail="要先选择至少一条记忆")
 
-    memories, missing = _resolve_refs(db, data.slugs)
+    memories, missing, retired = _resolve_refs(db, data.slugs)
     if not memories:
+        if retired:
+            raise HTTPException(status_code=422, detail=(
+                f"选中的 {len(retired)} 条都已被推翻，不能折进新小结: {', '.join(retired[:5])}"
+                "（确认它仍成立就先复核为成立：POST /{slug}/verify）"))
         raise HTTPException(status_code=404,
                             detail=f"选中的记忆都不存在: {', '.join(missing[:5])}")
 
@@ -265,6 +280,7 @@ def summarize_selected(data: SummarizeRequest, request: Request, db: Session = D
         raise HTTPException(status_code=502, detail=str(exc))
 
     result["missing"] = missing
+    result["contradicted_skipped"] = retired
     return result
 
 
@@ -287,8 +303,11 @@ def summarize_search(data: SummarizeRequest, request: Request, db: Session = Dep
     if not data.slugs:
         raise HTTPException(status_code=422, detail="先搜索出结果，再点「搜索并总结」")
 
-    memories, missing = _resolve_refs(db, data.slugs)
+    memories, missing, retired = _resolve_refs(db, data.slugs)
     if not memories:
+        if retired:
+            raise HTTPException(status_code=422, detail=(
+                f"这些记忆都已被推翻，不能用来回答: {', '.join(retired[:5])}"))
         raise HTTPException(status_code=404,
                             detail=f"这些记忆已不存在: {', '.join(missing[:5])}")
 
@@ -313,6 +332,7 @@ def summarize_search(data: SummarizeRequest, request: Request, db: Session = Dep
         raise HTTPException(status_code=502, detail=str(exc))
 
     result["missing"] = missing
+    result["contradicted_skipped"] = retired
     result["query"] = query
     return result
 
@@ -327,7 +347,7 @@ def summarize_daily(data: SummarizeRequest, request: Request, db: Session = Depe
 
     cfg = get_config(db)
     period, _, _ = day_bounds(cfg, _parse_day(data.date))
-    memories = memories_in_window(db, cfg, period)
+    memories, retired = window_memories(db, cfg, period)
 
     try:
         return run_summary(
@@ -335,6 +355,7 @@ def summarize_daily(data: SummarizeRequest, request: Request, db: Session = Depe
             name=data.name or "", category=data.category or "", priority=data.priority or "",
             tags=data.tags, archive_sources=data.archive_sources,
             instruction=data.instruction or "", date_range=period, dry_run=data.dry_run,
+            note=f"范围内另有 {len(retired)} 条已被推翻的记忆，未纳入本小结。" if retired else "",
         )
     except llm.LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc))

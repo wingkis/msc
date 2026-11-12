@@ -103,6 +103,74 @@ def test_a_write_that_stores_no_refs_says_so(client):
     assert "X-Provenance-Hint" in seeded.headers
 
 
+def test_one_ref_can_be_asked_who_believes_it(client):
+    """The highest-leverage re-check is not per memory but per handle: a port is
+    being retired, a file is about to move, a commit is getting reverted. Which
+    memories stand on it? Matches whole array elements, so /etc/host does not
+    answer for /etc/hostname, and a _ in a path is a character, not a wildcard.
+    """
+    narrow = _create(client, "Prov Impact Narrow", refs=["file:/etc/host"])
+    broad = _create(client, "Prov Impact Broad", refs=["file:/etc/hostname"])
+    _create(client, "Prov Impact None")
+
+    found = client.get("/api/v1/memories", params={"ref": "file:/etc/host", "tag": "provtest"}).json()
+    assert [item["slug"] for item in found] == [narrow]
+    assert client.get("/api/v1/memories", params={"ref": "file:/etc/hostname",
+                                                  "tag": "provtest"}).json()[0]["slug"] == broad
+    assert client.get("/api/v1/memories", params={"ref": "file:/etc/nosuch",
+                                                  "tag": "provtest"}).json() == []
+
+
+def test_related_recommendations_drop_a_retired_belief(client):
+    """The 「相关」 leg reads relations, and relations survive an invalidation:
+    without this filter a contradicted memory keeps being handed back as the
+    neighbour of whatever is being read."""
+    live = _create(client, "Prov Rec Live")
+    retired = _create(client, "Prov Rec Retired")
+    client.post(f"/api/v1/memories/{live}/relate", params={"target": retired})
+    assert client.post(f"/api/v1/memories/{retired}/invalidate",
+                       json={"reason": "re-check said no"}).status_code == 200
+
+    recommended = client.get(f"/api/v1/search/recommend/{live}").json()
+    assert retired not in [item["slug"] for item in recommended]
+    # the edge is still there — the belief is retired, not erased
+    assert retired in [node["slug"] for node in
+                       client.get("/api/v1/memories/graph", params={"center": live}).json()["nodes"]]
+
+
+def test_the_graph_draws_a_retired_node_instead_of_hiding_it(client):
+    """The graph is the audit surface: what a retired belief was still wired to
+    is exactly what a reviewer needs. So the node stays, carrying its status."""
+    live = _create(client, "Prov Graph Live")
+    retired = _create(client, "Prov Graph Retired")
+    client.post(f"/api/v1/memories/{live}/relate", params={"target": retired})
+    client.post(f"/api/v1/memories/{retired}/invalidate", json={"reason": "stale by host"})
+
+    nodes = {n["slug"]: n for n in
+             client.get("/api/v1/memories/graph", params={"center": live}).json()["nodes"]}
+    assert nodes[retired]["status"] == "contradicted"
+    assert nodes[live]["status"] == "active"
+
+
+def test_a_service_that_probes_itself_says_so_instead_of_guessing(client):
+    """Answering a probe of your own endpoint from inside that request is not a
+    check — it is queueing behind yourself. Silence here once read "the endpoint
+    is gone", which contradicted memories for nothing."""
+    base = client.get("/api/v1/meta").json()["base_url"]
+    slug = _create(client, "Prov Self Probe", refs=[
+        f"url:{base}/api/v1/help", f"url:{base}/api/v1/preflight",
+        "url:http://127.0.0.1:1/nothing-listens-here"])
+
+    item = client.get("/api/v1/memories/preflight", params={"slug": slug}).json()["items"][0]
+    verdicts = {probe["ref"]: probe for probe in item["probes"]}
+    for own in (f"url:{base}/api/v1/help", f"url:{base}/api/v1/preflight"):
+        assert verdicts[own]["verdict"] == "unchecked" and "oneself" in verdicts[own]["detail"]
+    # refused connection is real evidence, and stays `missing`
+    assert verdicts["url:http://127.0.0.1:1/nothing-listens-here"]["verdict"] == "missing"
+    # a memory whose only hard evidence is a self-probe is uncheckable, not dead
+    assert item["verdict"] == "contradicted"  # the refused port is genuinely gone
+
+
 def test_preflight_can_narrow_to_a_single_memory(client):
     """The UI re-checks the row it has open. Sweeping the whole library to ask
     about one belief is the wrong tool, and a GET must still never write."""

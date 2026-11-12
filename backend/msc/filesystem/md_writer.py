@@ -20,6 +20,8 @@ def write_memory_file(slug: str, name: str, description: str, body: str,
                       tags: List[str] = None, priority: str = "medium",
                       category: str = "reference", lifespan: str = "permanent",
                       branch: str = "", created: str = None, updated: str = None,
+                      refs: List[str] = None, status: str = "",
+                      invalidated_reason: str = "",
                       memory_dir: Path = None) -> Path:
     """Write a memory as a markdown file with frontmatter.
 
@@ -43,6 +45,19 @@ def write_memory_file(slug: str, name: str, description: str, body: str,
     lines.append(f"lifespan: {lifespan}")
     if branch:
         lines.append(f"branch: {branch}")
+    if refs:
+        # Comma separated: a ref is one "<kind>:<target>" and every kind's
+        # target is a path, a sha, a slug or a URL — none of which contain a
+        # comma in practice. A cmd: ref that does gets split on the way back
+        # in, and the fragment without a valid prefix is dropped, not stored.
+        lines.append(f"refs: {_escape_frontmatter_value(', '.join(refs))}")
+    # status is mirrored so a reader of the file learns the memory was retired;
+    # it is deliberately NOT read back (see workers/sync_worker.py). Recovery is
+    # an act of checking, not of editing a line.
+    if status and status != "active":
+        lines.append(f"status: {status}")
+    if invalidated_reason:
+        lines.append(f"invalidated_reason: {_escape_frontmatter_value(invalidated_reason)}")
     if created:
         lines.append(f"created: {created}")
     if updated:
@@ -85,6 +100,9 @@ def update_memory_file(slug: str, **kwargs) -> Path:
         branch=file_data.get("branch", ""),
         created=file_data.get("created", ""),
         updated=file_data.get("updated", ""),
+        refs=file_data.get("refs") or [],
+        status=file_data.get("status", "") or "",
+        invalidated_reason=file_data.get("invalidated_reason", "") or "",
     )
 
 

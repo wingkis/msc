@@ -2,8 +2,9 @@
 
 Dropping or editing a markdown file in the memory directory is the simplest
 agent workflow there is, so the file side has to be a first-class writer:
-name, body, tags and metadata all flow back into the DB, and a brand new file
-becomes a memory instead of being ignored.
+name, body, tags, refs and metadata all flow back into the DB, and a brand new
+file becomes a memory instead of being ignored. Provenance rides along; the
+re-check verdicts (`status`) deliberately do not.
 """
 
 import time
@@ -11,9 +12,10 @@ from datetime import datetime, timezone
 
 from msc.config import get_settings
 from msc.database import SessionLocal
-from msc.filesystem.md_reader import list_memory_files, read_memory_file
+from msc.filesystem.md_reader import list_memory_files, read_memory_file, sync_digest
 from msc.models import Memory, Tag
-from msc.text import body_hash, clean_body, normalize_tags
+from msc.schemas import dump_refs
+from msc.text import clean_body, normalize_tags
 
 settings = get_settings()
 
@@ -60,7 +62,17 @@ def _from_file(db, slug: str, data: dict, memory: Memory = None) -> Memory:
     memory.category = _safe(data.get("category", "reference"), CATEGORIES, memory.category or "reference")
     memory.lifespan = _safe(data.get("lifespan", "permanent"), LIFESPANS, memory.lifespan or "permanent")
     memory.branch = data.get("branch", "") or ""
-    memory.last_sync_hash = body_hash(body)
+    # A missing `refs:` key means "this file says nothing about provenance" —
+    # every file written before 2.6.4 lacks it, and treating that as an empty
+    # list would wipe the library's refs on the next pull. An empty *value*
+    # (`refs:`) is an explicit statement and does clear them.
+    if data.get("refs") is not None:
+        memory.refs = dump_refs(data["refs"])
+    # `status` and `invalidated_reason` are mirrored into the file for readers
+    # but are never read back. The file channel is an editor, and editing a line
+    # must not be able to restore a belief a re-check contradicted — the same
+    # rule PUT has followed since 2.6.0, and easier to trip here by accident.
+    memory.last_sync_hash = sync_digest(data)
     memory.updated_at = data.get("updated") or now
     _apply_tags(db, memory, data.get("tags", []))
     return memory
@@ -77,8 +89,8 @@ def run_sync_cycle() -> dict:
             if not data:
                 continue
 
-            body = clean_body(data.get("body", ""))
-            digest = body_hash(body)
+            # A fingerprint of every field the import reads — see md_reader.sync_digest.
+            digest = sync_digest(data)
             memory = db.query(Memory).filter(Memory.slug == slug).first()
 
             if memory is None:

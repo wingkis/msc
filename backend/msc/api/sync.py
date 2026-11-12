@@ -13,6 +13,7 @@ from msc.filesystem.md_reader import (
     file_sync_hash, list_memory_files,
 )
 from msc.filesystem.md_writer import write_memory_file
+from msc.schemas import parse_refs
 from msc.schemas import SyncConflictResolve
 
 settings = get_settings()
@@ -50,6 +51,8 @@ def sync_push(request: Request, db: Session = Depends(get_db)):
                 body=mem.body or "", tags=tag_names, priority=mem.priority,
                 category=mem.category, lifespan=mem.lifespan,
                 branch=mem.branch or "", created=mem.created_at, updated=mem.updated_at,
+                refs=parse_refs(mem.refs), status=mem.status or "",
+                invalidated_reason=mem.invalidated_reason or "",
             )
             mem.last_sync_hash = file_sync_hash(mem.slug)
             written += 1

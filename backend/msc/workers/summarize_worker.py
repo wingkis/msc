@@ -15,7 +15,7 @@ from msc.database import SessionLocal
 from msc.services import llm
 from msc.services.model_config import get_config
 from msc.services.summarizer import (
-    done_periods, due_period, memories_in_window, run_summary,
+    done_periods, due_period, run_summary, window_memories,
 )
 
 settings = get_settings()
@@ -38,11 +38,14 @@ def run_due(now: datetime = None) -> dict | None:
         if not period:
             return None
 
-        memories = memories_in_window(db, cfg, period)
-        print(f"Auto digest: {period} ({len(memories)} memories)")
+        memories, retired = window_memories(db, cfg, period)
+        print(f"Auto digest: {period} ({len(memories)} memories, {len(retired)} contradicted)")
+        # An automated digest has nobody watching its response, so the only
+        # place it can say "I left these out" is inside itself.
+        note = f"范围内另有 {len(retired)} 条已被推翻的记忆，未纳入本小结。" if retired else ""
         return run_summary(
             db, cfg, memories, actor="auto-summary", kind="auto", period=period,
-            date_range=period,
+            date_range=period, note=note,
         )
     except llm.LLMError as exc:
         print(f"Auto digest failed: {exc}")

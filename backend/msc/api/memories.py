@@ -270,6 +270,8 @@ def list_memories(
                            "(the default hides them; X-Contradicted-Hidden says how many)"),
     since: Optional[str] = Query(None, description="Only memories updated at/after this ISO timestamp"),
     q: Optional[str] = Query(None, description="Substring match on name/description/body/slug"),
+    ref: Optional[str] = Query(None, description="Impact lookup: memories citing this "
+                                                "exact ref, e.g. ?ref=file:/etc/hosts"),
     order: str = Query("updated", pattern="^(updated|created|priority|name)$"),
     limit: int = Query(50, le=500), offset: int = Query(0),
     response: Response = None,
@@ -288,6 +290,15 @@ def list_memories(
     if branch: query = query.filter(Memory.branch == branch)
     if tag: query = query.join(Memory.tags).filter(Tag.name.in_(normalize_tags(tag)))
     if since: query = query.filter(Memory.updated_at >= since)
+    if ref:
+        # Impact analysis: "this endpoint/file/commit is going away — who
+        # believes it?" refs live in a JSON array, so matching the quoted form
+        # compares whole elements instead of letting file:/etc/host hit
+        # file:/etc/hostname. Path targets are full of _ and %, so LIKE's own
+        # wildcards are escaped before the pattern is built.
+        target = ref.strip()
+        escaped = target.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(Memory.refs.like(f'%"{escaped}"%', escape="\\"))
     if q:
         like = f"%{q}%"
         query = query.filter(
@@ -374,7 +385,8 @@ def get_graph(center: Optional[str] = Query(None),
         memories = db.query(Memory).filter(Memory.archived == 0).all()
 
     nodes = [GraphNode(id=mem.id, slug=mem.slug, name=mem.name,
-                       category=mem.category, priority=mem.priority, color=_category_color(mem.category))
+                       category=mem.category, priority=mem.priority, color=_category_color(mem.category),
+                       status=mem.status or "active")
              for mem in memories]
     memory_ids = {m.id for m in memories}
     # Relations are stored in both directions, so fold each pair into one edge.
@@ -473,6 +485,37 @@ def _mount_visible(path: str) -> bool:
     return False
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "[::1]", ""}
+
+
+def _is_self_url(target: str) -> bool:
+    """Does this ref point back at the service answering the probe?
+
+    A server probing itself while it is inside its own request handler is not
+    doing a check: it is queueing behind the request that asked, so the honest
+    answer is "I cannot tell" — not a timeout-shaped "that endpoint is gone".
+    Any MSC endpoint counts, including one spelled with the LAN address.
+    """
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(target)
+    except ValueError:
+        return False
+    netloc = (parts.netloc or "").lower()
+    if not netloc:
+        return False
+    host, _, port = netloc.partition(":")
+    own_port = port or ("443" if parts.scheme == "https" else "80")
+    public = (settings.public_url or "").lower()
+    public_netloc = urlsplit(public).netloc.lower() if public else ""
+    if public_netloc and netloc == public_netloc:
+        return True
+    if own_port != str(settings.bind_port):
+        return False
+    return host in _LOOPBACK_HOSTS or host == str(settings.bind_host).lower() \
+        or (public_netloc.partition(":")[0] == host and bool(public_netloc))
+
+
 def _url_verdict(status_code: int) -> tuple:
     """Map an HTTP answer onto a provenance verdict: ``(verdict, detail)``.
 
@@ -526,8 +569,11 @@ def _probe_ref(db: Session, ref: str) -> ProbeItem:
     if kind == "url":
         if not target.startswith(("http://", "https://")):
             return ProbeItem(ref=ref, kind=kind, verdict="unchecked", detail="not an http(s) endpoint")
+        if _is_self_url(target):
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                             detail="points at this service; a probe of oneself is not evidence")
+        import httpx
         try:
-            import httpx
             with httpx.Client(timeout=1.5) as probe_client:
                 reply = probe_client.head(target, follow_redirects=True)
                 verdict, detail = _url_verdict(reply.status_code)
@@ -537,10 +583,22 @@ def _probe_ref(db: Session, ref: str) -> ProbeItem:
             if verdict == "retry":
                 verdict, detail = "unchecked", detail
             return ProbeItem(ref=ref, kind=kind, verdict=verdict, detail=detail)
-        except Exception as exc:
-            # No answer at all: the service this ref pointed at is not there.
+        except httpx.TimeoutException as exc:
+            # Something slow is not something gone. A busy service, a request
+            # queued behind a model call, or a 3s NAS all time out, and reading
+            # that as "the endpoint disappeared" manufactures staleness — the
+            # exact error this function exists to avoid.
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                             detail=f"no answer within 1.5s ({type(exc).__name__}); slow is not gone")
+        except httpx.ConnectError as exc:
+            # Nothing listens at that address, or the name does not resolve:
+            # this is the silence that does mean the handle is gone.
             return ProbeItem(ref=ref, kind=kind, verdict="missing",
-                             detail=f"{type(exc).__name__}: {exc}"[:160])
+                             detail=f"cannot connect: {type(exc).__name__}"[:160])
+        except Exception as exc:
+            # An unexpected probe failure says nothing about the endpoint.
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                             detail=f"probe failed: {type(exc).__name__}"[:160])
     # git:/cmd:/host: — the only machine that can answer is the one that wrote
     # it, and the server must not guess on its behalf.
     return ProbeItem(ref=ref, kind=kind, verdict="unchecked",

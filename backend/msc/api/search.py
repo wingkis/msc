@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from msc.database import get_db, engine
 from msc.fts import sanitize_match
-from msc.models import Memory, Tag, MemoryRelation
+from msc.models import Memory, Tag, MemoryRelation, contradicted_ids
 from msc.schemas import parse_refs
 from msc.text import normalize_tags
 
@@ -265,10 +265,15 @@ def recommend_related(slug: str, limit: int = Query(5, le=20), db: Session = Dep
         (MemoryRelation.memory_id_a == mem.id) | (MemoryRelation.memory_id_b == mem.id)
     ).limit(limit).all()
 
+    # A contradicted memory still has its edges, so without this the 「相关」
+    # leg hands a belief back to the reader after a re-check retired it.
+    gone = contradicted_ids(db)
     result = []
     seen = set()
     for rel in related:
         other_id = rel.memory_id_b if rel.memory_id_a == mem.id else rel.memory_id_a
+        if other_id in gone:
+            continue
         other = db.query(Memory).filter(Memory.id == other_id, Memory.archived == 0).first()
         # Relations exist in both directions, so the same memory used to be
         # recommended twice.
