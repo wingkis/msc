@@ -6,8 +6,11 @@ const API_BASE = '/api/v1';
 
 // LAN mode: no token, no login. The backend runs with MSC_AUTH_ENABLED=false,
 // so every request below goes out unauthenticated on purpose.
+// Every write from this page is a human at a keyboard, and the version history
+// is the only place that distinction can survive. Without a name here, a hand
+// curated memory and one the hook wrote at SessionStart look identical later.
 function getHeaders(extra = {}) {
-  return { 'Content-Type': 'application/json', ...extra };
+  return { 'Content-Type': 'application/json', 'X-Agent': 'web-ui', ...extra };
 }
 
 // FastAPI reports validation failures with detail as a LIST of objects, so

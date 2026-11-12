@@ -771,6 +771,18 @@ function reloadCurrentPage() {
 }
 
 // ── Add / Edit Modal ────────────────────────────────────────────────
+// 「人工维护」是 2.6.6 的 no-review 标签：有记录的豁免。勾选框是它唯一的真相源，
+// 所以每个开表单的入口都要显式设值 —— 留着上一条的勾选，下一条就会静默继承豁免，
+// 而静默的豁免正是复核队列反对的那种数。
+function setNoReview(checked) {
+  const box = document.getElementById('form-no-review');
+  if (box) box.checked = !!checked;
+}
+
+function hasNoReview(m) {
+  return (m.tags || []).some(tag => (tag.name || tag) === 'no-review');
+}
+
 function openAddModal() {
   currentEditSlug = null;
   document.getElementById('modal-title').textContent = '新建记忆';
@@ -783,6 +795,7 @@ function openAddModal() {
   currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
+  setNoReview(false);
   document.getElementById('modal-overlay').classList.add('active');
 }
 
@@ -799,6 +812,7 @@ function openEditModal(slug) {
     document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
+    setNoReview(hasNoReview(m));
     document.getElementById('modal-overlay').classList.add('active');
   }).catch(e => alert('加载失败: ' + e.message));
 }
@@ -806,6 +820,18 @@ function openEditModal(slug) {
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('active');
   currentEditSlug = null;
+}
+
+// The checkbox is what the operator sees, so it wins over whatever text the
+// tag box happens to hold: ticked adds the tag, unticked removes it. A stored
+// "no-review" that the box says nothing about would keep a memory exempt after
+// the person maintaining it decided otherwise.
+function memoryFormTags() {
+  const tags = document.getElementById('form-tags').value
+    .split(',').map(tag => tag.trim()).filter(Boolean);
+  const wanted = document.getElementById('form-no-review').checked;
+  const kept = tags.filter(tag => tag !== 'no-review');
+  return wanted ? kept.concat(['no-review']) : kept;
 }
 
 async function saveMemory() {
@@ -816,7 +842,7 @@ async function saveMemory() {
     name,
     description: document.getElementById('form-description').value.trim(),
     body: document.getElementById('form-body').value,
-    tags: document.getElementById('form-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    tags: memoryFormTags(),
     category: document.getElementById('form-category').value,
     priority: document.getElementById('form-priority').value,
     branch: document.getElementById('form-branch').value.trim(),
@@ -1840,6 +1866,7 @@ async function appendVoiceToMemory(slug) {
     document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
+    setNoReview(hasNoReview(m));
     document.getElementById('modal-overlay').classList.add('active');
   } catch (e) {
     toast('打开失败: ' + e.message, 'error');
@@ -1860,6 +1887,7 @@ function createMemoryFromVoice() {
   currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
+  setNoReview(false);
   document.getElementById('modal-overlay').classList.add('active');
 }
 

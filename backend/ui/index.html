@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.6.6">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.6.7">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -887,6 +887,10 @@
           <div class="form-group">
             <label>标签</label>
             <input type="text" id="form-tags" placeholder="逗号分隔">
+            <label class="form-hint" for="form-no-review">
+              <input type="checkbox" id="form-no-review"> 人工维护 · 不参与复核与老化
+            </label>
+            <div class="form-hint">勾上写入 <code>no-review</code>：这条由人自己维护，不降 stale、不进待复核队列，队列的 counts 仍把它点名（有记录的跳过，不是静默消失）。没挂出处的记忆本来就不会老化，但会一直留在「补把手」清单里。</div>
           </div>
           <div class="form-group">
             <label>分支</label>
@@ -1036,10 +1040,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.6.6"></script>
-  <script src="/ui/js/app.js?v=2.6.6"></script>
-  <script src="/ui/js/graph.js?v=2.6.6"></script>
-  <script src="/ui/js/pic.js?v=2.6.6"></script>
+  <script src="/ui/js/api.js?v=2.6.7"></script>
+  <script src="/ui/js/app.js?v=2.6.7"></script>
+  <script src="/ui/js/graph.js?v=2.6.7"></script>
+  <script src="/ui/js/pic.js?v=2.6.7"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

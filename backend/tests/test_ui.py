@@ -217,6 +217,27 @@ def test_memory_detail_can_contradict_and_recheck(client):
         assert selector in css, selector
 
 
+def test_ui_can_mark_a_memory_hand_maintained(client):
+    """「这条我手动维护，别拿它 ageing」得能在页面上点出来，而不是要人记住一个标签串。
+
+    2.6.6 给了 no-review 这条有记录的豁免，但 UI 里没有任何入口打得上它；而
+    lifespan=permanent 看着像答案，实际上 freshness 根本不读 lifespan —— 老化只
+    看有没有出处和上次复核时间。所以这里既要有勾选框，也要在提示里说清它管什么。
+    """
+    html, js = _sources()
+    api = (UI / "js" / "api.js").read_text(encoding="utf-8")
+    assert 'id="form-no-review"' in html
+    assert "人工维护" in html and "no-review" in html
+    for fn in ("setNoReview", "hasNoReview", "memoryFormTags"):
+        assert f"function {fn}" in js, fn
+    # 勾选框赢过文本框：取消勾选必须真的把豁免摘掉
+    assert "tags: memoryFormTags()" in js
+    # 每个开表单的入口都要显式设值，否则上一条的豁免会静默继承到下一条
+    assert js.count("setNoReview(") >= 5, js.count("setNoReview(")
+    # 人写的和 hook 自动写的要在版本历史里分得开
+    assert "'X-Agent': 'web-ui'" in api
+
+
 def test_graph_view_can_cap_edges_per_node(client):
     """The auto-linker writes thousands of keyword edges; one hub then keeps
     the Vis.js layout rotating forever. The cap control and the freeze-on-settle
