@@ -286,6 +286,17 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.3（main）：Web UI 里能推翻、能复核
+
+出处与三态自 2.6.0 起只在 API 里活着：线上 **113 条记忆 contradicted = 0**，不是库全对，是没人能触发 —— UI 不显示 `refs`/`status`，没有"显示被推翻的"开关，也没有复核按钮。这一版把那扇门开在页面上。
+
+- **详情面板的出处区块** — 列出全部 `refs`（`url:`/`mem:` 可点：前者开新标签，后者直接跳到那条记忆），`status` 不是 active 时顶部一条横幅写明原因、时间、上次复核时间。
+- **复核出处** — 按条复核：`GET /memories/preflight` 新增 `slug=` 过滤（为一条记忆扫全库是错的工具），结论逐条显示「成立 / 已失效 / 查不了」。判定词用文字不用颜色：本 UI 只有灰阶，而"绿色"在这里不构成证据。
+- **推翻 / 复核为成立** — 推翻是一张就地展开的表单（原因必填、可填取代它的那条 slug、`contradicted｜stale` 二选一）：把原因写进第二个弹层，等于赌用户不会关掉它。复位只有一个按钮，走 `POST /{slug}/verify {"verdict":"ok"}`。
+- **列表侧** — 「显示被推翻」开关（`include_invalidated`）、卡片上的状态徽章与「出处 N」计数，被推翻的不再伪装成一条活事实。
+- **编辑表单能挂出处** — 新增 refs 输入框；只在内容与打开时不同才发出去。PUT 不传 `refs` 的语义是"不动"，把空框读成"清空全部出处"会一保存就洗掉历史。
+- 版本号统一到 2.6.3。
+
 ### 2.6.2（main）：让写的 agent 自动知道要挂出处
 
 - **help/llms.txt 教到能照抄** — 自 2.6.0 起 `CONVENTIONS` 里写了 `refs` 是什么，但 `POST /memories` 的示例 JSON 里没有那个字段：只 curl API 的 agent 读得懂概念，却不知道往哪个键写。现在 WRITE/EXAMPLES 两处都带上 `"refs":[...]` 的写法，并加一条命令式约定（"写记忆至少挂一个出处；PUT 传了是替换、不传是不动"）与一条复核指引（服务端只判得着 `url:/file:/mem:`，`git:/cmd:/host:` 的回 `unchecked`，那一半由客户端 `cli/msc-verify.sh` 补）。

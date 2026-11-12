@@ -103,6 +103,26 @@ def test_a_write_that_stores_no_refs_says_so(client):
     assert "X-Provenance-Hint" in seeded.headers
 
 
+def test_preflight_can_narrow_to_a_single_memory(client):
+    """The UI re-checks the row it has open. Sweeping the whole library to ask
+    about one belief is the wrong tool, and a GET must still never write."""
+    slug = _create(client, "Prov Preflight One", refs=["mem:prov-nothing-has-this-slug"])
+    _create(client, "Prov Preflight Two", refs=["file:/etc/hostname"])
+
+    report = client.get("/api/v1/memories/preflight",
+                        params={"slug": slug, "budget_ms": 4000}).json()
+    assert report["checked"] == 1
+    item = report["items"][0]
+    assert item["slug"] == slug and item["verdict"] == "contradicted"
+    assert item["probes"][0]["verdict"] == "missing"
+    # reported, not applied
+    assert _status_of(client, slug)["status"] == "active"
+
+    # an unknown slug narrows to nothing rather than falling back to the sweep
+    assert client.get("/api/v1/memories/preflight",
+                      params={"slug": "prov-nothing-has-this-slug"}).json()["items"] == []
+
+
 def test_invalidate_hides_by_default_but_never_quietly(client):
     slug = _create(client, "Prov Contra")
 

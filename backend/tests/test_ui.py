@@ -182,6 +182,32 @@ def test_search_page_offers_a_digest_of_the_hits(client):
         assert selector in css, selector
 
 
+def test_memory_detail_can_contradict_and_recheck(client):
+    """出处、复核、推翻在 UI 里是一条通路，不是一个装饰：详情面板的出处区块、
+    三个按钮、推翻表单的输入、列表里的「显示被推翻」和 api.js 的三个方法，
+    缺一样就只剩一个读得到却动不了的库。"""
+    html, js = _sources()
+    for marker in ('id="detail-probe-btn"', 'onclick="probeCurrentRefs()"',
+                   'id="detail-invalidate-btn"', 'onclick="showInvalidateForm()"',
+                   'id="detail-verify-btn"', 'onclick="verifyCurrentMemory()"',
+                   'id="form-refs"', 'id="filter-invalidated"'):
+        assert marker in html, marker
+    for fn in ("renderRefsBlock", "refChip", "probeCurrentRefs", "renderRefVerdicts",
+               "showInvalidateForm", "hideInvalidateForm", "confirmInvalidate",
+               "verifyMemoryUI", "statusBadge"):
+        assert f"function {fn}" in js, fn
+    for call in ("API.preflight", "API.invalidate", "API.verify", "/memories/preflight",
+                 "/invalidate", "/verify", "include_invalidated"):
+        assert call in js, call
+    # a PUT that omits refs keeps them; the form must not read "untouched" as "delete"
+    assert "currentEditRefs" in js
+
+    css = (UI / "css" / "app.css").read_text(encoding="utf-8")
+    for selector in (".detail-refs", ".ref-chip", ".ref-row", ".verdict-missing",
+                     ".status-badge", ".invalidate-form", ".form-hint"):
+        assert selector in css, selector
+
+
 def test_graph_view_can_cap_edges_per_node(client):
     """The auto-linker writes thousands of keyword edges; one hub then keeps
     the Vis.js layout rotating forever. The cap control and the freeze-on-settle

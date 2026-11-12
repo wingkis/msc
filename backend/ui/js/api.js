@@ -92,6 +92,21 @@ const API = {
     return apiFetch('/memories/archived', { method: 'DELETE' });
   },
 
+  // Provenance. preflight reports verdicts and never writes — turning a
+  // verdict into a status change is an explicit invalidate/verify below.
+  preflight(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return apiFetch('/memories/preflight?' + qs);
+  },
+  invalidate(slug, data) {
+    return apiFetch(`/memories/${encodeURIComponent(slug)}/invalidate`,
+      { method: 'POST', body: JSON.stringify(data || {}) });
+  },
+  verify(slug, data) {
+    return apiFetch(`/memories/${encodeURIComponent(slug)}/verify`,
+      { method: 'POST', body: JSON.stringify(data || {}) });
+  },
+
   // Versions
   listVersions(slug) {
     return apiFetch(`/memories/${encodeURIComponent(slug)}/versions`);

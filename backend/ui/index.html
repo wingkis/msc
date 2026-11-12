@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.6.2">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.6.3">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -184,6 +184,9 @@
         </div>
         <label class="filter-toggle"><input type="checkbox" id="filter-archived"
                                             onchange="loadMemories()"> 显示已归档</label>
+        <label class="filter-toggle"><input type="checkbox" id="filter-invalidated"
+                                            onchange="loadMemories()"
+                                            title="被推翻的记忆默认不列出（数量在响应头 X-Contradicted-Hidden 里）；勾上就一起看">显示被推翻</label>
         <button class="btn btn-ghost btn-sm" onclick="clearFilters()">清除筛选</button>
       </div>
       <div id="selection-bar" class="selection-bar" style="display:none">
@@ -891,6 +894,13 @@
           </div>
         </div>
         <div class="form-group">
+          <label>出处 (refs)</label>
+          <input type="text" id="form-refs"
+                 placeholder="git:1a2b3c4  file:/绝对路径  url:https://…  mem:另一个slug  cmd:当时那条命令  host:主机名"
+                 title="只挂后来人还能复核的。前缀只有 git/file/url/mem/cmd/host，写错直接 422">
+          <div class="form-hint">留空且不改原值：原有的出处保持不动；清空文本框等于删掉全部出处</div>
+        </div>
+        <div class="form-group">
           <label>内容</label>
           <textarea id="form-body" rows="10" placeholder="记忆内容 (Markdown)"></textarea>
         </div>
@@ -915,6 +925,15 @@
         <button class="btn btn-danger" id="detail-delete-btn" onclick="deleteCurrentMemory()">软删除</button>
         <button class="btn btn-hard" onclick="hardDeleteCurrentMemory()">彻底删除</button>
         <button class="btn" id="detail-echo-btn" title="让模型给这条记忆写回响评注（在「洞察」页看结果）" onclick="echoCurrentMemory()">回响</button>
+        <button class="btn btn-ghost" id="detail-probe-btn" style="display:none"
+                title="服务端复核已挂的出处：只报结论，不改库；git:/cmd:/host: 它查不了，会照实说"
+                onclick="probeCurrentRefs()">复核出处</button>
+        <button class="btn btn-danger" id="detail-invalidate-btn" style="display:none"
+                title="复核发现这条已不成立：记下原因、时间和取代它的那条。内容不删——错的信念也是证据"
+                onclick="showInvalidateForm()">推翻</button>
+        <button class="btn btn-primary" id="detail-verify-btn" style="display:none"
+                title="复核确认这条仍然成立。这是它回到列表与搜索的唯一途径——改正文不算数"
+                onclick="verifyCurrentMemory()">复核为成立</button>
         <button class="btn btn-ghost" onclick="closeDetailModal()">关闭</button>
         <button class="btn btn-primary" id="detail-edit-btn" onclick="editCurrentMemory()">编辑</button>
       </div>
@@ -1017,10 +1036,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.6.2"></script>
-  <script src="/ui/js/app.js?v=2.6.2"></script>
-  <script src="/ui/js/graph.js?v=2.6.2"></script>
-  <script src="/ui/js/pic.js?v=2.6.2"></script>
+  <script src="/ui/js/api.js?v=2.6.3"></script>
+  <script src="/ui/js/app.js?v=2.6.3"></script>
+  <script src="/ui/js/graph.js?v=2.6.3"></script>
+  <script src="/ui/js/pic.js?v=2.6.3"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

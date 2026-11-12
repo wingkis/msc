@@ -14,6 +14,17 @@ let selectedSlugs = new Set();
 let modelCard = null;
 let summaryContext = null;
 let visibleMemories = [];
+// The refs a memory had when its edit form opened. saveMemory only sends refs
+// when they differ, so an untouched box can never wipe provenance.
+let currentEditRefs = [];
+
+// preflight verdicts, spelled out: a glyph would say "green tick" to nobody.
+const REF_VERDICT_LABELS = { ok: '成立', missing: '已失效', unchecked: '查不了' };
+const REF_VERDICT_SUMMARY = {
+  active: '服务端能验的都还在。git: / cmd: / host: 它够不着，要回写这条的那台机器上跑 cli/msc-verify.sh。',
+  uncheckable: '服务端一样都验不了 —— 这不是「都错了」，是它够不着。',
+  contradicted: '有出处已经查不到了。确认真的不再成立就点「推翻」写下原因；只是端点搬了家就改 refs。',
+};
 
 // ── Init ────────────────────────────────────────────────────────────
 function initApp() {
@@ -99,6 +110,13 @@ function renderRecentMemories(memories) {
   container.innerHTML = memories.map(m => renderMemoryCard(m)).join('');
 }
 
+// A contradicted memory is not deleted, so it reappears once the filter asks
+// for it — the badge is what stops it reading like a live fact.
+function statusBadge(status) {
+  if (!status || status === 'active') return '';
+  return `<span class="status-badge status-${escAttr(status)}">${status === 'contradicted' ? '已被推翻' : '已过时'}</span>`;
+}
+
 function renderMemoryCard(m) {
   const tagsHtml = (m.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const date = m.updated_at ? m.updated_at.substring(0, 10) : '';
@@ -129,6 +147,8 @@ function renderMemoryCard(m) {
           <span class="category-badge category-${escHtml(m.category)}">${escHtml(m.category)}</span>
           ${tagsHtml}
           ${m.archived ? '<span class="archived-badge">已归档</span>' : ''}
+          ${statusBadge(m.status)}
+          ${(m.refs || []).length ? `<span class="ref-count">出处 ${m.refs.length}</span>` : ''}
           <span class="memory-date">${date}</span>
         </div>
       </div>
@@ -157,8 +177,10 @@ function renderPriorityBars(priorities) {
 // ── Memories List ───────────────────────────────────────────────────
 async function loadMemories() {
   const archived = document.getElementById('filter-archived');
+  const invalidated = document.getElementById('filter-invalidated');
   const params = { limit: 500 };
   if (archived && archived.checked) params.include_archived = 'true';
+  if (invalidated && invalidated.checked) params.include_invalidated = 'true';
 
   try {
     const [memories, branches] = await Promise.all([API.listMemories(params), API.listBranches()]);
@@ -415,6 +437,7 @@ async function showMemoryDetail(slug) {
       </div>
       <div class="detail-description">${escHtml(m.description || '')}</div>
       <div class="detail-body">${escHtml(m.body || '')}</div>
+      <div class="detail-refs">${renderRefsBlock(m)}</div>
       <div id="detail-extra" class="detail-extra"><div class="loading-hint">加载历史与关联…</div></div>
     `;
     document.getElementById('detail-overlay').classList.add('active');
@@ -426,6 +449,14 @@ async function showMemoryDetail(slug) {
     // Same rule as the cards: an archived memory cannot be echoed (the slug
     // lookup skips archived rows), so no button on it either.
     setDetailFooter('detail-echo-btn', !m.archived);
+    // Provenance actions: nothing to probe without refs, and the two verbs are
+    // opposites — a live memory can be contradicted, a contradicted one can
+    // only come back through verify.
+    const live = !m.archived;
+    const settled = (m.status || 'active') === 'active';
+    setDetailFooter('detail-probe-btn', live && (m.refs || []).length > 0);
+    setDetailFooter('detail-invalidate-btn', live && settled);
+    setDetailFooter('detail-verify-btn', live && !settled);
     loadDetailExtra(slug);
   } catch (e) {
     toast('加载失败: ' + e.message, 'error');
@@ -480,6 +511,136 @@ async function loadDetailExtra(slug) {
     `;
   } catch (e) {
     box.innerHTML = `<div class="empty-hint">历史/关联加载失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── Provenance: refs, re-check, contradiction, the only way back ─────
+function refChip(ref) {
+  const kind = String(ref).split(':')[0];
+  const target = String(ref).slice(kind.length + 1);
+  const jumpable = kind === 'url' || kind === 'mem';
+  const go = jumpable ? ` onclick="openRefTarget('${escAttr(kind)}', '${escAttr(target)}')"` : '';
+  const hint = jumpable ? ' title="打开这个出处"' : '';
+  return `<span class="ref-chip ref-${escAttr(kind)}"${go}${hint}>${escHtml(ref)}</span>`;
+}
+
+function openRefTarget(kind, target) {
+  if (kind === 'mem') { showMemoryDetail(target); return; }
+  if (kind === 'url') { window.open(target, '_blank', 'noopener'); return; }
+  toast(kind + ' 的出处要在写它的那台机器上看：' + target, 'info');
+}
+
+// The refs block doubles as the contradiction sheet: a reason typed into a
+// second modal stacked on the first gets lost, and the reason is the one part
+// a later reader cannot reconstruct.
+function renderRefsBlock(m) {
+  const refs = m.refs || [];
+  const status = m.status || 'active';
+  const banner = status === 'active' ? '' : `
+    <div class="status-note">
+      <strong>${status === 'contradicted' ? '已被推翻' : '已过时'}</strong>
+      ${m.invalidated_reason ? ' · ' + escHtml(m.invalidated_reason) : ''}
+      ${m.invalidated_at ? ' · ' + escHtml(fmtDate(m.invalidated_at)) : ''}
+      ${m.verified_at ? ' · 上次复核 ' + escHtml(fmtDate(m.verified_at)) : ''}
+      <div class="ref-note">它不在列表与搜索的默认结果里，但内容一个字没删 —— 错的信念也是证据。</div>
+    </div>`;
+  const chips = refs.length
+    ? `<div class="ref-list">${refs.map(refChip).join('')}</div>`
+    : '<div class="empty-hint">没有挂出处：读者没法复核这条是从哪来的</div>';
+  return `
+    <h4>出处 (${refs.length})</h4>
+    ${banner}
+    ${chips}
+    <div id="detail-ref-verdicts" class="ref-verdicts"></div>
+    <div id="invalidate-form" class="invalidate-form" style="display:none">
+      <input type="text" id="invalidate-reason" placeholder="为什么不成立了（必填，后来人只能看见这句话）">
+      <input type="text" id="invalidate-supersedes" placeholder="取代它的那条 slug（可选）">
+      <select id="invalidate-status">
+        <option value="contradicted">已被推翻</option>
+        <option value="stale">已过时</option>
+      </select>
+      <button class="btn btn-danger btn-sm" onclick="confirmInvalidate()">确认推翻</button>
+      <button class="btn btn-ghost btn-sm" onclick="hideInvalidateForm()">取消</button>
+    </div>`;
+}
+
+async function probeCurrentRefs() {
+  const slug = currentDetailSlug;
+  if (!slug) return;
+  const box = document.getElementById('detail-ref-verdicts');
+  if (box) box.innerHTML = '<div class="loading-hint">复核中…</div>';
+  try {
+    const report = await API.preflight({ slug, budget_ms: 4000 });
+    renderRefVerdicts((report.items || [])[0]);
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="empty-hint">复核失败: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderRefVerdicts(item) {
+  const box = document.getElementById('detail-ref-verdicts');
+  if (!box) return;
+  const probes = (item && item.probes) || [];
+  if (!probes.length) {
+    box.innerHTML = '<div class="empty-hint">这条没有可复核的出处</div>';
+    return;
+  }
+  box.innerHTML = probes.map(p => `
+    <div class="ref-row verdict-${escAttr(p.verdict)}">
+      <span class="ref-verdict">${escHtml(REF_VERDICT_LABELS[p.verdict] || p.verdict)}</span>
+      <span class="ref-target" title="${escAttr(p.detail || '')}">${escHtml(p.ref)}</span>
+    </div>`).join('')
+    + `<div class="ref-note">${escHtml(REF_VERDICT_SUMMARY[item.verdict] || '')}</div>`;
+}
+
+function showInvalidateForm() {
+  const form = document.getElementById('invalidate-form');
+  if (!form) return;
+  form.style.display = '';
+  const reason = document.getElementById('invalidate-reason');
+  if (reason) reason.focus();
+}
+
+function hideInvalidateForm() {
+  const form = document.getElementById('invalidate-form');
+  if (form) form.style.display = 'none';
+}
+
+async function confirmInvalidate() {
+  const slug = currentDetailSlug;
+  if (!slug) return;
+  const reason = (document.getElementById('invalidate-reason').value || '').trim();
+  if (!reason) { toast('写下为什么不成立 —— 原因是后来人唯一的线索', 'error'); return; }
+  const supersededBy = (document.getElementById('invalidate-supersedes').value || '').trim();
+  const status = document.getElementById('invalidate-status').value;
+  const payload = { reason, status };
+  if (supersededBy) payload.superseded_by = supersededBy;
+  try {
+    await API.invalidate(slug, payload);
+    toast(status === 'contradicted' ? `已推翻 ${slug}：退出默认列表，内容保留` : `已把 ${slug} 标为过时`,
+          'info', { actionLabel: '标回成立', action: () => verifyMemoryUI(slug) });
+    showMemoryDetail(slug);
+    reloadCurrentPage();
+  } catch (e) {
+    toast('推翻失败: ' + e.message, 'error');
+  }
+}
+
+function verifyCurrentMemory() {
+  if (currentDetailSlug) verifyMemoryUI(currentDetailSlug);
+}
+
+// verdict "ok" is the ONLY route back to active — editing the body deliberately
+// does not restore a memory, because the session hook rewrites bodies every
+// round and that would launder a wrong belief back into fact nightly.
+async function verifyMemoryUI(slug, verdict = 'ok') {
+  try {
+    const m = await API.verify(slug, { verdict, reason: '在 Web UI 里人工复核' });
+    toast(`已复核 ${slug}: ${m.status === 'active' ? '回到列表与搜索' : m.status}`);
+    if (currentDetailSlug === slug) showMemoryDetail(slug);
+    reloadCurrentPage();
+  } catch (e) {
+    toast('复核写回失败: ' + e.message, 'error');
   }
 }
 
@@ -575,6 +736,8 @@ function openAddModal() {
   document.getElementById('form-body').value = '';
   document.getElementById('form-tags').value = '';
   document.getElementById('form-branch').value = '';
+  document.getElementById('form-refs').value = '';
+  currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
   document.getElementById('modal-overlay').classList.add('active');
@@ -589,6 +752,8 @@ function openEditModal(slug) {
     document.getElementById('form-body').value = m.body || '';
     document.getElementById('form-tags').value = (m.tags || []).map(t => t.name).join(', ');
     document.getElementById('form-branch').value = m.branch || '';
+    currentEditRefs = m.refs || [];
+    document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
     document.getElementById('modal-overlay').classList.add('active');
@@ -613,6 +778,13 @@ async function saveMemory() {
     priority: document.getElementById('form-priority').value,
     branch: document.getElementById('form-branch').value.trim(),
   };
+
+  // refs go out only when the box differs from what the memory had: omitting
+  // them on a PUT means "leave them alone", so an untouched field must never be
+  // read as "delete every ref" — while a cleared one still must be able to.
+  const refs = (document.getElementById('form-refs').value || '')
+    .split(/[\s,]+/).map(part => part.trim()).filter(Boolean);
+  if (refs.join(' ') !== currentEditRefs.join(' ')) data.refs = refs;
 
   try {
     if (currentEditSlug) {
@@ -1621,6 +1793,8 @@ async function appendVoiceToMemory(slug) {
     document.getElementById('form-body').value = (m.body || '') + '\n\n' + text;
     document.getElementById('form-tags').value = (m.tags || []).map(t => t.name).join(', ');
     document.getElementById('form-branch').value = m.branch || '';
+    currentEditRefs = m.refs || [];
+    document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
     document.getElementById('modal-overlay').classList.add('active');
@@ -1639,6 +1813,8 @@ function createMemoryFromVoice() {
   document.getElementById('form-body').value = text;
   document.getElementById('form-tags').value = 'voice';
   document.getElementById('form-branch').value = '';
+  document.getElementById('form-refs').value = 'host:' + location.hostname;
+  currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
   document.getElementById('modal-overlay').classList.add('active');

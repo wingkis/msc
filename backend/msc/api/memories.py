@@ -553,6 +553,7 @@ def preflight(
     budget_ms: int = Query(1200, le=8000, description="Wall-clock ceiling for probing"),
     category: Optional[str] = Query(None), priority: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
+    slug: Optional[str] = Query(None, description="Re-check one memory by slug"),
     include_invalidated: bool = Query(
         True, description="Re-probe contradicted ones too, so a re-check can restore them"),
     db: Session = Depends(get_db),
@@ -568,6 +569,9 @@ def preflight(
     """
     deadline = time.monotonic() + max(0, budget_ms) / 1000.0
     query = db.query(Memory).filter(Memory.archived == 0)
+    # One memory by slug: the UI re-checks the row it has open, and a list-wide
+    # sweep is the wrong tool for a question about a single belief.
+    if slug: query = query.filter(Memory.slug == slug)
     if category: query = query.filter(Memory.category == category)
     if priority: query = query.filter(Memory.priority == priority)
     if tag: query = query.join(Memory.tags).filter(Tag.name.in_(normalize_tags(tag)))
