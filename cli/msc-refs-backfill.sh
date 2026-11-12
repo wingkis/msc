@@ -143,7 +143,15 @@ for slug in $SLUGS; do
         continue
     fi
     body=$(body_of "$slug")
-    [ -n "$body" ] || continue
+    if [ -z "$body" ]; then
+        # Silent skip is how a scan comes to report a clean library by accident:
+        # these rows hold their whole claim in the description, so there is
+        # nothing in a body to parse. Say so — a counted zero is a lie of the
+        # same shape as the GNU-sed empty match on macOS.
+        untouched=$((untouched + 1))
+        printf '  %-46s (正文为空 —— 内容只在描述里，没有可解析的出处)\n' "$slug"
+        continue
+    fi
 
     { ref_host "$body"; ref_gits "$body"; ref_files "$body"; ref_urls "$body"; } \
         | awk 'NF && !seen[$0]++' > /tmp/msc-refs.$$ || true
