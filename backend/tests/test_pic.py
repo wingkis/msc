@@ -1187,9 +1187,14 @@ def test_caption_burst_drains_the_queue_in_one_pass(client, db, photos_dir, monk
     pic_worker.run_once()
     assert _states(db, more) == ["thumb_ready", "thumb_ready"]
 
-    for payload in ({"caption_burst": 2}, {"caption_workers": 9}, {"caption_workers": 0},
+    for payload in ({"caption_burst": 2}, {"caption_workers": 65}, {"caption_workers": 0},
                     {"burst_seconds": 10}, {"burst_seconds": 901}):
         assert client.put("/api/v1/pic/settings", json=payload).status_code == 422
+
+    # The band is 1–64 (the ceiling used to be 8, and this assertion kept the
+    # old number when it moved): pin both edges so the range drifts loudly.
+    for payload in ({"caption_workers": 1}, {"caption_workers": 64}):
+        assert client.put("/api/v1/pic/settings", json=payload).status_code == 200
 
     assert client.put("/api/v1/pic/settings",
                       json={"caption_paused": 0, "caption_burst": 0}).status_code == 200
