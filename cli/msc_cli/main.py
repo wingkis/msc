@@ -549,7 +549,12 @@ def review_due(ctx, limit, priority, category, tag, stale_after_days, only):
                           f"({item['bucket']}, {item['status']}, {age}, "
                           f"{item['last_confirmed']}) :: {'; '.join(item['reasons'])}")
         if not items:
-            console.print("  没有到期项：挂了出处的都在阈值内，缺出处的已被上面的计数点名")
+            sliced = queue.get("only") or "all"
+            if sliced != "all":
+                console.print(f"  这一桶（only={sliced}）没有到期项；到期总数 "
+                              f"{queue.get('total', 0)} 条在上面的分桶计数里")
+            else:
+                console.print("  没有到期项：挂了出处的都在阈值内，缺出处的已被上面的计数点名")
         console.print(f"  范围外（有记录，不是消失）：流水 {counts.get('skipped_flow', 0)} · "
                       f"人工免检 {counts.get('skipped_no_review', 0)} · "
                       f"未到期 {counts.get('not_due', 0)}")
