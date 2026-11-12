@@ -39,12 +39,17 @@ ACTIVE_STATUSES = (None, "", "active")
 #                nothing to re-check. Those memories go to a separate one-time
 #                bucket ("go attach a handle"), and they never age.
 #   flow       — session turn/sess records, digests and echoes have their own
+#                The shape list covers the legacy hook naming too
+#                (`session-summary-<date>`, v2 / v3.4-era): a machine-written
+#                digest is flow whether or not a human later attached refs to
+#                it — the rule asks who maintains it, not who last touched it.
 #                lifecycle (consolidate → archive) and are regenerated, not
 #                re-verified. Note the rule is tag + the auto-generated slug
 #                shapes, NOT the loose `summary` tag: msc-2-1-1-upgrade-summary
 #                carries that tag and is durable knowledge people quote.
 FLOW_TAGS = {"turn", "echo"}
-_FLOW_SLUG = re.compile(r"(?:^|-)(?:turn|sess)-\d|^(?:daily-)?summary-\d")
+_FLOW_SLUG = re.compile(r"(?:^|-)(?:turn|sess)-\d|^(?:daily-)?summary-\d"
+                  r"|^session-summary-\d")
 NO_REVIEW_TAG = "no-review"
 
 

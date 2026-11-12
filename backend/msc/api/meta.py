@@ -203,9 +203,12 @@ CONVENTIONS
     Only memories that carry refs age: with no handle there is nothing to re-check,
     so those rows wait in the "unanchored" bucket instead of on a clock, and an old
     or hand-written memory is never nagged into a status it cannot answer for.
-    Session flow (tag=turn, sess-/summary-/回响 slugs) and anything tagged
-    "no-review" is exempt by record, counted in the census. Rewriting a body is
-    NOT a re-check — only verify clears the clock.
+    Session flow (tag=turn; turn-/sess-/session-summary-/summary- slugs, which
+    covers the legacy hook naming too) and anything tagged "no-review" is exempt
+    by record, counted in the census. A machine-written digest stays flow even
+    after someone attaches refs to it: the rule asks who maintains it, not who
+    last touched it. Rewriting a body is NOT a re-check — only verify clears the
+    clock.
     /meta reports stale / never_verified / no_refs so you can see how honest the
     library is being before you quote it.
   - Send "X-Agent: <your name>" on writes; it is recorded in the version history.

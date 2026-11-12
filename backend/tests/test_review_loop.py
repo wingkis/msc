@@ -202,6 +202,27 @@ def test_session_flow_and_no_review_are_out_of_scope_by_record(client):
     _CREATED.append("daily-summary-20991231")
     assert client.get("/api/v1/memories/review-due").json()["counts"]["skipped_flow"] >= 2
 
+    # the legacy hook naming is flow too, and stays flow when it carries refs:
+    # a machine-written digest is judged by who maintains it, not by who last
+    # touched it — otherwise the same shape sits in two buckets at once.
+    legacy = _create(client, "Legacy Digest", tags=["reviewloop"], refs=["host:testhost"])
+    from msc.database import SessionLocal as _SL
+    from sqlalchemy import text as _text
+    db = _SL()
+    try:
+        db.execute(_text("UPDATE memories SET slug = :n WHERE slug = :o"),
+                   {"n": "session-summary-20991231-legacy", "o": legacy})
+        db.commit()
+    finally:
+        db.close()
+    _CREATED.append("session-summary-20991231-legacy")
+    due = client.get("/api/v1/memories/review-due").json()
+    assert "session-summary-20991231-legacy" not in [i["slug"] for i in due["items"]]
+    assert due["counts"]["skipped_flow"] >= 3
+    decayed = client.post("/api/v1/memories/decay",
+                          params={"stale_after_days": 90, "apply": "true"}).json()["slugs"]
+    assert "session-summary-20991231-legacy" not in decayed
+
 
 def test_queue_census_and_bucket_filter_agree(client):
     """?only must not change what the library contains, only what is listed."""

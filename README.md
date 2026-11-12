@@ -286,6 +286,14 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.8（main）：老命名的会话小结也算流水
+
+清那 19 条 `unanchored` 时撞出来的。`session-summary-<日期>-*` 是 hook v2 / v3.4 时代的自动产物，而 2.6.6 的 flow 正则只认 `turn-`/`sess-`/`summary-`/`daily-summary-` —— 漏了这一代命名，于是机器写的摘要一直躺在"人该去补把手"的清单里，而补把手对它毫无意义：它不是被人维护的，是被流水线整条覆盖写的。
+
+- **补一条形状** — `^session-summary-\d` 进 `_FLOW_SLUG`。判 flow 看的是**谁维护它**，不是谁最后碰过它：那条已经挂着 refs 的 `session-summary-20261105-msc-legacy-cleanup` 从此也算 flow。同一个形状不能因为有人顺手挂过出处，就一半在流水里、一半在待办里 —— 两个答案比一条略粗的规则更糟。
+- **文本跟上** — `/help`、`/llms.txt`、`/meta` 的流水形状列表加上这一代命名，并写明"人挂过 refs 也不改判"。
+- 测试：在既有的流水豁免测试里补了 legacy 形状一段 —— 带 refs 的 `session-summary-20991231-*` 既不进队列也不被 `decay` 盖戳。`224 passed`。
+
 ### 2.6.7（main）：页面上能标「这条我手动维护」
 
 问出来的功能 —— astro 在 Web UI 里手工加的记忆，怎么告诉系统"我自己维护，别拿它 ageing"。2.6.6 造好了豁免机制，但页面上没有任何地方打得上它。
