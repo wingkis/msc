@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MSC Memory</title>
   <script src="/ui/js/vis-network.min.js"></script>
-  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.15">
+  <link rel="stylesheet" href="/ui/css/app.css?v=2.5.16">
 </head>
 <body>
   <!-- Icon sprite (Strata-style line icons: stroke=currentColor, no emoji).
@@ -321,6 +321,8 @@
         <div class="pic-tabs">
           <button class="pic-tab active" data-view="" onclick="picSetView('')">相册</button>
           <button class="pic-tab" data-view="missing" onclick="picSetView('missing')">缺失</button>
+          <button class="pic-tab" data-view="failed" onclick="picSetView('failed')">失败</button>
+          <button class="pic-tab" data-view="ignored" onclick="picSetView('ignored')">已忽略</button>
           <button class="pic-tab" data-view="trash" onclick="picSetView('trash')">回收站</button>
         </div>
         <div class="pic-searchbox">
@@ -375,6 +377,10 @@
         <button class="btn btn-sm btn-danger" id="pic-purge-btn" style="display:none" onclick="picPurgeSelected()">彻底删除所选</button>
         <button class="btn btn-sm" id="pic-keep-btn" style="display:none" onclick="picKeepSelected()">保留缩略图</button>
         <button class="btn btn-sm btn-danger" id="pic-forget-btn" style="display:none" onclick="picForgetSelected()">清除衍生</button>
+        <button class="btn btn-sm" id="pic-retry-btn" style="display:none" onclick="picRetrySelected()"
+                title="回到「待缩略图」重新排队，失败原因清空">重新排队</button>
+        <button class="btn btn-sm btn-ghost" id="pic-ignore-btn" style="display:none" onclick="picIgnoreSelected()"
+                title="worker 不再尝试这些张，原图和失败原因都留着，可在「已忽略」找回">忽略</button>
         <button class="btn btn-sm btn-ghost" onclick="picClearSelection()">取消选择</button>
       </div>
     </section>
@@ -998,6 +1004,9 @@
       <div class="modal-footer">
         <button class="btn" id="pic-detail-orig-btn" onclick="picToggleOriginal()">查看原图</button>
         <a class="btn btn-ghost" id="pic-detail-download" href="#" download><svg class="icon icon--sm" aria-hidden="true"><use href="#i-download"/></svg>下载原图</a>
+        <button class="btn" id="pic-detail-retry-btn" style="display:none" onclick="picRetryCurrent()"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-refresh"/></svg>重新排队</button>
+        <button class="btn btn-ghost" id="pic-detail-ignore-btn" style="display:none" onclick="picIgnoreCurrent()"
+                title="只停这一张：原图与失败原因都留着"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-x"/></svg>忽略</button>
         <button class="btn" id="pic-detail-archive-btn" onclick="picArchiveCurrent()"
                 title="只把这张移进回收站，磁盘上的原图不动，可在回收站恢复"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-trash"/></svg>移入回收站</button>
         <button class="btn btn-ghost" onclick="closePicDetail()">关闭</button>
@@ -1008,10 +1017,10 @@
   <!-- Toast: soft deletes are undoable via the button here; hard deletes are not -->
   <div id="toast" class="toast"></div>
 
-  <script src="/ui/js/api.js?v=2.5.15"></script>
-  <script src="/ui/js/app.js?v=2.5.15"></script>
-  <script src="/ui/js/graph.js?v=2.5.15"></script>
-  <script src="/ui/js/pic.js?v=2.5.15"></script>
+  <script src="/ui/js/api.js?v=2.5.16"></script>
+  <script src="/ui/js/app.js?v=2.5.16"></script>
+  <script src="/ui/js/graph.js?v=2.5.16"></script>
+  <script src="/ui/js/pic.js?v=2.5.16"></script>
   <script>
     // Init app on load
     document.addEventListener('DOMContentLoaded', () => { initApp(); });

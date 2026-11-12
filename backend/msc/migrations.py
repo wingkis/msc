@@ -353,7 +353,7 @@ def ensure_pic_id_autoincrement() -> bool:
                 state TEXT NOT NULL, error_count INTEGER, retry_at TEXT,
                 last_error TEXT, archived INTEGER, deleted_at TEXT,
                 discovered_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                last_seen_at TEXT, missing INTEGER,
+                last_seen_at TEXT, missing INTEGER, ignored INTEGER,
                 CONSTRAINT uq_pic_source_path UNIQUE (source_id, rel_path),
                 CONSTRAINT ck_pic_state CHECK (state IN ('discovered','thumb_ready','captioned','embedded','failed')),
                 CONSTRAINT ck_pic_kind CHECK (kind IN ('photo','screenshot')),
@@ -392,6 +392,10 @@ def ensure_pic_defaults() -> int:
             "UPDATE pic_items SET error_count = 0 WHERE error_count IS NULL")).rowcount
         fixed += conn.execute(text(
             "UPDATE pic_items SET archived = 0 WHERE archived IS NULL")).rowcount
+        # Same trap as missing: the scan writes rows with a raw INSERT, and
+        # every gallery filter says ignored = 0 — a NULL would hide the photo.
+        fixed += conn.execute(text(
+            "UPDATE pic_items SET ignored = 0 WHERE ignored IS NULL")).rowcount
     if fixed:
         _log.info("schema: backfilled %d default value(s) on pic_items", fixed)
     return fixed

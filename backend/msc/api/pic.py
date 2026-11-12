@@ -32,7 +32,8 @@ from msc.schemas import (
 from msc.services.model_config import get_config, public_view
 from msc.services.pic_index import (
     PIC_TUNABLES, lifecycle_counts, pic_semantic_ids, pic_settings,
-    set_pic_setting, source_counts, source_counts_all, state_counts,
+    retry_backlog, set_pic_setting, source_counts, source_counts_all,
+    state_counts,
 )
 from msc.services.rag import rrf_fusion, setting as rag_setting
 
@@ -152,6 +153,8 @@ def _item_view(item: PicItem, source_name: str = "", dup: bool = False) -> dict:
         "archived": bool(item.archived),
         "error_count": item.error_count,
         "last_error": item.last_error,
+        "retry_at": item.retry_at,
+        "ignored": bool(item.ignored),
         "discovered_at": item.discovered_at,
     }
 
@@ -164,6 +167,7 @@ def pic_status(db: Session = Depends(get_db)):
     _require_pic()
     counts = state_counts(db)
     lifecycle = lifecycle_counts(db)
+    waiting = retry_backlog(db)
     per_source = source_counts_all(db)
     tunables = pic_settings(db)
     return {
@@ -174,6 +178,13 @@ def pic_status(db: Session = Depends(get_db)):
         "pending_thumbs": counts.get("discovered", 0),
         "pending_captions": counts.get("thumb_ready", 0),
         "failed": counts.get("failed", 0),
+        # 忽略 is the user saying "stop trying this one": out of counts.failed,
+        # counted here instead. waiting_retry/retry_in_seconds say how much of
+        # the pending queue is parked in a backoff and when it wakes — without
+        # them a healthy queue recovering from an outage looks like a jam.
+        "ignored": lifecycle["ignored"],
+        "waiting_retry": waiting["rows"],
+        "retry_in_seconds": waiting["seconds"],
         "missing": lifecycle["missing"],
         "trashed": lifecycle["trashed"],
         "providers": {purpose: public_view(get_config(db, purpose))
@@ -399,8 +410,9 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
                kind: str = Query(None), q: str = Query("", max_length=200),
                taken_from: str = Query("", max_length=10), taken_to: str = Query("", max_length=10),
                folder: str = Query("", max_length=300, description="源内子目录过滤，如 2024/夏"),
-               view: str = Query("", pattern="^(|gallery|trash|missing)$",
-                                 description="相册 / 回收站 / 缺失(原图已不在源里)"),
+               view: str = Query("", pattern="^(|gallery|trash|missing|failed|ignored)$",
+                                 description="相册 / 回收站 / 缺失(原图已不在源里) / "
+                                             "失败(还能重试) / 已忽略(不再重试)"),
                include_archived: bool = Query(False),
                include_missing: bool = Query(False),
                trash: bool = Query(False, description="（旧参数）等同 view=trash"),
@@ -417,11 +429,20 @@ def list_items(source_id: int = Query(None), state: str = Query(None),
         conditions.append(PicItem.archived == 1)
     elif view == "missing":
         conditions.append(and_(PicItem.archived == 0, PicItem.missing == 1))
+    elif view == "failed":
+        conditions.append(and_(PicItem.archived == 0, PicItem.missing == 0,
+                               PicItem.state == "failed", PicItem.ignored == 0))
+    elif view == "ignored":
+        conditions.append(and_(PicItem.archived == 0, PicItem.state == "failed",
+                               PicItem.ignored == 1))
     else:
         if not include_archived:
             conditions.append(PicItem.archived == 0)
         if not include_missing:
             conditions.append(PicItem.missing == 0)
+        # 已忽略 photos have no tile worth showing in the wall — view=ignored is
+        # where you go to change your mind about them.
+        conditions.append(PicItem.ignored == 0)
     if source_id is not None:
         conditions.append(PicItem.source_id == source_id)
     if state:
@@ -531,6 +552,7 @@ def pic_search(q: str = Query(..., min_length=1), top: int = Query(12, ge=1, le=
     needle = f"%{q.strip()}%"
     kw_rows = (db.query(PicItem.id)
                .filter(PicItem.archived == 0, PicItem.missing == 0,
+                       PicItem.ignored == 0,
                        or_(PicItem.name.like(needle), PicItem.caption.like(needle),
                            PicItem.rel_path.like(needle)))
                .order_by(PicItem.updated_at.desc()).limit(recall).all())
@@ -677,7 +699,7 @@ def restore_item(item_id: int, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/items/batch")
 def batch_items(data: PicItemsBatch, request: Request, db: Session = Depends(get_db)):
-    """Multi-select gallery actions: archive / restore / retry."""
+    """Multi-select gallery actions: archive / restore / retry / ignore."""
     _require_auth(request, db)
     _guard_write()
     _require_pic()
@@ -690,9 +712,21 @@ def batch_items(data: PicItemsBatch, request: Request, db: Session = Depends(get
         for row in rows:
             if row.state != "failed":
                 continue
+            # Back to discovered, and the ignore flag goes with it: retrying
+            # an ignored photo is the user taking it back.
             row.state, row.error_count, row.retry_at, row.last_error = \
                 "discovered", 0, None, None
+            row.ignored = 0
             row.updated_at = now
+            changed += 1
+    elif data.action == "ignore":
+        # Only failures can be ignored, and only while they still are one:
+        # state and last_error stay on the row so 已忽略 can still say why.
+        now = _now_iso()
+        for row in rows:
+            if row.state != "failed" or row.ignored:
+                continue
+            row.ignored, row.retry_at, row.updated_at = 1, None, now
             changed += 1
     elif data.action == "unmissing":
         # 保留: the original is gone but the user wants the tile kept.

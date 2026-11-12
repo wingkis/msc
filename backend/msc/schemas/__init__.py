@@ -287,9 +287,10 @@ class PicItemsBatch(BaseModel):
     """Bulk gallery actions. archive/restore are soft (never touch the
     originals); retry re-queues failed photos; forget deletes only the
     derived rows (thumb/vectors) for vanished photos; unmissing brings a
-    hidden-but-present photo back into the gallery."""
+    hidden-but-present photo back into the gallery; ignore parks a failed
+    photo out of the queue (reason kept, retry undoes it)."""
     ids: List[int] = Field(..., min_length=1, max_length=2000)
-    action: str = Field(..., pattern="^(archive|restore|retry|forget|unmissing)$")
+    action: str = Field(..., pattern="^(archive|restore|retry|forget|unmissing|ignore)$")
 
 
 class PicItemsPurge(BaseModel):

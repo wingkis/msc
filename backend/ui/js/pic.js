@@ -163,6 +163,19 @@ function picChip(cls, html) {
   return `<span class="pic-chip ${cls}">${html}</span>`;
 }
 
+// 失败/已忽略 are counts you can act on, so the chip itself opens that view.
+function picChipBtn(cls, html, view) {
+  return `<span class="pic-chip pic-chip-btn ${cls}" role="button" ` +
+    `title="点开看是哪些" onclick="picSetView('${view}')">${html}</span>`;
+}
+
+// Backoff is invisible work: say how long the queue is parked instead of
+// letting one photo waiting on the model read as a jam.
+function picWaitLabel(seconds) {
+  if (!seconds) return '';
+  return seconds >= 120 ? `等模型 ${Math.ceil(seconds / 60)} 分钟` : `等模型 ${seconds} 秒`;
+}
+
 function renderPicStatusLine(status) {
   const el = document.getElementById('pic-counts');
   if (!el) return;
@@ -172,9 +185,16 @@ function renderPicStatusLine(status) {
   const parts = [];
   if (c.embedded) parts.push(picChip('pic-chip-ok', `已索引 <b>${c.embedded}</b>`));
   if (c.captioned) parts.push(picChip('pic-chip-warn', `待嵌入 <b>${c.captioned}</b>`));
-  if (c.thumb_ready) parts.push(picChip('pic-chip-warn', `待描述 <b>${c.thumb_ready}</b>`));
+  const waiting = status.waiting_retry && status.retry_in_seconds
+    ? `（${picWaitLabel(status.retry_in_seconds)}）` : '';
+  if (c.thumb_ready) {
+    parts.push(picChip('pic-chip-warn', `待描述 <b>${c.thumb_ready}</b>${waiting}`));
+  }
   if (c.discovered) parts.push(picChip('pic-chip-warn', `待缩略图 <b>${c.discovered}</b>`));
-  if (c.failed) parts.push(picChip('pic-chip-bad', `失败 <b>${c.failed}</b>`));
+  if (c.failed) parts.push(picChipBtn('pic-chip-bad', `失败 <b>${c.failed}</b>`, 'failed'));
+  if (status.ignored) {
+    parts.push(picChipBtn('pic-chip-dim', `已忽略 <b>${status.ignored}</b>`, 'ignored'));
+  }
   const scanning = (status.sources || []).filter(s => s.state === 'scanning').length;
   // The 暂停图像描述 / 全开连续描述 switches are visible from the gallery too:
   // chips plus live sync of the settings-page buttons, whoever flipped them
@@ -226,7 +246,8 @@ function fillPicSourceFilter(sources) {
 function picTileHtml(item) {
   const state = item.state || 'discovered';
   const badge = state === 'failed'
-    ? `<span class="pic-badge" title="${escHtml(item.last_error || '')}">失败</span>`
+    ? `<span class="pic-badge" title="${escHtml(item.last_error || '')}">` +
+      `${item.ignored ? '已忽略' : '失败'}</span>`
     : '';
   const match = item.match
     ? `<span class="pic-match pic-match-${item.match}">${item.match === 'both' ? '双命中' : item.match === 'semantic' ? '语义' : '关键词'}</span>`
@@ -258,6 +279,16 @@ function picTileHtml(item) {
     tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
       `<button class="btn" onclick="picKeepOne(${item.id})">保留</button>` +
       `<button class="btn btn-danger" onclick="picForgetOne(${item.id})">清除</button></div>`;
+  }
+  // Failures get the two honest exits: try again, or stop trying. Nothing
+  // here touches the original file.
+  else if (picView === 'failed') {
+    tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
+      `<button class="btn" onclick="picRetryOne(${item.id})">重试</button>` +
+      `<button class="btn btn-ghost" onclick="picIgnoreOne(${item.id})">忽略</button></div>`;
+  } else if (picView === 'ignored') {
+    tileBtns = `<div class="pic-tile-btns" onclick="event.stopPropagation()">` +
+      `<button class="btn" onclick="picRetryOne(${item.id})">重新处理</button></div>`;
   }
   const info = `<div class="pic-tile-info">` +
     `<div class="pic-tile-name">${escHtml(item.name)}</div>${cap}${tileBtns}</div>`;
@@ -373,7 +404,11 @@ function picUpdateEmptyState() {
       ? ['回收站是空的', '相册里的「移入回收站」只动 MSC 的记录，原图不会被删。']
       : picView === 'missing'
         ? ['没有缺失的照片', '原图从源里消失时才会进这个视图，缩略图和描述都还在。']
-        : ['还没有照片', '在「设置 → 照片源」添加目录，worker 每 15 秒推进一段，中断可续传。'];
+        : picView === 'failed'
+          ? ['没有失败的照片', '读不了的原图（损坏、格式不支持、太大）会停在这里，可以重试或忽略。']
+          : picView === 'ignored'
+            ? ['没有已忽略的照片', '「忽略」只是让 worker 不再尝试，原图和失败原因都留着。']
+            : ['还没有照片', '在「设置 → 照片源」添加目录，worker 每 15 秒推进一段，中断可续传。'];
   if (text) text.textContent = copy[0];
   if (hint) hint.textContent = copy[1];
 }
@@ -528,6 +563,9 @@ function updatePicActions() {
   show('pic-purge-btn', picView === 'trash');
   show('pic-keep-btn', picView === 'missing');
   show('pic-forget-btn', picView === 'missing');
+  const failing = picView === 'failed' || picView === 'ignored';
+  show('pic-retry-btn', failing);
+  show('pic-ignore-btn', picView === 'failed');
 }
 
 async function picSelectAll() {
@@ -584,6 +622,42 @@ async function picForgetSelected() {
 }
 async function picKeepOne(id) { await API.picBatch([id], 'unmissing'); loadPics(); }
 async function picForgetOne(id) { await API.picBatch([id], 'forget'); loadPics(); }
+
+// 重试 puts a failure back at discovered; 忽略 parks it out of the queue with
+// its reason kept. Neither touches the original on disk.
+async function picRetrySelected() {
+  try {
+    const r = await API.picBatch([...picSelected], 'retry');
+    toast(`${r.changed} 张已重新排队`, 'success');
+    picClearSelection();
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function picIgnoreSelected() {
+  try {
+    const r = await API.picBatch([...picSelected], 'ignore');
+    toast(`${r.changed} 张已忽略（在「已忽略」里可以找回）`, 'success');
+    picClearSelection();
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function picRetryOne(id) {
+  try {
+    await API.picBatch([id], 'retry');
+    toast('已重新排队', 'success');
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function picIgnoreOne(id) {
+  try {
+    await API.picBatch([id], 'ignore');
+    toast('已忽略，原图未动', 'success');
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
+}
 
 async function picArchiveSelected() {
   const r = await API.picBatch([...picSelected], 'archive');
@@ -681,6 +755,12 @@ async function picShowItem(id) {
     orig.disabled = !it.thumb_available && it.state === 'failed';
     document.getElementById('pic-detail-download').href = API.picOriginalUrl(id);
     picDetailHint(it);
+    // Only failures can be retried or ignored, and an ignored one has
+    // nothing left to ignore.
+    const failing = it.state === 'failed';
+    document.getElementById('pic-detail-retry-btn').style.display = failing ? '' : 'none';
+    document.getElementById('pic-detail-ignore-btn').style.display =
+      (failing && !it.ignored) ? '' : 'none';
     document.getElementById('pic-detail-pos').textContent = picDetailIndex >= 0
       ? `${picDetailIndex + 1} / ${picDetailList.length}` : '';
     document.getElementById('pic-detail-caption').textContent = it.caption || '';
@@ -702,11 +782,39 @@ async function picShowItem(id) {
 
 function picDetailHint(it) {
   const hint = document.getElementById('pic-detail-hint');
+  if (it.state === 'failed') {
+    hint.style.display = '';
+    hint.textContent = (it.ignored ? '已忽略，worker 不再尝试：' : '这张处理失败：')
+      + (it.last_error || '未知原因');
+    return;
+  }
   if (it.thumb_available) { hint.style.display = 'none'; hint.textContent = ''; return; }
+  // A photo parked in a retry backoff looks exactly like one stuck in the
+  // queue, so show the wait and the error that caused it.
+  const wake = it.retry_at ? new Date(it.retry_at).getTime() : 0;
+  const parked = wake > Date.now()
+    ? `（${picWaitLabel(Math.ceil((wake - Date.now()) / 1000))}）` : '';
   hint.style.display = '';
-  hint.textContent = it.state === 'failed'
-    ? `这张处理失败：${it.last_error || '未知原因'}`
-    : '缩略图还没生成，worker 正在排队处理';
+  hint.textContent = `还没处理到，worker 正在排队${parked}` +
+    `${it.last_error ? '：' + it.last_error : ''}`;
+}
+
+async function picRetryCurrent() {
+  try {
+    await API.picBatch([picCurrentId], 'retry');
+    toast('已重新排队', 'success');
+    closePicDetail();
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function picIgnoreCurrent() {
+  try {
+    await API.picBatch([picCurrentId], 'ignore');
+    toast('已忽略，原图未动', 'success');
+    closePicDetail();
+    loadPics();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // 移入回收站 from inside the modal. The photo leaves the wall, so the modal

@@ -391,6 +391,11 @@ class PicItem(Base):
 
     archived = Column(Integer, default=0)       # trash bin, same idea as Memory.archived
     deleted_at = Column(String, nullable=True)
+    # "这条失败我不再管了": a failed row keeps state='failed' and its
+    # last_error (the reason stays readable), but leaves the queue and the
+    # gallery. Kept as a flag rather than a new state because state carries a
+    # CHECK constraint, and because ignoring is reversible: retry clears it.
+    ignored = Column(Integer, default=0)
     discovered_at = Column(String, nullable=False)
     updated_at = Column(String, nullable=False)
 

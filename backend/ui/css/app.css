@@ -1217,6 +1217,9 @@ a:hover { text-decoration-color: currentColor; }
 .pic-chip-bad::before { background: var(--danger); }
 .pic-chip-dim::before { background: var(--text-dim); }
 .pic-chip-live::before { background: var(--info); animation: picPulse 1.4s ease-in-out infinite; }
+/* 失败 / 已忽略 chips are clickable: the number IS the way into that view. */
+.pic-chip-btn { cursor: pointer; }
+.pic-chip-btn:hover { color: var(--text); border-color: var(--text-dim); background: var(--bg-hover); }
 @keyframes picPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
 /* Gallery grid: 4:3 tiles, no caption text stealing height. */

@@ -22,7 +22,6 @@ idles BURST_GAP between passes. See _captions/_embeds.
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from pathlib import Path
 
 from sqlalchemy import or_, text as sql_text
@@ -35,7 +34,8 @@ from msc.services import llm, rag_providers
 from msc.services.model_config import get_config, note_result
 from msc.services.rag import pack_vec
 from msc.services.pic_index import (
-    content_hash, guess_kind, pic_setting, pic_settings, taken_at_from_image,
+    content_hash, guess_kind, open_image, pic_setting, pic_settings,
+    taken_at_from_image,
 )
 
 settings = get_settings()
@@ -44,15 +44,21 @@ settings = get_settings()
 # short enough that the queue never waits on a timer.
 BURST_GAP = 3
 
+# Ceiling for the per-item retry ladder. Doubling from 1 min would reach half
+# an hour by the fifth failure, and an endpoint that came back two minutes ago
+# would still leave the photo looking stuck in the UI. Five minutes is the
+# worst wait a healthy queue can show.
+BACKOFF_CAP_SECONDS = 300
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _backoff(item: PicItem, exc: Exception) -> None:
-    """Transient source failure: keep the state, retry later with 1-32 min steps."""
+    """Transient source failure: keep the state, retry later (1 min … 5 min)."""
     item.error_count = (item.error_count or 0) + 1
-    delay = 60 * (2 ** min(item.error_count, 5))
+    delay = min(BACKOFF_CAP_SECONDS, 60 * (2 ** min(item.error_count, 5)))
     item.retry_at = (_now() + timedelta(seconds=delay)).isoformat()
     item.last_error = str(exc)[:300]
     item.updated_at = _now().isoformat()
@@ -87,10 +93,10 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
             result = db.execute(sql_text(
                 "INSERT OR IGNORE INTO pic_items "
                 "(source_id, rel_path, origin_uri, name, ext, size_bytes, mtime, kind, "
-                " state, archived, missing, error_count, last_seen_at, "
+                " state, archived, missing, ignored, error_count, last_seen_at, "
                 " discovered_at, updated_at) "
                 "VALUES (:p0, :p1, :p2, :p3, :p4, :p5, :p6, :p7, "
-                " 'discovered', 0, 0, 0, :p8, :p8, :p8)"),
+                " 'discovered', 0, 0, 0, 0, :p8, :p8, :p8)"),
                 {"p0": src.id, "p1": entry.rel_path,
                  "p2": f"pic://{src.id}/{entry.rel_path}", "p3": entry.name,
                  "p4": entry.name.rsplit(".", 1)[-1].lower() if "." in entry.name else "",
@@ -110,7 +116,7 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
                 # the touch below, which would overwrite the compared values.
                 swapped = db.execute(sql_text(
                     "UPDATE pic_items SET state = 'discovered', caption = '', "
-                    "tags = '', error_count = 0, retry_at = NULL, "
+                    "tags = '', error_count = 0, retry_at = NULL, ignored = 0, "
                     "last_error = NULL, updated_at = :p8 "
                     "WHERE source_id = :p0 AND rel_path = :p1 AND state <> 'discovered' "
                     "AND (size_bytes IS NOT :p5 OR mtime IS NOT :p6)"),
@@ -122,6 +128,10 @@ def _scan(db, src: PicSource, adapter, report: dict) -> None:
                         "WHERE source_id = :p0 AND rel_path = :p1)"),
                         {"p0": src.id, "p1": entry.rel_path})
                     report["replaced"] = report.get("replaced", 0) + 1
+                # A different file under the same path is a different photo: the
+                # user's 忽略 was about the old bytes, so it is cleared above.
+                # Leaving it set would re-queue a row no view can show (the wall
+                # hides ignored, view=ignored requires state='failed').
                 # Touch (or revive): the original is there RIGHT NOW. Size/mtime
                 # refresh too, so replaced files carry fresh metadata even when
                 # the row predates them. Only existing rows need this — a fresh
@@ -177,12 +187,13 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
     rows = (db.query(PicItem)
             .filter(PicItem.source_id == src.id, PicItem.state == "discovered",
                     PicItem.archived == 0, PicItem.missing == 0,
+                    # 已忽略 rows keep state='failed', so no queue query would pick
+                    # them up anyway — the filter is the invariant written down.
+                    PicItem.ignored == 0,
                     or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
             .order_by(PicItem.id).limit(batch).all())
     if not rows:
         return
-
-    from PIL import Image  # ImportError here is a broken image, not a runtime choice
 
     for item in rows:
         try:
@@ -195,7 +206,9 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
             db.commit()
             continue
         try:
-            with Image.open(BytesIO(raw)) as im:
+            # open_image owns the pixel ceiling: a 200+ Mpx phone panorama is
+            # a real photo, not a bomb (thumbnail() decodes it at 1/8 scale).
+            with open_image(raw) as im:
                 item.width, item.height = im.size
                 item.taken_at, item.taken_at_src = taken_at_from_image(im, item.mtime)
                 item.content_hash = content_hash(len(raw), raw[:1 << 20])
@@ -208,7 +221,7 @@ def _thumbs(db, src: PicSource, adapter, report: dict) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 thumb.save(target, "WEBP", quality=80)
             item.thumb_path = rel_thumb
-            item.last_error = None
+            item.last_error, item.error_count = None, 0
             # Burst shots and re-saved copies: if a sibling already has a
             # caption under the same content hash, inherit it — one vision
             # call saved per duplicate.
@@ -284,7 +297,7 @@ def _caption_apply(db, item, text: str, report: dict) -> None:
         db.commit()
         return
     item.caption, item.tags = caption, tags
-    item.state, item.last_error = "captioned", None
+    item.state, item.last_error, item.error_count = "captioned", None, 0
     item.updated_at = _now().isoformat()
     report["captioned"] = report.get("captioned", 0) + 1
     db.commit()
@@ -370,7 +383,7 @@ def _captions(db, report: dict) -> None:
         now_iso = _now().isoformat()
         rows = (db.query(PicItem)
                 .filter(PicItem.state == "thumb_ready", PicItem.archived == 0,
-                        PicItem.missing == 0,
+                        PicItem.missing == 0, PicItem.ignored == 0,
                         or_(PicItem.retry_at.is_(None), PicItem.retry_at <= now_iso))
                 .order_by(PicItem.id).limit(batch).all())
         if not rows:
@@ -385,8 +398,9 @@ def _captions(db, report: dict) -> None:
 def _embed_chunk(db, cfg, model_name: str, batch: int, report: dict) -> bool:
     """One embed call (a batch of captions → vectors). False = the embed card
     is unhappy; those rows stay captioned and are retried next pass."""
-    rows = (db.query(PicItem).filter(PicItem.state == "captioned", PicItem.archived == 0,
-                                     PicItem.missing == 0)
+    rows = (db.query(PicItem).filter(PicItem.state == "captioned",
+                                     PicItem.archived == 0, PicItem.missing == 0,
+                                     PicItem.ignored == 0)
             .order_by(PicItem.id).limit(batch).all())
     if not rows:
         return True

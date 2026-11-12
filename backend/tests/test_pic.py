@@ -923,12 +923,24 @@ def test_batched_pic_helpers_match_the_per_key_ones(client, db):
         "missing": db.query(PicItem).filter(PicItem.archived == 0,
                                             PicItem.missing == 1).count(),
         "trashed": db.query(PicItem).filter(PicItem.archived == 1).count(),
+        "ignored": db.query(PicItem).filter(PicItem.archived == 0,
+                                            PicItem.ignored == 1).count(),
     }
     assert lifecycle_counts(db) == direct
+    # Flip one failure to 已忽略 and back: the batched query must follow the
+    # flag, not just report the zero case.
+    probe = db.query(PicItem).filter(PicItem.state == "failed").first()
+    if probe is not None:
+        probe.ignored = 1
+        db.commit()
+        assert lifecycle_counts(db)["ignored"] == direct["ignored"] + 1
+        probe.ignored = 0
+        db.commit()
 
     status = client.get("/api/v1/pic/status").json()
     assert status["settings"] == {key: batched[key] for key in PIC_TUNABLES}
     assert status["missing"] == direct["missing"] and status["trashed"] == direct["trashed"]
+    assert status["ignored"] == direct["ignored"]
 
     db.query(PicSetting).filter(PicSetting.key == "thumb_batch").delete()
     db.commit()
@@ -1010,7 +1022,12 @@ def test_tile_urls_carry_the_content_version(client, photos_dir):
 def test_replaced_file_requeues_and_drops_the_stale_vector(client, db, photos_dir):
     """Same path, new bytes: thumb, caption and vector all describe a file
     that no longer exists — the walk demotes the row and evicts the vector so
-    search and display can never keep answering with the old content."""
+    search and display can never keep answering with the old content.
+
+    The row starts out 已忽略: giving up on the old bytes is not giving up on
+    whatever the user saved over them, and a row that comes back to the queue
+    while still ignored belongs to no view at all (the wall hides ignored,
+    view=ignored wants state='failed') — an invisible photo."""
     from msc.models import PicItem, PicSource, PicVector
     from msc.picsources.base import PicEntry
     from msc.services.rag import pack_vec
@@ -1043,6 +1060,13 @@ def test_replaced_file_requeues_and_drops_the_stale_vector(client, db, photos_di
     db.add(PicVector(pic_id=item.id, model="test-embed", dim=1,
                      vec=pack_vec([1.0]), embedded_at="2026-01-01"))
     db.commit()
+    # The embed stage gave up and the user parked it: failed + 已忽略.
+    item.state, item.ignored = "failed", 1
+    item.last_error, item.retry_at = "图片过大", None
+    db.commit()
+    gallery = {"source_id": sid}
+    assert item.id not in [i["id"] for i in
+                           client.get("/api/v1/pic/items", params=gallery).json()["items"]]
     item_id = item.id
 
     # The file behind z.jpg is replaced (size moves): the next walk must
@@ -1057,7 +1081,10 @@ def test_replaced_file_requeues_and_drops_the_stale_vector(client, db, photos_di
     reborn = db.get(PicItem, item_id)
     assert reborn.state == "discovered" and (reborn.caption or "") == ""
     assert reborn.size_bytes == 42
+    assert reborn.ignored == 0 and reborn.last_error is None
     assert db.query(PicVector).filter_by(pic_id=item_id).count() == 0
+    assert item_id in [i["id"] for i in
+                       client.get("/api/v1/pic/items", params=gallery).json()["items"]]
 
     db.query(PicItem).filter(PicItem.source_id == sid).delete()
     db.query(PicSource).filter(PicSource.id == sid).delete()
@@ -1248,4 +1275,211 @@ def test_caption_workers_run_several_vision_calls_at_once(client, db, photos_dir
                                                     "caption_workers": 1}).status_code == 200
     db.query(PicItem).filter(PicItem.source_id == sid).delete()
     db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()
+
+
+# ── 失败要能修、能看懂、能放弃 ────────────────────────────────────────
+
+def test_open_image_ceiling_follows_the_format(monkeypatch):
+    """A 200 Mpx phone panorama is a photo, not a decompression bomb.
+
+    JPEG/MPO thumbnails go through draft(), which decodes at 1/8 DCT scale, so
+    that format gets the loose ceiling; PNG/TIFF/HEIC decode the whole raster
+    and keep Pillow's. Both halves matter: too strict and the panoramas stay
+    failed forever, too loose and one huge PNG silently eats the container.
+    """
+    import io
+
+    from msc.services import pic_index
+
+    jpeg, png = io.BytesIO(), io.BytesIO()
+    Image.new("RGB", (400, 300), "red").save(jpeg, "JPEG")
+    Image.new("RGB", (400, 300), "red").save(png, "PNG")
+    jpeg_bytes, png_bytes = jpeg.getvalue(), png.getvalue()
+
+    assert pic_index.open_image(jpeg_bytes).size == (400, 300)
+    assert pic_index.open_image(png_bytes).size == (400, 300)
+    # Pillow must not judge before open_image sees the format.
+    assert Image.MAX_IMAGE_PIXELS == pic_index.MAX_PIXELS_DRAFT
+
+    monkeypatch.setattr(pic_index, "MAX_PIXELS_PLAIN", 1000)
+    monkeypatch.setattr(pic_index, "MAX_PIXELS_DRAFT", 10_000_000)
+    assert pic_index.open_image(jpeg_bytes).size == (400, 300)
+    with pytest.raises(ValueError, match="图片过大"):
+        pic_index.open_image(png_bytes)
+
+    monkeypatch.setattr(pic_index, "MAX_PIXELS_DRAFT", 1000)
+    with pytest.raises(ValueError, match="图片过大"):
+        pic_index.open_image(jpeg_bytes)
+
+
+def test_backoff_ladder_is_capped_at_five_minutes():
+    """An endpoint that came back two minutes ago must not leave the photo
+    looking stuck for another half hour."""
+    from datetime import datetime, timezone
+
+    from msc.workers import pic_worker
+
+    class Row:
+        error_count = 0
+        retry_at = None
+        last_error = None
+        updated_at = None
+
+    item = Row()
+    waits = []
+    for _ in range(8):
+        pic_worker._backoff(item, RuntimeError("connection refused"))
+        wake = datetime.fromisoformat(item.retry_at)
+        waits.append((wake - datetime.now(timezone.utc)).total_seconds())
+    assert waits[0] <= 121 and waits[1] <= 241     # 2 min, 4 min …
+    assert waits[-1] <= 301                        # … and never past 5 min
+    assert item.error_count == 8                   # the ladder caps, the counter does not
+
+
+def test_caption_success_clears_the_retry_counter(client, db, monkeypatch):
+    """After a hard-fought retry the row must not carry the old streak: a
+    later hiccup should start back at one minute, not at the cap."""
+    from datetime import datetime, timezone
+
+    from msc.models import PicItem, PicSource, PicVector
+    from msc.services import llm, rag_providers
+    from msc.workers import pic_worker
+
+    root = PIC_ROOTS / "retry-streak"
+    root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (60, 40), "teal").save(root / "sea.jpg")
+    sid = client.post("/api/v1/pic/sources", json={
+        "name": "退避清零", "kind": "local", "root_path": str(root)}).json()["id"]
+    for _ in range(3):
+        pic_worker.run_once()
+        db.expire_all()
+        item = (db.query(PicItem).filter(PicItem.source_id == sid,
+                                         PicItem.state == "thumb_ready").first())
+        if item is not None:
+            break
+    assert item is not None, "the thumb stage never produced a thumb_ready row"
+
+    item.error_count, item.retry_at, item.updated_at = 22, None, \
+        datetime.now(timezone.utc).isoformat()
+    db.commit()
+    target_id = item.id
+
+    vision = client.get("/api/v1/pic/status").json()["providers"]["vision"]
+    if not vision["ready"]:
+        assert client.put("/api/v1/model?purpose=vision", json={
+            "base_url": "http://vision.test", "model": "vision-v1"}).status_code == 200
+
+    monkeypatch.setattr(llm, "chat", _caption_chat({}))
+    monkeypatch.setattr(rag_providers, "embed", _pic_fake_embed)
+    pic_worker.run_once()
+
+    db.expire_all()
+    row = db.get(PicItem, target_id)
+    assert row.state in ("captioned", "embedded") and row.error_count == 0
+    assert row.last_error is None and row.retry_at is None
+
+    db.query(PicVector).filter(PicVector.pic_id.in_(
+        [i.id for i in db.query(PicItem).filter(PicItem.source_id == sid).all()])
+    ).delete(synchronize_session=False)
+    db.query(PicItem).filter(PicItem.source_id == sid).delete()
+    db.query(PicSource).filter(PicSource.id == sid).delete()
+    db.commit()
+
+
+def test_status_reports_the_queue_parked_in_backoff(client, db):
+    """One photo waiting out a backoff is not a jam — but the UI can only say
+    that if /pic/status admits the queue is parked, and for how long."""
+    from msc.models import PicItem
+
+    row = (db.query(PicItem)
+           .filter(PicItem.state.in_(["discovered", "thumb_ready", "captioned"]),
+                   PicItem.archived == 0, PicItem.missing == 0)
+           .order_by(PicItem.id.desc()).first())
+    assert row is not None
+    before = client.get("/api/v1/pic/status").json()
+    was_waiting, was_retry_at = before["waiting_retry"], row.retry_at
+
+    from datetime import datetime, timedelta, timezone
+    row.retry_at = (datetime.now(timezone.utc) + timedelta(seconds=240)).isoformat()
+    db.commit()
+    parked = client.get("/api/v1/pic/status").json()
+    assert parked["waiting_retry"] == was_waiting + 1
+    assert 200 <= parked["retry_in_seconds"] <= 241
+    # The queue depth itself is unchanged: parked work is still pending work.
+    assert parked["pending_captions"] == before["pending_captions"]
+
+    row.retry_at = was_retry_at
+    db.commit()
+    assert client.get("/api/v1/pic/status").json()["waiting_retry"] == was_waiting
+
+
+def test_failed_photos_can_be_ignored_and_taken_back(client, db):
+    """忽略 = stop trying, keep the reason, stay reversible.
+
+    Both rows are seeded here: by the end of this module the fixture sources
+    have come and gone, and this test is about the flag, not the pipeline.
+    """
+    from datetime import datetime, timezone
+
+    from msc.models import PicItem, PicSource
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Paused + disabled: the worker leaves these synthetic rows alone, so no
+    # scan can GC a rel_path that never existed on disk.
+    src = PicSource(name="忽略测试", kind="local", root_path=str(PIC_ROOTS / "triage"),
+                    enabled=0, state="paused", created_at=now, updated_at=now)
+    db.add(src)
+    db.commit()
+
+    def seed(rel, state, error=None):
+        row = PicItem(source_id=src.id, rel_path=rel,
+                      origin_uri=f"pic://{src.id}/{rel}", name=rel,
+                      ext=rel.rsplit(".", 1)[-1], state=state, error_count=3 if error else 0,
+                      last_error=error, ignored=0, archived=0, missing=0,
+                      discovered_at=now, updated_at=now)
+        db.add(row)
+        db.commit()
+        return row
+
+    target, healthy = seed("broken.heic", "failed", "cannot identify image file"), \
+        seed("fine.jpg", "embedded")
+    target_id, healthy_id = target.id, healthy.id
+
+    before = client.get("/api/v1/pic/status").json()
+    assert before["failed"] >= 1
+
+    # Only failures can be ignored.
+    assert client.post("/api/v1/pic/items/batch",
+                       json={"ids": [healthy_id], "action": "ignore"}
+                       ).json()["changed"] == 0
+
+    assert client.post("/api/v1/pic/items/batch",
+                       json={"ids": [target_id], "action": "ignore"}
+                       ).json()["changed"] == 1
+    db.expire_all()
+    assert target.ignored == 1 and target.state == "failed"
+    assert target.last_error and target.retry_at is None  # reason kept, queue left
+
+    assert target_id not in [i["id"] for i in client.get("/api/v1/pic/items").json()["items"]]
+    assert target_id not in [i["id"] for i in
+                             client.get("/api/v1/pic/items", params={"view": "failed"}
+                                        ).json()["items"]]
+    page = client.get("/api/v1/pic/items", params={"view": "ignored"}).json()["items"]
+    assert [i["id"] for i in page] == [target_id] and page[0]["ignored"] is True
+
+    after = client.get("/api/v1/pic/status").json()
+    assert after["ignored"] == before["ignored"] + 1
+    assert after["failed"] == before["failed"] - 1
+
+    # Ignoring is reversible, and the retry starts from a clean slate.
+    assert client.post("/api/v1/pic/items/batch",
+                       json={"ids": [target_id], "action": "retry"}
+                       ).json()["changed"] == 1
+    db.expire_all()
+    assert (target.state, target.ignored, target.error_count) == ("discovered", 0, 0)
+    assert target_id in [i["id"] for i in client.get("/api/v1/pic/items").json()["items"]]
+
+    db.query(PicItem).filter(PicItem.source_id == src.id).delete()
+    db.query(PicSource).filter(PicSource.id == src.id).delete()
     db.commit()

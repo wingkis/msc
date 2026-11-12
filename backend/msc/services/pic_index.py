@@ -8,7 +8,9 @@ worker and the API reading the same definitions.
 import hashlib
 import logging
 from datetime import datetime, timezone
+from io import BytesIO
 
+from PIL import Image
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
@@ -36,6 +38,43 @@ try:
     HEIF_OK = True
 except Exception as exc:  # pragma: no cover - platform dependent
     _log.info("pillow-heif unavailable, HEIC photos will be skipped: %s", exc)
+
+# Pillow's decompression-bomb ceiling guards one thing: a decode that eats RAM.
+# JPEG/MPO thumbnails never decode the full raster — Image.thumbnail() calls
+# draft() first, which drops a 271 Mpx phone panorama to 1/8 DCT scale (~13 MB)
+# before a single pixel exists. Formats without that path (PNG/TIFF/HEIC) do
+# decode everything at once, so they keep Pillow's own limit.
+MAX_PIXELS_DRAFT = 600_000_000
+MAX_PIXELS_PLAIN = 178_956_970
+DRAFT_FORMATS = frozenset({"JPEG", "MPO"})
+
+# The real gate is max_pixels()/open_image() below. Pillow still gets the
+# loosest ceiling we allow, otherwise it raises inside Image.open() before we
+# ever learn the format we are about to judge.
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS_DRAFT
+
+
+def max_pixels(fmt: str) -> int:
+    """Pixel ceiling for one format: draft-scaled decode or full decode."""
+    return MAX_PIXELS_DRAFT if (fmt or "").upper() in DRAFT_FORMATS else MAX_PIXELS_PLAIN
+
+
+def open_image(raw: bytes):
+    """Open photo bytes under the per-format ceiling in max_pixels().
+
+    Owns every Image.open() in the photo pipeline: the worker's except clause
+    turns whatever this raises (UnidentifiedImageError for garbage, ValueError
+    for an absurd raster) into the item's last_error, so the message has to
+    read as a reason a human can act on.
+    """
+    im = Image.open(BytesIO(raw))
+    pixels = (im.width or 0) * (im.height or 0)
+    cap = max_pixels(im.format)
+    if pixels > cap:
+        im.close()
+        raise ValueError(f"图片过大：{pixels / 1e6:.0f} 百万像素，"
+                         f"{im.format} 上限 {cap / 1e6:.0f} 百万像素")
+    return im
 
 
 def _now() -> str:
@@ -104,17 +143,22 @@ def set_pic_setting(db: Session, key: str, value: int) -> None:
 
 
 def state_counts(db: Session) -> dict:
-    """Live (non-trashed) photo counts per pipeline state."""
+    """Live (non-trashed) photo counts per pipeline state.
+
+    Ignored failures are left out on purpose: the user already decided not to
+    process them, so counting them as 失败 would keep a red badge on a queue
+    that is actually empty. They get their own number in lifecycle_counts().
+    """
     rows = db.execute(sql_text(
-        "SELECT state, count(*) FROM pic_items WHERE archived = 0 GROUP BY state"
-    )).fetchall()
+        "SELECT state, count(*) FROM pic_items WHERE archived = 0 AND ignored = 0 "
+        "GROUP BY state")).fetchall()
     return {state: count for state, count in rows}
 
 
 def source_counts(db: Session, source_id: int) -> dict:
     rows = db.execute(sql_text(
-        "SELECT state, count(*) FROM pic_items WHERE archived = 0 AND source_id = :p0 "
-        "GROUP BY state"), {"p0": source_id}).fetchall()
+        "SELECT state, count(*) FROM pic_items WHERE archived = 0 AND ignored = 0 "
+        "AND source_id = :p0 GROUP BY state"), {"p0": source_id}).fetchall()
     return {state: count for state, count in rows}
 
 
@@ -127,17 +171,45 @@ def source_counts_all(db: Session) -> dict:
     out: dict = {}
     for source_id, state, count in db.execute(sql_text(
             "SELECT source_id, state, count(*) FROM pic_items WHERE archived = 0 "
-            "GROUP BY source_id, state")):
+            "AND ignored = 0 GROUP BY source_id, state")):
         out.setdefault(source_id, {})[state] = count
     return out
 
 
 def lifecycle_counts(db: Session) -> dict:
-    """missing / trashed in one pass instead of two full COUNT scans."""
-    missing, trashed = db.execute(sql_text(
+    """missing / trashed / ignored in one pass instead of three COUNT scans."""
+    missing, trashed, ignored = db.execute(sql_text(
         "SELECT sum(CASE WHEN archived = 0 AND missing = 1 THEN 1 ELSE 0 END), "
-        "sum(CASE WHEN archived = 1 THEN 1 ELSE 0 END) FROM pic_items")).fetchone()
-    return {"missing": int(missing or 0), "trashed": int(trashed or 0)}
+        "sum(CASE WHEN archived = 1 THEN 1 ELSE 0 END), "
+        "sum(CASE WHEN archived = 0 AND ignored = 1 THEN 1 ELSE 0 END) "
+        "FROM pic_items")).fetchone()
+    return {"missing": int(missing or 0), "trashed": int(trashed or 0),
+            "ignored": int(ignored or 0)}
+
+
+def retry_backlog(db: Session) -> dict:
+    """How much of the queue is parked in backoff, and when it wakes up.
+
+    A stage that fails writes retry_at, so those rows sit in their state
+    without being worked. /pic/status needs to say so: otherwise one photo
+    waiting out a backoff on a recovered model reads as a stuck queue.
+    """
+    rows, next_at = db.execute(sql_text(
+        "SELECT count(*), min(retry_at) FROM pic_items WHERE archived = 0 "
+        "AND missing = 0 AND ignored = 0 AND state IN "
+        "('discovered','thumb_ready','captioned') AND retry_at > :p0"),
+        {"p0": _now()}).fetchone()
+    seconds = 0
+    if next_at:
+        try:
+            wake = datetime.fromisoformat(next_at)
+        except ValueError:
+            wake = None
+        if wake is not None:
+            if wake.tzinfo is None:
+                wake = wake.replace(tzinfo=timezone.utc)
+            seconds = max(0, int((wake - datetime.now(timezone.utc)).total_seconds()))
+    return {"rows": int(rows or 0), "seconds": seconds}
 
 
 def guess_kind(name: str) -> str:
