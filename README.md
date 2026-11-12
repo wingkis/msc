@@ -296,6 +296,7 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 - 迁移在**线上库副本**（107 条记忆）上演练过：五列补齐、214 个值回填、默认过滤器一条都不藏。测试 192 个（2.5.16 的 174 + provenance 15 + 本轮 RAG 三条腿 3）（新增 `backend/tests/test_provenance.py` 15 项，含升级库 NULL 行、405 不算推翻、编辑不解推翻、preflight 只读、以及模块级自清理以免污染别人的计数断言）。
 - **并入 main 时的接缝** — 与 2.5.16 撞在三处：README 更新记录；`memories.py`（pic 的 `DELETE /graph/auto-links` 与这里的 provenance 块落在同一位置，两块都保留）；`schemas`（`Dict` 与 `json`/`field_validator` 取并集）。`run_maintenance()` 现在同时跑 `ensure_provenance()` 与 `ensure_pic_defaults()`。
 - **RAG 的三条腿一起堵上** — 已推翻的记忆向量还在、FTS 行还在，所以 `/rag/search` 照样把它排进结果，语音转写的「相似」候选会提议往它身上追加新事实，daily-pick 还会拿它取材。新增 `rag._contradicted_ids()`：一处定义（`status = 'contradicted'` 这个方向天然 NULL 安全 —— 老库的 NULL 行不匹配，不会被误藏）、三处调用；过滤在 RRF 融合之前做，掉一条不多占一个坑，响应多带一个 `contradicted_hidden`。`/rag/health-report` 与图谱刻意不过滤：那是库的体检表，不是往会话里递事实的地方。
+- **`msc-verify.sh` 的 host: 分支补回一个制表符** — 这个脚本按「verdict + 制表符 + detail」解析自己的输出，而 host: 那条分支把转义写成了 `\written`（`\t` 少了 t）：跨主机的出处回来是一整坨，既不算 ok 也不算 unchecked，「几条属于别的机器」永远报 0。现在 `probe_one` 的分支由一条真跑脚本的断言钉住（`test_the_client_probe_answers_verdict_tab_detail`）。
 
 ### 2.5.16（msc-pic 分支）
 

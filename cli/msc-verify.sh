@@ -80,7 +80,7 @@ probe_one() {
         else printf 'missing\tno live memory %s (HTTP %s)' "$_target" "$_st"; fi ;;
       host)
         if [ "$_target" = "$HOST_NOW" ]; then printf 'ok\tthis is that host'
-        else printf 'unchecked\written on %s, we are on %s' "$_target" "$HOST_NOW"; fi ;;
+        else printf 'unchecked\twritten on %s, we are on %s' "$_target" "$HOST_NOW"; fi ;;
       cmd) printf 'unchecked\tcmd: refs are never executed by a probe' ;;
       *)   printf 'unchecked\tunknown kind %s' "$_kind" ;;
     esac

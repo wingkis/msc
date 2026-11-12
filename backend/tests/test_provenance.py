@@ -309,3 +309,28 @@ def test_the_voice_and_daily_pick_legs_share_the_filter(client):
 
     for endpoint in (rag.rag_search, rag.transcribe, rag.daily_pick):
         assert "_contradicted_ids(db)" in inspect.getsource(endpoint), endpoint.__name__
+
+
+def test_the_client_probe_answers_verdict_tab_detail():
+    """cli/msc-verify.sh splits its own output on a tab, so every branch of
+    probe_one must emit one. The host: branch shipped ``\\written`` — a stray
+    backslash where the escape should be — so a ref that belongs to another
+    machine came back as one unsplit blob, matched no case, and was counted as
+    neither ok nor unchecked: the 「几条属于别的机器」 number read 0."""
+    import subprocess
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "cli" / "msc-verify.sh"
+    source = script.read_text(encoding="utf-8")
+    start = source.index("probe_one() {")
+    body = source[start:source.index("\n}\n", start) + 3]
+
+    for ref, want in (("host:mmm6", "unchecked"), ("host:dgx", "ok"),
+                      ("cmd:ls -l", "unchecked"), ("file:/nonexistent/qorax", "missing")):
+        run = subprocess.run(["sh", "-c", f'{body}\nHOST_NOW=dgx\nprobe_one {ref}'],
+                             capture_output=True, text=True, timeout=30)
+        assert run.returncode == 0, run.stderr
+        verdict, separator, detail = run.stdout.partition("\t")
+        assert separator == "\t", f"{ref} answered without a separator: {run.stdout!r}"
+        assert verdict == want, f"{ref}: {run.stdout!r}"
+        assert detail.strip(), f"{ref}: no detail for {want}"
