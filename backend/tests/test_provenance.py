@@ -69,6 +69,40 @@ def test_refs_are_normalised_and_deduplicated(client):
     assert _status_of(client, slug)["refs"] == ["git:deadbeef", "mem:prov-dedup"]
 
 
+def test_a_write_that_stores_no_refs_says_so(client):
+    """The hint is a nudge on the response, never a reason to refuse the write."""
+    bare = client.post("/api/v1/memories", json=_memo("Prov Hint Bare"))
+    assert bare.status_code == 201, bare.text
+    _CREATED.append(bare.json()["slug"])
+    assert "X-Provenance-Hint" in bare.headers
+    assert "host:" in bare.headers["X-Provenance-Hint"]
+
+    cited = client.post("/api/v1/memories", json=_memo("Prov Hint Cited", refs=["mem:prov-hint-bare"]))
+    assert cited.status_code == 201, cited.text
+    _CREATED.append(cited.json()["slug"])
+    assert "X-Provenance-Hint" not in cited.headers
+
+    # PUT replaces refs when they are sent, and keeps them when they are not.
+    stripped = client.put(f"/api/v1/memories/{cited.json()['slug']}", json={"refs": []})
+    assert stripped.status_code == 200, stripped.text
+    assert stripped.json()["refs"] == []
+    assert "X-Provenance-Hint" in stripped.headers
+
+    kept = client.put(f"/api/v1/memories/{bare.json()['slug']}", json={"refs": ["host:ci-runner"]})
+    assert kept.status_code == 200, kept.text
+    assert "X-Provenance-Hint" not in kept.headers
+    untouched = client.put(f"/api/v1/memories/{bare.json()['slug']}", json={"body": "still cited"})
+    assert untouched.status_code == 200, untouched.text
+    assert untouched.json()["refs"] == ["host:ci-runner"]
+    assert "X-Provenance-Hint" not in untouched.headers
+
+    # upsert-create goes through a different path but gets the same treatment
+    seeded = client.put("/api/v1/memories/prov-hint-upsert", json=_memo("Prov Hint Upsert"))
+    assert seeded.status_code == 200, seeded.text
+    _CREATED.append("prov-hint-upsert")
+    assert "X-Provenance-Hint" in seeded.headers
+
+
 def test_invalidate_hides_by_default_but_never_quietly(client):
     slug = _create(client, "Prov Contra")
 

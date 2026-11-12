@@ -37,10 +37,14 @@ def test_tags_and_stats_and_help(client):
     help_text = client.get("/api/v1/help")
     assert help_text.status_code == 200
     assert "/api/v1/memories" in help_text.text
+    # an agent that only curls the API must still learn how to *write* provenance
+    for needle in ('"refs":', "X-Provenance-Hint", "memories/preflight", "X-Search-Status"):
+        assert needle in help_text.text, needle
 
     llms = client.get("/llms.txt")
     assert llms.status_code == 200
     assert "MSC" in llms.text
+    assert '"refs":' in llms.text
 
 
 def test_graph_returns_nodes_and_edges(client):

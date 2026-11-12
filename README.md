@@ -286,6 +286,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.2（main）：让写的 agent 自动知道要挂出处
+
+- **help/llms.txt 教到能照抄** — 自 2.6.0 起 `CONVENTIONS` 里写了 `refs` 是什么，但 `POST /memories` 的示例 JSON 里没有那个字段：只 curl API 的 agent 读得懂概念，却不知道往哪个键写。现在 WRITE/EXAMPLES 两处都带上 `"refs":[...]` 的写法，并加一条命令式约定（"写记忆至少挂一个出处；PUT 传了是替换、不传是不动"）与一条复核指引（服务端只判得着 `url:/file:/mem:`，`git:/cmd:/host:` 的回 `unchecked`，那一半由客户端 `cli/msc-verify.sh` 补）。
+- **`X-Provenance-Hint`** — `POST /memories` 与 `PUT /memories/{slug}`（含 upsert 新建那条路径）存下了一条没有出处的记忆时，响应头直接给出可照抄的取值形式。刻意是提示不是拒绝：很多记忆本来就没有可挂的东西，硬挡只会把 agent 推向编一个出处 —— 那比不挂更坏。
+- 库侧另有一条 critical 规则记忆 `msc-refs-writing-rule`（`SessionStart` hook 会把 critical 注入每个 agent 眼前），把上面的口径讲成一句话，与 `记忆命名原则` 互为引用。
+
 ### 2.6.1（main）：把出处真的用起来
 
 - **`cli/msc-refs-backfill.sh`** — 老记忆的出处一直写在正文里（首行的 host 头、正文中的提交号、路径、网址），可读，但没法复核：preflight 只认解析得出的把手。这个工具把当场确认得了的那部分抬进 `refs`，口径与探针一致 —— `host:` 取首行并去掉 `.local`（不去就永远比不中 `hostname -s`）；`git:` 必须 `git cat-file -e <sha>^{commit}` 真解析成提交，md5、日期这种长得像十六进制的自己就被刷掉；`file:` 必须存在且是项目/配置级路径（`/bin/sh`、`/dev/null` 几乎每条正文里都有，那不是出处）；`url:` 必须答话且不是 404（挂一个已经死掉的端点等于当场把这条记忆判死）；`localhost` 网址一律不挂 —— 那只对写它的那台机器成立，是 `host:` 的活。默认 dry-run，`--yes` 才写；已有 refs 的一条不碰（要覆盖加 `--force`）。

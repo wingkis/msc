@@ -110,7 +110,8 @@ READ
 WRITE
   POST   /memories                    create            {{"name":..., "slug":..., "body":...,
                                                          "tags":["a","b"], "category":"...",
-                                                         "priority":"...", "related_slugs":[...]}}
+                                                         "priority":"...", "related_slugs":[...],
+                                                         "refs":["host:web01","git:1a2b3c4"]}}
   PUT    /memories/{{slug}}           create-or-replace (upsert by default)
   POST   /memories/batch              {{"memories":[...], "upsert":true}} -> per-item result
   POST   /memories/{{slug}}/relate    link two memories
@@ -143,6 +144,15 @@ CONVENTIONS
   - refs: attach what a later reader can re-check — {refkinds}, each as
     "<kind>:<target>" on the memory. An unverifiable ref is worse than none, so a
     typo'd kind is a 422, not something quietly stored.
+  - Write with at least one ref: a memory nobody can trace back is a hunch with a
+    timestamp. Cite the commit, the file, the URL, another memory, the exact
+    command, the machine. Send "refs":["<kind>:<target>",...] in the JSON body
+    (PUT replaces them, omission leaves them alone). A write that stores no refs
+    gets an X-Provenance-Hint response header — a nudge, not an error.
+  - Re-checking: preflight only judges what this server can reach, so git:/cmd:/
+    host: come back "unchecked" rather than a guess. From the client,
+    cli/msc-verify.sh covers that other half (dry-run unless --yes) and
+    cli/msc-refs-backfill.sh lifts provenance already written in bodies into refs
   - Contradicted memories drop out of /memories and /search by default and stay
     readable by slug; the drop is announced in X-Contradicted-Hidden, never quiet.
     They are never deleted — a wrong belief is evidence.
@@ -154,7 +164,8 @@ EXAMPLES
   curl -s "{base}/api/v1/search?q=backup"
   curl -s -X PUT {base}/api/v1/memories/my-key \\
        -H "Content-Type: application/json" -H "X-Agent: my-agent" \\
-       -d '{{"name":"My key","body":"what it is","category":"reference","tags":["a"]}}'
+       -d '{{"name":"My key","body":"what it is","category":"reference",
+            "tags":["a"],"refs":["host:web01","file:/etc/app/config.toml"]}}'
 """
 
 

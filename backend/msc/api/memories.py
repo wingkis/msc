@@ -606,10 +606,27 @@ def get_memory(slug: str, include_archived: bool = Query(False), db: Session = D
     return _resolve_memory(db, slug, include_archived=include_archived)
 
 
+PROVENANCE_HINT = ("refs empty - attach what a later reader can re-check: "
+                   "refs=[git:<sha>|file:<abs path>|url:<href>|mem:<slug>|"
+                   "cmd:<exact command>|host:<hostname>]. See GET /api/v1/help")
+
+
+def _provenance_hint(response: Response, memory: Memory) -> None:
+    """Nudge writers that stored no provenance.
+
+    A header, not an error: plenty of memories legitimately have nothing to
+    cite, and refusing them would push agents to invent refs, which is worse
+    than having none.
+    """
+    if response is not None and not parse_refs(memory.refs):
+        response.headers["X-Provenance-Hint"] = PROVENANCE_HINT
+
+
 # ── Create memory ─────────────────────────────────────────────────────
 
 @router.post("", response_model=MemoryResponse, status_code=201)
-def create_memory(data: MemoryCreate, request: Request, db: Session = Depends(get_db)):
+def create_memory(data: MemoryCreate, request: Request, response: Response,
+                  db: Session = Depends(get_db)):
     _require_auth(request, db)
     _guard_write()
     _validate_vocab(data)
@@ -652,6 +669,7 @@ def create_memory(data: MemoryCreate, request: Request, db: Session = Depends(ge
 
     db.commit()
     _write_through(db, memory)
+    _provenance_hint(response, memory)
     return memory
 
 
@@ -659,6 +677,7 @@ def create_memory(data: MemoryCreate, request: Request, db: Session = Depends(ge
 
 @router.put("/{slug}", response_model=MemoryResponse)
 def update_memory(slug: str, data: MemoryUpdate, request: Request,
+                  response: Response,
                   upsert: bool = Query(True, description="Create this slug if it does not exist"),
                   db: Session = Depends(get_db)):
     """Create-or-replace by slug — the idempotent write agents expect.
@@ -674,7 +693,9 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
     if memory is None:
         if not upsert:
             raise HTTPException(status_code=404, detail=f"Memory not found: {slug}")
-        return _create_by_slug(db, slug, data, current_user["username"])
+        created = _create_by_slug(db, slug, data, current_user["username"])
+        _provenance_hint(response, created)
+        return created
     if memory.archived:
         memory.archived = 0  # writing to a soft-deleted memory revives it
 
@@ -700,6 +721,7 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
     db.commit()
 
     _write_through(db, memory)
+    _provenance_hint(response, memory)
     return memory
 
 
