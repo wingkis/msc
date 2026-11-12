@@ -15,7 +15,7 @@
 - **备份** — 定时（24h）+ 手动，tar.gz，自动保留最近 `MSC_BACKUP_KEEP` 份
 - **CLI** — `msc`，走 HTTP，可与服务器不同机
 - **记忆小结（模型卡片）** — 在 Web UI 里填一个 OpenAI 兼容的本地/局域网模型，把多条记忆合并成一条小结记忆：手动勾选或每天定点自动当日小结；原记忆可选软删除（可一键恢复）
-- **照片 RAG（msc-pic，2.4.0）** — 照片源卡片（本机目录 / SMB / WebDAV）渐进摄入：先占位、逐张出 512px 缩略图、多模态模型（`vision` 卡片）写中文描述、描述进 bge-m3 向量。照片页按月浏览缩略图墙，语义搜索命中缩略图，勾选看原图（流式透传，原图不入库）；回收站软删可恢复，「彻底删除」带确认才动磁盘原图。扫描/摄入随时可暂停、中断自动续传（游标 + 状态机队列），详见 `.env.example` 的 `MSC_PIC_*` 与 `MSC_VISION_*`
+- **照片 RAG（msc-pic，2.4.0）** — 照片源卡片（本机目录 / SMB / WebDAV）渐进摄入：先占位、逐张出 512px 缩略图、多模态模型（`vision` 卡片）写中文描述、描述进 bge-m3 向量。照片页按月浏览缩略图墙，语义搜索命中缩略图，勾选看原图（流式透传，原图不入库）；回收站软删可恢复，「彻底删除」带确认才动磁盘原图。扫描/摄入随时可暂停、中断自动续传（游标 + 状态机队列），详见 `.env.example` 的 `MSC_PIC_*` 与 `MSC_VISION_*`。读不了的原图停在「失败」标签里，可以重试，也可以「忽略」——忽略只让 worker 不再尝试那张，原图与失败原因都留着，随时可撤销
 
 ## 快速开始
 
@@ -214,7 +214,7 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | 重扫间隔（小时）`rescan_hours`（24／24） | 隔多久把整个源完整重走一遍，用来发现新增与已消失的原图（1–8760） | 太小＝反复走目录的网络/CPU 开销 |
 | 缩略图尺寸 px `thumb_px`（本机 512） | webp 长边（64–2048）；改动会让全部照片重出图（`?v=` 变，缓存自动失效） | 大＝占盘、画廊慢；小＝看不清 |
 | 全开时限（秒/轮）`burst_seconds`（300） | 按下「全开连续描述」后，每一轮让视觉模型连续跑多少秒（15–900）；跑满只歇 3 秒再续，直到队列空或关掉 | 视觉 GPU 被连续占用，同机聊天会慢 |
-| 描述并发 `caption_workers`（1） | 一批里同时向视觉模型发几个请求（1–8）。只有服务端有多个槽位才更快；单槽上多余请求只是在那边排队，还会把每张的等待拉长 | 超时风险（卡片 `timeout_seconds`）与 GPU 争用 |
+| 描述并发 `caption_workers`（1） | 一批里同时向视觉模型发几个请求（1–64，2.5.15 起）。只有服务端有多个槽位才更快；单槽上多余请求只是在那边排队，还会把每张的等待拉长 | 超时风险（卡片 `timeout_seconds`）与 GPU 争用 |
 
 另外两个只能走 API：`caption_batch`（1–32，默认 1）＝不启用全开时每轮描述几张 —— 默认 1 是因为视觉卡通常和聊天共用一块 GPU；
 `embed_batch`（1–64，默认 8）＝每轮索引多少条描述。两个开关：`caption_paused`（暂停图像描述）压过
@@ -243,8 +243,57 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | 端口不通 | `docker compose ps`、`docker compose logs msc-api` |
 | 图谱页只显示列表 | vis-network 走 CDN，内网不通时自动退化为关联列表（功能不丢） |
 | `.msc_index.json` 里有已删除条目 | `msc sync reindex`（同时重建 FTS 和文件索引） |
+| 照片列表有个红色的「失败 N」 | 点那个数字（或「失败」标签）看每张的原因。读不了的就别反复试：勾选 →「忽略」，它退出计数、理由仍留着，之后能在「已忽略」里「重新排队」。瞬时故障（NAS 掉线、模型没起）不用管，自动退避重试，最长 5 分钟一轮 |
+| 某张 `.heic` 报 `cannot identify image file` | 先看文件头：`ftypmp42` 是改名叫 `.heic` 的 mp4 视频（不是照片）；真 HEIC 则多半是当前 libheif 不支持的新派生属性（如 `could not parse item property 'rloc'`），升级 pillow-heif/libheif 后重试即可。库里其余 HEIC 能正常描述就说明解码器本身没问题 |
 
 ## 更新记录
+
+### 2.5.16（msc-pic 分支）
+
+- **失败照片第一次有出路** — 现场：16180 张照片里 9 张 `failed`，其中 6 张是手机全景图撞上 Pillow 默认的
+  178,956,970 像素解压炸弹上限（实测 201/271 Mpx），3 张真读不了。worker 从不回捞 `failed`，
+  所以这 9 张既修不了也关不掉，只能在状态条上顶着一个红色数字。
+- **像素上限按格式放行** — 新增 `pic_index.open_image()`，照片管线里每一次 `Image.open()` 都过它。
+  JPEG/MPO 的缩略图走 `draft()`（`thumbnail()` 先把 271 Mpx 全景图降到 1/8 DCT 尺度，解码只用约 13 MB 内存），
+  上限放到 6 亿像素；PNG/TIFF/HEIF 没有这条路径、一次解码整张位图，保留 Pillow 原本的 1.79 亿。
+  `Image.MAX_IMAGE_PIXELS` 必须先抬到最松一档，否则 Pillow 在我们看出格式之前就 raise。越界报的话是
+  「图片过大：271 百万像素，PNG 上限 179 百万像素」——worker 的 except 会把它原样写进 `last_error` 给人看。
+- **忽略（`pic_items.ignored`）** — 批量动作多一个 `ignore`：只接受 `state='failed'` 的行，`state` 和
+  `last_error` 原样留着（点进去仍看得到为什么失败），但退出队列、退出相册、退出 `/pic/search`；
+  `retry` 连 flag 一起清回来，完全可逆。做成旁挂标志而不是新增 state：`state` 上有 CHECK 约束，
+  而且「忽略」本质是一个可撤销的用户意愿，不是流水线的第 6 个阶段。
+  配套改动：`state_counts` / `source_counts` / `source_counts_all` / `retry_backlog` / 相册默认过滤 /
+  `/pic/search` 关键词腿一律排除 ignored，`lifecycle_counts` 多返回 `ignored`，`/pic/items` 新增
+  `view=failed` 与 `view=ignored`（前者还能重试，后者是反悔的地方）。
+- **退避封顶 5 分钟** — `_backoff` 原来是 1→32 分钟翻倍：端点两分钟前就回来了，照片还要在 UI 里挂半小时才
+  重试，看起来跟卡死没区别。现在 `BACKOFF_CAP_SECONDS = 300`；描述/索引成功时顺手清 `error_count`，
+  一次硬重试成功之后从 1 分钟重新起步，而不是带着旧的连败次数直接落到上限。
+- **队列里的等待要说出来** — `/pic/status` 新增 `waiting_retry` / `retry_in_seconds`（`retry_backlog()`）：
+  停在退避里的行数与最近一次醒来的时间。没有这两个数，一条刚从模型故障里恢复的健康队列和一条真卡死的队列长得一模一样。
+- **UI** — 照片页多「失败」「已忽略」两个标签；批量条在失败类视图里给「重新排队／忽略」，格子和详情弹窗给同款
+  单张按钮（弹窗里原来只有一行灰字提示，现在能直接动手）；状态条上「失败 N」「已忽略 N」两个数字本身可点，
+  直接进对应视图；「待描述」后面会跟一句「等模型 3 分钟」这种人话。
+- **两个「隐形照片」的坑** — ① scan 发现同路径换了新字节会把行退回 `discovered`，但没清 `ignored`，于是这张图
+  既不在相册（相册排除 ignored）也不在 `view=ignored`（那里要求 `state='failed'`），从所有视图里消失；
+  ② `ALTER TABLE ADD COLUMN` 给老行留 NULL，而每个过滤条件写的都是 `ignored = 0` → 16182 行会集体隐身，
+  所以 `ensure_pic_defaults()` 一并回填。两个都和当年 `missing` 那个坑同源：**新增列必须同时想清楚 NULL 落在哪一边**。
+- **线上实测** — 6 张超大 JPEG 重新排队后全部走通（最大 17068×15872＝271 Mpx，缩略图 200 `image/webp`，
+  中文描述正常）：`embedded 16171 → 16177`。剩 3 张已忽略：`3743` 的文件头是 `ftypmp42`，是个改名叫 `.heic` 的
+  mp4 视频；`4388`/`4441` 是真 HEIC，但 libheif 1.23.6 报 `could not parse item property 'rloc'`。
+  库里 10169 张 HEIC 全部 `embedded`，所以不是解码器坏了。
+- 测试 174 个（新增分格式像素上限、退避封顶、退避中的队列深度、忽略与找回、换文件解忽略五组断言）。
+
+### 2.5.15（msc-pic 分支）
+
+- **回响按钮补齐** — `renderMemoryCard` 从来没渲染过回响按钮（只有搜索结果卡片有），记忆页因此完全看不到入口；
+  现在未归档卡片补上，与搜索卡片同款。`.echo-inline-btn` 原本 `opacity: 0`、只在 hover 时才出现（触屏根本没有
+  hover），看起来就像没有这个按钮 —— 改成常显低对比 0.55、hover 提到 1。详情弹窗底部也加「回响」：弹窗里放不下
+  1–2 分钟的模型调用，点了先关弹窗，再把 slug 交给洞察页的评注面板执行。归档记忆不给按钮
+  （`_resolve_memory` 默认跳过归档行，给了也必然 404）。顺带：搜索卡片的 `btn-small` 是 CSS 里不存在的类 → `btn-sm`；
+  `#detail-content .modal-footer` 允许换行，窄屏五个按钮不再挤出边界。
+- **描述并发上限 8 → 64** — `caption_workers` 原本三处硬编码 `le=8`/`max=8`，多槽位的视觉服务用不满；现在 1–64 可调，
+  设置页的说明文字同步。挪上限要连测试一起钉：原来测试钉着「填 9 该被拒」，改成拒 65 并接受 1 和 64，
+  区间两头都锁住，下次再挪会立刻报错而不是悄悄漂回去。这两条没各自占版本号。
 
 ### 2.5.14（msc-pic 分支）
 
