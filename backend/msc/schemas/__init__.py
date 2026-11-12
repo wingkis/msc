@@ -18,8 +18,12 @@ MEMORY_STATUSES = ("active", "stale", "contradicted")
 # The kinds of pointer a later reader can actually re-check. A memory body is a
 # historical observation; a ref is the handle that lets someone prove or kill it.
 # `git:<sha>` `file:<path>` `url:<endpoint>` `mem:<slug>` `cmd:<line>`
-# `host:<name>`.
-REF_KINDS = ("git", "file", "url", "mem", "cmd", "host")
+# `host:<name>` `ip:<ipv4>`.
+#
+# host: and ip: both name a machine; prefer ip:. A hostname is a label that
+# gets renamed (n1 was note02 until 2026-11-12), an address is what the box
+# answers on today, and this LAN does not resolve names anyway.
+REF_KINDS = ("git", "file", "url", "mem", "cmd", "host", "ip")
 
 
 def normalize_refs(values) -> List[str]:

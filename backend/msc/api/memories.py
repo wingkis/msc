@@ -768,7 +768,7 @@ def get_memory(slug: str, include_archived: bool = Query(False), db: Session = D
 
 PROVENANCE_HINT = ("refs empty - attach what a later reader can re-check: "
                    "refs=[git:<sha>|file:<abs path>|url:<href>|mem:<slug>|"
-                   "cmd:<exact command>|host:<hostname>]. See GET /api/v1/help")
+                   "cmd:<exact command>|ip:<ipv4>|host:<hostname>]. See GET /api/v1/help")
 
 
 def _provenance_hint(response: Response, memory: Memory) -> None:

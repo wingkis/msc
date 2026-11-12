@@ -106,7 +106,7 @@ READ
   GET  /memories/preflight            re-check stored refs (budget_ms<=8000, limit<=100,
                                       category/priority/tag filters). Reports verdicts
                                       only — it never writes. Server can reach url:/file:/
-                                      mem:; git:/cmd:/host: come back "unchecked"
+                                      mem:; git:/cmd:/host:/ip: come back "unchecked"
   GET  /memories/review-due           what deserves a re-check next, ranked by priority
                                       then age, each item saying why. Two buckets, both
                                       counted: bucket=checkable (has refs -> re-check it)
@@ -165,8 +165,13 @@ WRITE
   POST   /memories/graph/auto-link    connect memory pairs sharing >=min_shared exact
                                       keywords (default min_freq=3, max_coverage=0.3,
                                       min_shared=3, rebuild=false)
-  DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge)
-  DELETE /memories/archived           hard-purge every archived memory at once
+  DELETE /memories/{{slug}}           soft delete (add ?hard=true to purge one,
+                                      archived rows included — this is how you
+                                      clear a single archived memory)
+  DELETE /memories/archived           hard-purge EVERY archived memory at once.
+                                      No filter, no body: refuses with 400 unless
+                                      ?confirm=all, because a request that meant
+                                      one slug used to erase the whole archive
   DELETE /memories/graph/auto-links   drop every auto-linked "keyword" edge (hand-made
                                       relations are untouched; /graph/auto-link rebuilds them)
   POST   /memories/{{slug}}/restore   undo a soft delete
@@ -190,7 +195,7 @@ CONVENTIONS
     (PUT replaces them, omission leaves them alone). A write that stores no refs
     gets an X-Provenance-Hint response header — a nudge, not an error.
   - Re-checking: preflight only judges what this server can reach, so git:/cmd:/
-    host: come back "unchecked" rather than a guess. From the client,
+    host:/ip: come back "unchecked" rather than a guess. From the client,
     cli/msc-verify.sh covers that other half (dry-run unless --yes) and
     cli/msc-refs-backfill.sh lifts provenance already written in bodies into refs
   - Contradicted memories drop out of /memories and /search by default and stay
@@ -220,7 +225,7 @@ EXAMPLES
   curl -s -X PUT {base}/api/v1/memories/my-key \\
        -H "Content-Type: application/json" -H "X-Agent: my-agent" \\
        -d '{{"name":"My key","body":"what it is","category":"reference",
-            "tags":["a"],"refs":["host:web01","file:/etc/app/config.toml"]}}'
+            "tags":["a"],"refs":["ip:192.168.1.20","file:/etc/app/config.toml"]}}'
 """
 
 
