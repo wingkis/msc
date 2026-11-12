@@ -111,6 +111,41 @@ class MemoryVersion(Base):
     )
 
 
+class MemoryReview(Base):
+    """One verdict, one row: the audit trail of re-checking.
+
+    ``memories`` keeps only the newest stamp and ``MemoryVersion`` keeps one
+    undo snapshot, so "who contradicted this in March, and who restored it in
+    May" had no answer. That matters precisely because contradictions are
+    cheap to write: two agents can disagree, and without a history the last
+    writer simply owns the truth. These rows carry no body, so the whole
+    trail stays affordable.
+
+    The action vocabulary mirrors the endpoints that write it: ``invalidate``
+    (a re-check broke it), ``verify`` (a re-check confirmed or downgraded it),
+    ``decay`` (a clock noticed nobody had looked).
+    """
+
+    __tablename__ = "memory_reviews"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    memory_id = Column(Integer, ForeignKey("memories.id", ondelete="CASCADE"),
+                       nullable=False, index=True)
+    action = Column(String, nullable=False)
+    from_status = Column(String)
+    to_status = Column(String)
+    reason = Column(Text)
+    actor = Column(String)
+    created_at = Column(String, nullable=False)
+
+    __table_args__ = (
+        # Fresh databases only: ALTER TABLE cannot add a CHECK to a table that
+        # already exists, so the API validates the vocabulary as well. Same
+        # doctrine as Memory.status.
+        CheckConstraint("action IN ('invalidate','verify','decay')", name="ck_review_action"),
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 

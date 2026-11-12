@@ -9,6 +9,7 @@ def start_workers():
     from msc.workers.sync_worker import start_sync_worker
     from msc.workers.backup_worker import start_backup_worker
     from msc.workers.summarize_worker import start_summarize_worker
+    from msc.workers.maintenance_worker import start_maintenance_worker
 
     sync_thread = Thread(target=start_sync_worker, daemon=True)
     sync_thread.start()
@@ -18,6 +19,11 @@ def start_workers():
 
     digest_thread = Thread(target=start_summarize_worker, daemon=True)
     digest_thread.start()
+
+    # Time decay: no feature flag of its own — MSC_STALE_AFTER_DAYS=0 disables
+    # it inside the loop, which keeps "off" meaning one thing in one place.
+    maintenance_thread = Thread(target=start_maintenance_worker, daemon=True)
+    maintenance_thread.start()
 
     if get_settings().rag_enabled:
         from msc.workers.rag_worker import start_rag_worker

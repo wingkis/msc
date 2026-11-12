@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Bumped together by the CLI, the Web UI and /api/v1/health so a mismatch is
 # impossible to miss.
-VERSION = "2.6.4"
+VERSION = "2.6.5"
 
 
 class Settings(BaseSettings):
@@ -53,6 +53,16 @@ class Settings(BaseSettings):
 
     # Sync
     sync_interval_seconds: int = 60
+
+    # Time decay — the automatic half of re-checking. A memory nobody has
+    # verified or edited for this many days becomes "stale": still listed, still
+    # recallable, but visibly unconfirmed instead of quietly forever active.
+    # 0 disables both the worker and POST /memories/decay.
+    stale_after_days: int = 90
+    # How often the worker looks. The sweep is idempotent (only active rows
+    # crossing the line get stamped), so a cheap hourly tick beats a nightly
+    # batch that has to be remembered to be turned on.
+    decay_interval_seconds: int = 3600
 
     # Model card — first-run defaults only. The Web UI writes the real values
     # into the model_configs table, so switching models never needs a rebuild.

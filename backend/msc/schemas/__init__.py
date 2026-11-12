@@ -243,6 +243,12 @@ class MemoryInvalidate(BaseModel):
     reason: str = Field(..., min_length=1, max_length=2000)
     status: str = Field("contradicted", description="stale | contradicted")
     superseded_by: Optional[str] = Field(None, description="Slug of the memory that replaces this one")
+    # Optimistic lock: say which revision you looked at. Optional, so a client
+    # that did not read the row first keeps working; but two agents that
+    # re-check the same memory in parallel should get a 409 instead of the
+    # later write quietly owning the truth.
+    if_status: Optional[str] = Field(None, description="Fail with 409 unless status is this now")
+    if_updated_at: Optional[str] = Field(None, description="Fail with 409 unless updated_at is this now")
 
     @field_validator("status")
     @classmethod
@@ -251,11 +257,20 @@ class MemoryInvalidate(BaseModel):
             raise ValueError(f"invalid status {v!r}; allowed: stale, contradicted")
         return v
 
+    @field_validator("if_status")
+    @classmethod
+    def _check_if_status(cls, v):
+        if v is not None and v not in MEMORY_STATUSES:
+            raise ValueError(f"invalid if_status {v!r}; allowed: {', '.join(MEMORY_STATUSES)}")
+        return v
+
 
 class MemoryVerdict(BaseModel):
     """What a re-check concluded. `ok` clears an earlier invalidation."""
     verdict: str = Field("ok", description="ok | stale | contradicted")
     reason: str = Field("", max_length=2000)
+    if_status: Optional[str] = Field(None, description="Fail with 409 unless status is this now")
+    if_updated_at: Optional[str] = Field(None, description="Fail with 409 unless updated_at is this now")
 
     @field_validator("verdict")
     @classmethod
@@ -263,6 +278,13 @@ class MemoryVerdict(BaseModel):
         if v not in MEMORY_STATUSES and v != "ok":
             raise ValueError(f"invalid verdict {v!r}; allowed: ok, {', '.join(MEMORY_STATUSES)}")
         return "active" if v == "ok" else v
+
+    @field_validator("if_status")
+    @classmethod
+    def _check_if_verdict(cls, v):
+        if v is not None and v not in MEMORY_STATUSES:
+            raise ValueError(f"invalid if_status {v!r}; allowed: {', '.join(MEMORY_STATUSES)}")
+        return v
 
 
 class ProbeItem(BaseModel):
@@ -286,6 +308,50 @@ class PreflightResponse(BaseModel):
     hidden: int = 0
     budget_ms: int = 0
     items: List[PreflightItem] = []
+
+
+class ReviewResponse(BaseModel):
+    """One recorded verdict — the history a status column cannot hold."""
+    id: int
+    memory_id: int
+    action: str
+    from_status: Optional[str] = None
+    to_status: Optional[str] = None
+    reason: Optional[str] = None
+    actor: Optional[str] = None
+    created_at: str
+
+    model_config = {"from_attributes": True}
+
+
+class ReviewDueItem(BaseModel):
+    slug: str
+    name: str
+    priority: str
+    category: str
+    status: str = "active"
+    refs: List[str] = []
+    last_confirmed: str = "unknown"     # verified | created | unknown
+    last_confirmed_at: Optional[str] = None
+    last_edited_at: Optional[str] = None
+    age_days: Optional[int] = None
+    reasons: List[str] = []
+
+
+class ReviewDueResponse(BaseModel):
+    stale_after_days: int = 0
+    total: int = 0
+    items: List[ReviewDueItem] = []
+
+
+class DecayResponse(BaseModel):
+    """The result of a decay sweep. Dry-run by default: a clock proposes, it
+    does not decide on its own through a POST someone fired by accident."""
+    stale_after_days: int = 0
+    dry_run: bool = True
+    count: int = 0
+    slugs: List[str] = []
+    items: List[ReviewDueItem] = []
 
 
 class ModelConfigUpdate(BaseModel):

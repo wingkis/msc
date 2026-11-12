@@ -469,6 +469,44 @@ def ensure_pic_indexes() -> int:
     return len(made)
 
 
+MEMORY_INDEXES = (
+    # Every read leg now has to know what a re-check contradicted, and the list
+    # endpoint hides those rows on every default request. Without this the
+    # hiding filter walks the table.
+    ("idx_memories_status", "CREATE INDEX IF NOT EXISTS idx_memories_status ON memories (status)"),
+    ("idx_memories_updated_at", "CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories (updated_at)"),
+    ("idx_memories_created_at", "CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories (created_at)"),
+    # Partial on purpose: the re-check sweep only ever wants rows that actually
+    # carry provenance. On a library where most memories still have no refs
+    # (the normal state while refs get backfilled) this turns "load every
+    # memory and drop the empty ones in Python" into an index scan of the
+    # relevant subset. It does nothing for ?ref= — a LIKE '%…%' pattern cannot
+    # use an index; an impact lookup is a scan by nature.
+    ("idx_memories_refs_live",
+     "CREATE INDEX IF NOT EXISTS idx_memories_refs_live ON memories (refs) "
+     "WHERE refs IS NOT NULL AND refs <> '' AND refs <> '[]'"),
+)
+
+
+def ensure_memory_indexes() -> int:
+    """Provenance/recency indexes on memories — idempotent, no-op without the table.
+
+    ``create_all`` does index columns declared ``index=True``, but not a partial
+    index, and these four exist for filter shapes the model cannot express.
+    """
+    with engine.begin() as conn:
+        if "memories" not in set(inspect(engine).get_table_names()):
+            return 0
+        for _name, ddl in MEMORY_INDEXES:
+            conn.execute(text(ddl))
+        have = {row[0] for row in conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memories'"))}
+    made = [name for name, _ in MEMORY_INDEXES if name in have]
+    if made:
+        _log.info("schema: memory indexes ready (%s)", ", ".join(made))
+    return len(made)
+
+
 def run_maintenance() -> dict:
     """Full startup pass. Returns a summary so it can be logged and reported."""
     from msc.fts import ensure_fts, fts_desync_report, rebuild_fts
@@ -486,6 +524,7 @@ def run_maintenance() -> dict:
         "embeddings_pruned": prune_broken_embeddings(),
         "pic_id_autoincrement": ensure_pic_id_autoincrement(),
         "pic_defaults_backfilled": ensure_pic_defaults(),
+        "memory_indexes": ensure_memory_indexes(),
         "pic_indexes": ensure_pic_indexes(),
         "pic_vectors_pruned": prune_broken_pic_vectors(),
         "pic_thumbs_swept": sweep_orphan_thumbs(),

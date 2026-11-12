@@ -3,7 +3,7 @@ without a human reading a README to it first."""
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from msc.api.memories import CATEGORIES, LIFESPANS, PRIORITIES
@@ -35,6 +35,21 @@ def _counts(db: Session) -> dict:
         # nobody is checking, not a corpus that happens to be correct.
         "contradicted": db.query(Memory).filter(
             Memory.archived == 0, Memory.status == "contradicted").count(),
+        # Aged out by the decay worker: still believed, but nobody has vouched
+        # for it recently. Reported separately from contradicted because the two
+        # deserve different work — one needs a re-check, the other a successor.
+        "stale": db.query(Memory).filter(
+            Memory.archived == 0, Memory.status == "stale").count(),
+        # Nothing written here has ever been re-checked. The number an agent
+        # should read before trusting "the library agrees with reality".
+        "never_verified": db.query(Memory).filter(
+            Memory.archived == 0,
+            or_(Memory.verified_at.is_(None), Memory.verified_at == "")).count(),
+        "no_refs": db.query(Memory).filter(
+            Memory.archived == 0,
+            or_(Memory.refs.is_(None), Memory.refs == "", Memory.refs == "[]")).count(),
+        "decay": {"stale_after_days": settings.stale_after_days,
+                  "enabled": settings.stale_after_days > 0},
         "by_category": {r[0]: r[1] for r in db.query(Memory.category, func.count("*"))
                         .filter(Memory.archived == 0).group_by(Memory.category).all()},
         "by_priority": {r[0]: r[1] for r in db.query(Memory.priority, func.count("*"))
@@ -92,7 +107,12 @@ READ
                                       category/priority/tag filters). Reports verdicts
                                       only — it never writes. Server can reach url:/file:/
                                       mem:; git:/cmd:/host: come back "unchecked"
-  GET  /search?q=...                  full-text (safe with any characters) + filters
+  GET  /memories/review-due           what deserves a re-check next, ranked by priority
+                                      then age, each item saying why (never verified /
+                                      no refs / contradicted and waiting). ?limit<=500,
+                                      ?stale_after_days=N (0 = only structural gaps).
+                                      Read-only: age makes a memory suspicious, never wrong
+                                      GET  /search?q=...                  full-text (safe with any characters) + filters
                                       mode=keyword|semantic|hybrid (default keyword;
                                       semantic modes need an embed provider, otherwise
                                       they degrade to keyword; hybrid results carry
@@ -108,6 +128,8 @@ READ
                                       ?relations=a,b shows only those relation types; response
                                       carries edges_by_type so you know what is what)
   GET  /versions/{{slug}}             edit history (only the latest snapshot is kept)
+  GET  /memories/{{slug}}/reviews     every verdict recorded against it, newest first
+                                      (invalidate / verify / decay, with actor + reason)
 
 WRITE
   POST   /memories                    create            {{"name":..., "slug":..., "body":...,
@@ -124,6 +146,14 @@ WRITE
   POST   /memories/{{slug}}/verify    outcome of a re-check. verdict "ok" is the ONLY
                                       way back to active — editing a body never restores
                                       {{"verdict":"ok|stale|contradicted","reason":"..."}}
+                                      Both verdict endpoints accept "if_status" /
+                                      "if_updated_at": the value you read first. If the
+                                      memory moved in between you get 409, not a quiet
+                                      overwrite of whoever re-checked it first.
+  POST   /memories/decay              stamp long-unchecked memories "stale" (still listed,
+                                      still recallable). ?apply=true to write, otherwise it
+                                      only reports; ?stale_after_days=N to override.
+                                      Never contradicts, never restores: those need a reason
   POST   /memories/graph/auto-link    connect memory pairs sharing >=min_shared exact
                                       keywords (default min_freq=3, max_coverage=0.3,
                                       min_shared=3, rebuild=false)
@@ -158,6 +188,12 @@ CONVENTIONS
   - Contradicted memories drop out of /memories and /search by default and stay
     readable by slug; the drop is announced in X-Contradicted-Hidden, never quiet.
     They are never deleted — a wrong belief is evidence.
+  - Ageing: after MSC_STALE_AFTER_DAYS (default 90, 0 = off) a memory nobody has
+    verified or edited becomes "stale" on its own. That is suspicion, not evidence —
+    stale memories keep showing up in lists, search and digests. Clear it with
+    POST /memories/{{slug}}/verify {{"verdict":"ok"}}, or work down GET /memories/review-due.
+    /meta reports stale / never_verified / no_refs so you can see how honest the
+    library is being before you quote it.
   - Send "X-Agent: <your name>" on writes; it is recorded in the version history.
   - Bad vocabulary returns 422 with the allowed values, never a 500.
 

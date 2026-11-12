@@ -7,21 +7,23 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from msc.config import get_settings
 from msc.database import get_db
-from msc.models import Memory, Tag, MemoryVersion, MemoryRelation, ApiKey
+from msc.models import Memory, Tag, MemoryVersion, MemoryReview, MemoryRelation, ApiKey
 from msc.schemas import (
     BatchMemories, MemoryCreate, MemoryUpdate, MemoryResponse,
     GraphResponse, GraphNode, GraphEdge,
     MemoryInvalidate, MemoryVerdict, ProbeItem, PreflightItem, PreflightResponse,
+    DecayResponse, ReviewDueResponse, ReviewResponse,
     MEMORY_STATUSES, dump_refs, parse_refs,
 )
 from msc.auth.api_key import verify_key, LAN_USER
 from msc.text import clean_body, normalize_tags, slugify
 from msc.filesystem.write_through import delete_through, write_through
+from msc.services import freshness
 
 settings = get_settings()
 router = APIRouter()
@@ -124,10 +126,57 @@ def _live_status_pred():
     return or_(Memory.status.is_(None), Memory.status != "contradicted")
 
 
-def _split_contradicted(query):
-    """Return (query_without_contradicted, how_many_were_hidden)."""
-    hidden = query.filter(Memory.status == "contradicted").count()
-    return query.filter(_live_status_pred()), hidden
+def _count_live_and_hidden(db: Session, base_query):
+    """(rows the caller should see, rows hidden because a re-check contradicted them).
+
+    One aggregate instead of a COUNT plus a full SELECT: the list endpoint used
+    to fire an extra counting query on every request just to fill the
+    X-Contradicted-Hidden header. Counting the query as a subquery also counts
+    distinct memories, which matches the de-duplicated row list rather than the
+    multiplied rows its own tag join can produce.
+    """
+    sub = base_query.subquery()
+    total, contradicted = db.query(
+        func.count(),
+        func.coalesce(func.sum(case((sub.c.status == "contradicted", 1), else_=0)), 0),
+    ).select_from(sub).one()
+    return total, int(contradicted or 0)
+
+
+def _check_precondition(memory: Memory, if_status, if_updated_at) -> None:
+    """Reject a verdict written against a belief that has already moved.
+
+    Two agents re-check the same memory, both read status=active, both POST a
+    verdict — without a precondition the later write silently owns the truth and
+    the disagreement leaves no trace. Both fields are optional so a client that
+    never read the row can still record a verdict; anyone who did read it can
+    name the revision they were talking about.
+    """
+    current = memory.status or "active"
+    if if_status is not None and if_status != current:
+        raise HTTPException(
+            status_code=409,
+            detail=f"memory moved since you read it: status is {current!r}, you expected "
+                   f"{if_status!r} (updated_at {memory.updated_at!r}) — re-read, re-check, resend")
+    if if_updated_at is not None and (memory.updated_at or "") != if_updated_at:
+        raise HTTPException(
+            status_code=409,
+            detail=f"memory moved since you read it: updated_at is {memory.updated_at!r}, "
+                   f"you expected {if_updated_at!r} — re-read, re-check, resend")
+
+
+def _record_review(db: Session, memory: Memory, action: str, from_status: str,
+                   to_status: str, reason: str, actor: str, when: str) -> None:
+    """Append one line to the re-check history.
+
+    Deliberately never pruned the way MemoryVersion is: these rows hold no body,
+    and "this has been contradicted and restored three times" is exactly the
+    pattern a single newest-stamp column erases.
+    """
+    db.add(MemoryReview(
+        memory_id=memory.id, action=action, from_status=from_status, to_status=to_status,
+        reason=(reason or "").strip()[:2000] or None, actor=actor, created_at=when,
+    ))
 
 
 def _actor(request: Request) -> str:
@@ -289,6 +338,10 @@ def list_memories(
     if priority: query = query.filter(Memory.priority == priority)
     if branch: query = query.filter(Memory.branch == branch)
     if tag: query = query.join(Memory.tags).filter(Tag.name.in_(normalize_tags(tag)))
+    # ?tag=a,b used to return the same memory once per matching tag, and the
+    # count inherited the multiplication. DISTINCT is on the memory columns
+    # only, so the list and X-Total-Count finally agree.
+    if tag: query = query.distinct()
     if since: query = query.filter(Memory.updated_at >= since)
     if ref:
         # Impact analysis: "this endpoint/file/commit is going away — who
@@ -309,21 +362,23 @@ def list_memories(
     # Hide contradicted memories by default, but never silently: an agent that
     # pulls incrementally must be able to notice the shelf is smaller than the
     # library. The rows stay addressable by slug and via ?include_invalidated.
-    hidden = 0
-    if not include_invalidated:
-        query, hidden = _split_contradicted(query)
-
+    # One counting query answers both headers, instead of a COUNT for the
+    # hidden ones plus a SELECT of the whole match set just to slice it here.
     order_col = {
         "updated": Memory.updated_at, "created": Memory.created_at,
         "name": Memory.name, "priority": Memory.priority,
     }[order]
-    rows = query.order_by(order_col.desc()).all()
+    total, contradicted = _count_live_and_hidden(db, query)
+    hidden = contradicted if not include_invalidated else 0
+    if hidden:
+        query = query.filter(_live_status_pred())
+    total -= hidden
 
     if response is not None:
-        response.headers["X-Total-Count"] = str(len(rows))
+        response.headers["X-Total-Count"] = str(total)
         response.headers["X-Contradicted-Hidden"] = str(hidden)
 
-    return rows[offset:offset + limit]
+    return query.order_by(order_col.desc()).offset(offset).limit(limit).all()
 
 
 # ── Graph (MUST be before /{slug} route) ──────────────────────────────
@@ -637,6 +692,12 @@ def preflight(
     hidden = query.filter(Memory.status == "contradicted").count()
     if not include_invalidated:
         query = query.filter(_live_status_pred())
+    # Rows with no refs can only produce an empty report, and the old code paid
+    # for them anyway: the filter ran in Python after the ORM had built every
+    # object, so an "unlimited" sweep read the whole library to talk about the
+    # part of it that carries provenance. The same predicate the partial index
+    # (idx_memories_refs_live) exists to serve.
+    query = query.filter(Memory.refs.isnot(None), Memory.refs != "", Memory.refs != "[]")
     rows = [m for m in query.order_by(Memory.updated_at.desc()).all() if parse_refs(m.refs)]
 
     items: List[PreflightItem] = []
@@ -661,6 +722,29 @@ def preflight(
 
 
 # ── Get memory detail ─────────────────────────────────────────────────
+
+@router.get("/review-due", response_model=ReviewDueResponse)
+def review_due(
+    stale_after_days: Optional[int] = Query(
+        None, ge=0, description="Override MSC_STALE_AFTER_DAYS for this call"),
+    priority: Optional[str] = Query(None), category: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None), limit: int = Query(50, le=500),
+    db: Session = Depends(get_db),
+):
+    """What deserves a re-check next, and why — read-only.
+
+    Decay makes age visible as ``stale``; this is the queue that turns the
+    label back into work. It ranks by priority first and age second, because a
+    critical memory nobody has looked at in a year is a bigger problem than an
+    old low-priority note, and it names the reason ("never verified", "no refs",
+    "already contradicted") so the reader knows what kind of check is missing.
+    Nothing here writes: a clock may make a memory suspicious, only a re-check
+    may contradict it.
+    """
+    days = settings.stale_after_days if stale_after_days is None else stale_after_days
+    return freshness.review_queue(
+        db, days=days, limit=limit, priority=priority, category=category, tag=tag)
+
 
 @router.get("/{slug}", response_model=MemoryResponse)
 def get_memory(slug: str, include_archived: bool = Query(False), db: Session = Depends(get_db)):
@@ -879,11 +963,17 @@ def invalidate_memory(slug: str, data: MemoryInvalidate, request: Request,
     closes: read → re-check → contradicted → stop believing it. Without it the
     library only ever grows, and a stale claim keeps re-entering every later
     session carrying the confidence of its own priority label.
+
+    Every accepted verdict also appends a row to ``GET /{slug}/reviews``, and
+    ``if_status``/``if_updated_at`` make a write based on a stale read fail with
+    409 instead of overwriting whoever re-checked it first.
     """
     _require_auth(request, db)
     _guard_write()
     memory = _resolve_memory(db, slug)
     actor = _actor(request)
+    was = memory.status or "active"
+    _check_precondition(memory, data.if_status, data.if_updated_at)
 
     successor = None
     if data.superseded_by:
@@ -904,6 +994,7 @@ def invalidate_memory(slug: str, data: MemoryInvalidate, request: Request,
     memory.invalidated_at = now
     memory.invalidated_reason = data.reason
     memory.updated_at = now
+    _record_review(db, memory, "invalidate", was, data.status, data.reason, actor, now)
     if successor is not None:
         edge = db.query(MemoryRelation).filter(
             MemoryRelation.memory_id_a == successor.id,
@@ -931,6 +1022,9 @@ def verify_memory(slug: str, data: MemoryVerdict, request: Request,
     _require_auth(request, db)
     _guard_write()
     memory = _resolve_memory(db, slug)
+    actor = _actor(request)
+    was_now = memory.status or "active"
+    _check_precondition(memory, data.if_status, data.if_updated_at)
     now = datetime.now(timezone.utc).isoformat()
 
     if data.verdict != "active" and not data.reason.strip():
@@ -955,9 +1049,59 @@ def verify_memory(slug: str, data: MemoryVerdict, request: Request,
         memory.invalidated_reason = data.reason.strip()[:2000]
         memory.updated_at = now
 
+    _record_review(db, memory, "verify", was_now, memory.status or "active",
+                   data.reason or ("re-check confirmed" if data.verdict == "active" else ""),
+                   actor, now)
     db.commit()
     _write_through(db, memory)
     return memory
+
+
+@router.get("/{slug}/reviews", response_model=List[ReviewResponse])
+def list_reviews(slug: str, limit: int = Query(50, le=500),
+                 include_archived: bool = Query(False), db: Session = Depends(get_db)):
+    """What re-checks have concluded about this memory, newest first.
+
+    The status column says what is believed *now*. This says who believed it,
+    when, on what grounds, and that the same claim has been contradicted and
+    restored before — which is the difference between a library that maintains
+    itself and one where the last writer simply wins.
+    """
+    memory = _resolve_memory(db, slug, include_archived=include_archived)
+    return db.query(MemoryReview).filter(
+        MemoryReview.memory_id == memory.id).order_by(
+        MemoryReview.created_at.desc(), MemoryReview.id.desc()).limit(limit).all()
+
+
+@router.post("/decay", response_model=DecayResponse)
+def decay(
+    apply: bool = Query(False, description="Write the stamps; default only reports"),
+    stale_after_days: Optional[int] = Query(None, ge=0),
+    limit: int = Query(200, le=2000),
+    request: Request = None, db: Session = Depends(get_db),
+):
+    """Downgrade long-unchecked ``active`` memories to ``stale``.
+
+    This is the automatic half that was missing: ``verified_at`` used to be
+    written and never read, so nothing ever aged out and the library grew more
+    confident with age instead of more careful. Deliberately narrow —
+    active→stale only, never contradicted (a contradiction needs a reason a
+    reader can check), never a restore (recovery stays an act of re-checking) —
+    and ``stale`` memories stay listed and recallable, because time passing is
+    suspicion, not evidence. Dry-run by default; the scheduled worker is the
+    same call with apply=true.
+    """
+    _require_auth(request, db)
+    _guard_write()
+    days = settings.stale_after_days if stale_after_days is None else stale_after_days
+    if days <= 0:
+        raise HTTPException(status_code=422,
+                            detail="decay is off (stale_after_days=0); set MSC_STALE_AFTER_DAYS "
+                                   "or pass ?stale_after_days=N to try it")
+    # apply_decay mirrors each stamped row to its markdown file itself, so the
+    # endpoint and the scheduled worker cannot drift into two behaviours.
+    return freshness.apply_decay(db, days=days, limit=limit, actor=_actor(request) or "decay",
+                                 apply=apply)
 
 
 @router.post("/batch", status_code=201)
