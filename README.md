@@ -286,6 +286,33 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.7.0（main）：复核用地址认机器，不用名字
+
+`cli/msc-verify.sh` v1.2。v1.1 把「`file:` 只属于一台机器」写进逻辑之后，全量抽样（`--limit 200`，99 条带出处的记忆）立刻露出三个漏洞，每一个都是某台机器在替别的机器判死刑。
+
+- **身份从主机名换成 IPv4** — 名字会改：n1 到 2026-11-12 还叫 `note02`；这个 LAN 连名字解析都没有，四台之间本来就全走 IP。写记忆的首行规范早就是 `host: <名字> ip: <地址>`，规范里活下来的那一项，探针凭什么不用。新增 `ip:` ref 前缀（服务端 `REF_KINDS` 一处），写的人用它点名「这条说的是哪台」。
+- **归属分级，只取一层**：`ip:` refs（或装着地址的 `host:` refs）→ 正文 hostline 的 `ip:` → `host:` 名字 → hostline 的名字。不并集——一个过期的名字去否决一个现在的地址，等于让弱身份给强身份投票。名字层保留只是为了老记忆，它是兜底不是第二意见。
+- **没记录归属 = 默认关闭** — 旧版是「没声明 = 谁问都算」，于是同一条 dgx 记忆在 n1、n4 各被判死 6 条（`/home/astro/msc`、`/etc/X11/xorg.conf` 这些那台机器上从来没有过的路径）。「我这儿没有」不是「它没了」。
+- **`host:` 混用暴露的第二层** — mmm6 三条记忆 refs 里的 `host:mmm6` 是「我在 mmm6 上写」被顺手抄进去的，说的其实是 ssh 过去的 dgx，于是 mmm6 判 `/etc/security/limits.d/60-memlock.conf` 已消失、把三条 dgx 记忆报成 CONTRADICTED。元数据里没有「说的是哪台」这一栏，探针变不出来：写侧补 `ip:192.168.29.50` 才是解。
+- **OS 形状守卫扩到系统树** — macOS 有 `/etc`（软进 `/private/etc`）但没有 systemd 和 snapd，Linux 没有 `/Applications`。守卫原先只挡 `/home`、`/Users`，`/etc/systemd/*`、`/var/lib/snapd/*`、`/proc`、`/run` 这类一律放行——上面那三条就是这么被误判的。顺带修掉属主那段：`sed 's#...\(home\|Users\)...#'` 用了 BSD sed 不支持的 `\|`，在 mac 上静默不匹配，等于没有守卫，改用 awk。
+- **留痕记地址** — `X-Agent: msc-verify@192.168.29.50`，reason 带 `origin <值>/<ip|name>`；名字进留痕会跟着改名一起烂掉。`MY_LABEL` 取「到 MSC 服务器走的那张网卡的源地址」，不是排序第一张（之前 tailscale 的 `100.x` 老赢）。
+- 移植坑两条，都是实机撞出来的：`mawk` 不许在 `END` 里 `return`（dgx 就是 mawk）；awk 程序的注释里写英文撇号（`hostline's`）会把外层的单引号串截断，`sh -n` 当场报错。`refs_of` 的前缀白名单也漏了 `ip:`——不加进去，新写的前缀会被静默丢掉，等于没挂出处。
+- **只有回答能推翻记忆** — `url:` 那一支把 curl 的 `000` 一律读成 `missing`，而 `000` 混装了三种失败：超时、端口没人听、名字不解析。合上盖的 mmm6 会让每条指向 `:1234`/`:8080` 的记忆「消失」，带 `--yes` 就真去 invalidate。现在按 curl 退出码分开：`6` 不解析、`28` 超时、其余无应答 → 一律 `unchecked`，只有 HTTP `404/410` 这种**说了「不在这儿」的回答**才算矛盾。`mem:` 同理——库不应答不等于条目被删。实测口径：dgx 上 `HEAD github.com/openai/codex` 给 200、紧接着 `GET` 超时，沉默描述的是这条路，不是那个端点。服务端 `_probe_ref` 早就把 `TimeoutException` 和 `ConnectError` 分开了，这次是客户端补齐另一半。
+- 服务端只动契约不动判定：`ip` 进 `REF_KINDS`，`/help` 与 `X-Provenance-Hint` 的示例改用 `ip:`。API 仍是唯一地址 `http://192.168.29.50:8000/api/v1`，dgx 本机也照样走 HTTP，不开本地后门。
+- 测试 `228 passed`、`ruff --select F,E9` 干净；新增用例覆盖：地址分级与「名字不许否决地址」、无归属默认关闭、认不出自己的机器什么都不判、跨 OS 形状（两侧都断言，守卫不许吃掉本机的系统路径）、`ip:` ref 的往返与拒绝、以及「沉默不是矛盾」（本地起一个真 HTTP 服务：`/alive` 200 → ok、`/gone` 404 → missing、端口 1 拒绝与 `.invalid` 不解析 → unchecked）。
+- 上线后四台八侧同步到同一 md5，各跑 `--brief --limit 200`（99 条带出处的记忆）：dgx `69/0`、n1 `33/0`、n4 `36/0`、mmm6 `51/0`（确认/矛盾）。改之前 n1、n4 各凭空判死 6 条、mmm6 判死 4 条。剩下 30~66 条 `uncheckable` 是对的：`git:` 对象不在这个 checkout、`host:` 写的是别的机器、以及 15 条至今没挂任何归属的老记忆——它们的出路是补 `ip:`，不是把判据放松。
+
+### 2.6.9（main）：清空归档必须明说，不然什么都不做
+
+一次真实事故。想硬删一条自己造的探针记忆，把 `{"slug": "..."}` 当请求体发给 `DELETE /api/v1/memories/archived` —— 这个路由**不读请求体、没有过滤条件**，一发把整个归档清了：17 条，其中 15 条是真实历史记忆。靠 `~/msc/backups/` 的自动快照 + 停服补差集才全数救回（127 行 / 15 归档 / 112 活跃，`unindexed=0`）。
+
+- **破坏的那一半改成显式 opt-in** — 只有 `?confirm=all` 才动手；其余一律 400，而 400 的文案直接指出单条该怎么走：`DELETE /api/v1/memories/<slug>?hard=true`。`confirm=yes`、`confirm=ALL` 都不算数：给破坏性开关做模糊匹配，等于把守卫写成装饰。
+- **为什么不顺便加 slug 过滤** — 单条硬删**本来就能用**：`delete_memory` 解析时带 `include_archived=True`，UI 的「彻底删除」走的就是它，归档行一样删得掉。再在批量端点上做第二套过滤，是把同一个能力放两处，然后让人猜哪一处是真的。少一个能被误用的形状，比多一个便利重要。
+- **Web UI 行为不变** — 它原本就有 `confirm()` 弹窗拦人，这次只是把请求带上 `?confirm=all`。一直在裸奔的是程序调用：curl、agent、脚本 —— 也就是这次真正清错的那一类。
+- `/help` 的端点表写明「无过滤、无请求体，不带 `confirm=all` 就 400」，免得下一个人照名字猜 `purge` 的语义。
+- 同日配套（另见 `tool:` 提交）：`cli/msc-verify.sh` v1.1 给复核加了**机器归属** —— `file:` 只在记忆自己点名的机器上可判（origin = `host:` refs ∪ 正文首行 `host:`）。同一天 n1/n4 就凭这条不再凭空判死 dgx 的记忆；四台八侧抽样 `contradicted=0`。
+- 测试：既有全量清除测试改用确认调用；新增守门一段（裸调用 / `confirm=yes` / `confirm=ALL` 都必须 400，归档条目必须还在，400 指路的单条硬删对归档行真的生效）+ 探针机器归属与「认不出自己就什么都不判」两段。`226 passed`，`ruff --select F,E9` 干净。
+
 ### 2.6.8（main）：老命名的会话小结也算流水
 
 清那 19 条 `unanchored` 时撞出来的。`session-summary-<日期>-*` 是 hook v2 / v3.4 时代的自动产物，而 2.6.6 的 flow 正则只认 `turn-`/`sess-`/`summary-`/`daily-summary-` —— 漏了这一代命名，于是机器写的摘要一直躺在"人该去补把手"的清单里，而补把手对它毫无意义：它不是被人维护的，是被流水线整条覆盖写的。

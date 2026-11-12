@@ -46,18 +46,20 @@ def _status_of(client, slug):
 def test_refs_roundtrip_and_status(client):
     slug = _create(client, "Prov Refs", refs=[
         "git:a802674", "file:/home/astro/msc/backend/msc/main.py",
-        "url:http://192.168.29.50:8000/api/v1/health", "mem:prov-refs"])
+        "url:http://192.168.29.50:8000/api/v1/health", "mem:prov-refs",
+        "ip:192.168.29.50"])
     body = _status_of(client, slug)
     assert body["status"] == "active" and body["slug"] == slug
     assert body["refs"] == ["git:a802674", "file:/home/astro/msc/backend/msc/main.py",
-                            "url:http://192.168.29.50:8000/api/v1/health", "mem:prov-refs"]
+                            "url:http://192.168.29.50:8000/api/v1/health", "mem:prov-refs",
+                            "ip:192.168.29.50"]
 
 
 def test_ref_without_a_known_prefix_is_rejected(client):
     bad = client.post("/api/v1/memories", json=_memo("Prov Bad Ref", refs=["commit:abc123"]))
     assert bad.status_code == 422, bad.text
     detail = bad.text
-    for kind in ("git", "file", "url", "mem", "cmd", "host"):
+    for kind in ("git", "file", "url", "mem", "cmd", "host", "ip"):
         assert kind in detail, detail
     bad2 = client.post("/api/v1/memories", json=_memo("Prov Empty Ref", refs=["git:"]))
     assert bad2.status_code == 422, bad2.text
@@ -438,25 +440,248 @@ def test_the_client_probe_answers_verdict_tab_detail():
     probe_one must emit one. The host: branch shipped ``\\written`` — a stray
     backslash where the escape should be — so a ref that belongs to another
     machine came back as one unsplit blob, matched no case, and was counted as
-    neither ok nor unchecked: the 「几条属于别的机器」 number read 0."""
+    neither ok nor unchecked: the 「几条属于别的机器」 number read 0.
+
+    The slice starts at ``norm_host`` because probe_one leans on it, and on
+    ``HOST_ME``/``MY_IPS``: comparing ``hostname -s`` raw against a ref lost a
+    host to its own mDNS suffix and to case."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "cli" / "msc-verify.sh"
+    source = script.read_text(encoding="utf-8")
+    body = source[source.index("norm_host() {"):
+                  source.index("\n}\n", source.index("probe_one() {")) + 3]
+    # a nonexistent path under our own home: same OS, same owner, so the only
+    # thing left standing between it and "missing" is the machine-scope rule
+    dead = f"file:{Path.home()}/msc-probe-qorax-{__name__}"
+    # 192.0.2.0/24 is TEST-NET: reserved, so it can never be a real address of
+    # the box running this test, which is what makes the two cases below safe
+    HERE, THERE = "192.0.2.1", "192.0.2.9"
+
+    def ask(ref, *, host_me="dgx", origin=(("name", "dgx"),), my_ips=HERE):
+        # set_scope, not hand-set globals: the scope decision is derived from
+        # the document, so a test that wrote _file_scope itself could pass
+        # while check_slug still derived it wrong. MY_IPS is assigned *after*
+        # the slice because the slice works out the real box's addresses.
+        shell = f'HOST_NOW=dgx.local\n{body}\nMY_IPS="{my_ips}"\nMY_LABEL="{my_ips}"\n'
+        shell += f'HOST_ME="{host_me}"\nset_scope "'
+        shell += "".join(f"{kind}\t{value}\n" for kind, value in origin)
+        shell += f'"\nprobe_one "{ref}"'
+        run = subprocess.run(["sh", "-c", shell],
+                             capture_output=True, text=True, timeout=30)
+        assert run.returncode == 0, run.stderr
+        verdict, separator, detail = run.stdout.partition("\t")
+        assert separator == "\t", f"{ref} answered without a separator: {run.stdout!r}"
+        return verdict, detail
+
+    for ref, want in (("host:mmm6", "unchecked"), ("host:dgx", "ok"),
+                      ("host:DGX", "ok"), ("host:dgx.local", "ok"),
+                      (f"ip:{HERE}", "ok"), (f"ip:{THERE}", "unchecked"),
+                      (f"host:{HERE}", "ok"), ("ip:localhost", "unchecked"),
+                      ("cmd:ls -l", "unchecked"), ("file:/nonexistent/qorax", "missing"),
+                      (dead, "missing")):
+        verdict, detail = ask(ref)
+        assert verdict == want, f"{ref}: got {verdict} / {detail}"
+        assert detail.strip(), f"{ref}: no detail for {want}"
+
+    # machine scope by address: a path that lives on some other box is not ours
+    # to declare gone — this is what stopped n1 and n4 contradicting dgx
+    # memories over /home/astro/msc and /etc/X11/xorg.conf.
+    verdict, detail = ask(dead, origin=(("ip", THERE),))
+    assert verdict == "unchecked", f"foreign origin judged anyway: {verdict} / {detail}"
+    assert f"origin is {THERE} (ip)" in detail
+
+    # an address outranks a name and a name may not veto an address: the weaker
+    # identity is a fallback, not a second opinion
+    verdict, _ = ask(dead, origin=(("ip", THERE), ("name", "dgx")))
+    assert verdict == "unchecked", "a stale name overrode the address"
+    verdict, _ = ask(dead, origin=(("ip", HERE), ("name", "somewhere")))
+    assert verdict == "missing", "this box holds the address and was not allowed to judge"
+
+    # legacy: a memory that recorded only a name is still handled
+    verdict, detail = ask(dead, host_me="n1", origin=(("name", "dgx"),))
+    assert verdict == "unchecked"
+    assert "origin is dgx (name)" in detail
+
+    # a memory with no box on record names no filesystem: no box may judge its
+    # paths, least of all the one that happens to be asking. Left open, six
+    # dgx-born memories read CONTRADICTED on n1 and n4.
+    verdict, detail = ask(dead, origin=())
+    assert verdict == "unchecked", f"origin-less memory judged: {verdict} / {detail}"
+    assert "no origin on record" in detail
+
+    # and a box that cannot name any address of its own judges nothing
+    verdict, _ = ask(dead, origin=(("ip", HERE),), my_ips="")
+    assert verdict == "unchecked", "a box with no address confirmed an origin"
+
+    # OS shape: a path that cannot exist on this OS is not evidence either.
+    # macOS has /etc (a symlink into /private/etc) but no systemd; Linux has no
+    # /Applications. mmm6 called three dgx memories CONTRADICTED over exactly
+    # this on 2026-11-13.
+    elsewhere = ("/etc/systemd/journald.conf" if sys.platform == "darwin"
+                 else "/Applications/Qoder.app/Contents")
+    verdict, detail = ask(f"file:{elsewhere}")
+    assert verdict == "unchecked", f"{elsewhere} judged on the wrong OS: {verdict} / {detail}"
+    assert "not a" in detail
+    if sys.platform != "darwin":
+        # the guard must not eat real Linux system paths either
+        verdict, detail = ask("file:/etc/systemd/system")
+        assert verdict in ("ok", "missing"), f"own-OS path blocked by the guard: {detail}"
+
+
+def test_a_probe_without_an_identity_asserts_nothing():
+    """No ``HOST_ME`` must never read as confirmation.
+
+    probe_one grew a dependency on its own helpers with the machine-scope rule;
+    a slice that lost them used to answer ``ok\tthis is that host`` for every
+    host, because an unset variable equals an unset variable. A probe that
+    cannot say where it is has no authority over any ref at all."""
     import subprocess
     from pathlib import Path
 
     script = Path(__file__).resolve().parents[2] / "cli" / "msc-verify.sh"
     source = script.read_text(encoding="utf-8")
-    start = source.index("probe_one() {")
-    body = source[start:source.index("\n}\n", start) + 3]
+    body = source[source.index("norm_host() {"):
+                  source.index("\n}\n", source.index("probe_one() {")) + 3]
 
-    for ref, want in (("host:mmm6", "unchecked"), ("host:dgx", "ok"),
-                      ("cmd:ls -l", "unchecked"), ("file:/nonexistent/qorax", "missing")):
-        run = subprocess.run(["sh", "-c", f'{body}\nHOST_NOW=dgx\nprobe_one {ref}'],
+    for ref in ("host:dgx", "host:n1", "host:mmm6"):
+        run = subprocess.run(["sh", "-c", f'HOST_NOW=dgx\n{body}\nHOST_ME=""\nprobe_one "{ref}"'],
                              capture_output=True, text=True, timeout=30)
+        assert run.returncode == 0, run.stderr
+        verdict, separator, _ = run.stdout.partition("\t")
+        assert separator == "\t", f"{ref} answered without a separator: {run.stdout!r}"
+        assert verdict == "unchecked", f"{ref} confirmed by a probe with no identity: {run.stdout!r}"
+
+    # and the origin list keeps its half of the bargain: no identity means the
+    # path is not judged either
+    run = subprocess.run(
+        ["sh", "-c", f'HOST_NOW=dgx\n{body}\nHOST_ME=""\nMY_IPS=""\nset_scope "name\tdgx"\n'
+                     f'probe_one "file:/etc/hosts"'],
+        capture_output=True, text=True, timeout=30)
+    assert run.stdout.startswith("unchecked\t"), run.stdout
+
+    # an address ref needs an address to compare against, not a hostname: with
+    # neither, even the box's own address must not read as confirmation
+    run = subprocess.run(
+        ["sh", "-c", f'HOST_NOW=dgx\n{body}\nHOST_ME=""\nMY_IPS=""\n'
+                     f'probe_one "ip:192.0.2.1"'],
+        capture_output=True, text=True, timeout=30)
+    assert run.stdout.startswith("unchecked\t"), run.stdout
+
+
+def test_silence_from_an_endpoint_is_not_a_contradiction():
+    """Only an answer can contradict a memory.
+
+    curl reports ``000`` for a timeout, a refused port and an unresolved name
+    alike, and the probe mapped all three onto 「missing」. A sleeping Mac is
+    therefore enough to contradict every memory that points at one of its
+    ports — and with ``--yes`` to invalidate them. Measured 2026-11-13 from dgx,
+    where github.com answers HEAD 200 for a repo that exists and times out on
+    the very next GET: silence describes the route, not the endpoint. The
+    server-side twin of this rule is ``_probe_ref``, which already separates
+    ``TimeoutException`` (unchecked) from ``ConnectError``."""
+    import subprocess
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "cli" / "msc-verify.sh"
+    source = script.read_text(encoding="utf-8")
+    body = source[source.index("norm_host() {"):
+                  source.index("\n}\n", source.index("probe_one() {")) + 3]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200 if self.path == "/alive" else 404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    def ask(ref):
+        run = subprocess.run(["sh", "-c", f'HOST_NOW=dgx\n{body}\nprobe_one "{ref}"'],
+                             capture_output=True, text=True, timeout=60)
         assert run.returncode == 0, run.stderr
         verdict, separator, detail = run.stdout.partition("\t")
         assert separator == "\t", f"{ref} answered without a separator: {run.stdout!r}"
-        assert verdict == want, f"{ref}: {run.stdout!r}"
-        assert detail.strip(), f"{ref}: no detail for {want}"
+        return verdict, detail
 
+    try:
+        assert ask(f"url:http://127.0.0.1:{port}/alive")[0] == "ok"
+        # an endpoint that answers 「not here」 is the one thing that does
+        # contradict: it is an answer, not an absence of one
+        verdict, detail = ask(f"url:http://127.0.0.1:{port}/gone")
+        assert verdict == "missing", f"a 404 was not read as gone: {verdict} / {detail}"
+        # refused, unresolvable, and an unreachable library: all silence, none
+        # of it evidence
+        for ref in ("url:http://127.0.0.1:1/", "url:http://qorax.invalid/",
+                    "mem:whatever-the-library-holds"):
+            verdict, detail = ask(ref)
+            assert verdict == "unchecked", f"{ref} contradicted by silence: {verdict} / {detail}"
+    finally:
+        srv.shutdown()
+
+
+def test_a_claim_is_anchored_by_address_and_only_falls_back_to_a_name():
+    """origin_of emits ``kind<TAB>value`` for ONE tier: address before name,
+    refs before hostline, and never a union of the two.
+
+    Address before name because a hostname is a label that gets renamed — n1
+    answered to note02 until 2026-11-12 — and nothing on this LAN resolves
+    names, so every box here is reached by number anyway.
+
+    Refs before hostline because they answer different questions: a ref is a
+    deliberate statement about what a memory concerns, while the hostline only
+    records who wrote it. An agent that ssh'd from mmm6 into dgx writes
+    ``host: mmm6`` over paths that only ever lived on dgx; unioned, those
+    memories stayed judgeable on mmm6, which called
+    /etc/security/limits.d/60-memlock.conf 「gone」 and reported three dgx
+    memories CONTRADICTED. Measured 2026-11-13."""
+    import subprocess
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "cli" / "msc-verify.sh"
+    source = script.read_text(encoding="utf-8")
+    fn = source[source.index("origin_of() {"):
+                source.index("\n}\n", source.index("origin_of() {")) + 3]
+
+    def origin(doc):
+        run = subprocess.run(["sh", "-c", f"{fn}\norigin_of"], input=doc,
+                             capture_output=True, text=True, timeout=30)
+        assert run.returncode == 0, run.stderr
+        return [tuple(line.split("\t")) for line in run.stdout.split("\n") if line.strip()]
+
+    # ip: ref — the form a writer uses to say which box a claim belongs to
+    assert origin('{"refs":["ip:192.168.29.50","file:/etc/x"],"body":"# none"}') \
+        == [("ip", "192.168.29.50")]
+    # a host: ref holding an address is an address, not a name
+    assert origin('{"refs":["host:192.168.29.11","file:/x"],"body":"host: dgx\\nx"}') \
+        == [("ip", "192.168.29.11")]
+    # an ip: ref outranks a hostline that names a different box
+    assert origin('{"refs":["ip:192.168.29.50"],"body":"host: mmm6 ip: 192.168.29.100\\nx"}') \
+        == [("ip", "192.168.29.50")]
+    # the mis-anchored shape from the incident: writer mmm6, subject dgx
+    assert origin('{"refs":["host:mmm6","ip:192.168.29.50","file:/etc/security'
+                  '/limits.d/60-memlock.conf"],"body":"host: mmm6 ip: 192.168.29.100\\nx"}') \
+        == [("ip", "192.168.29.50")]
+    # no ref with an address: the hostline ip: stands in — 记忆命名原则 puts it
+    # there, which is why it survives a rename
+    assert origin('{"refs":["host:mmm6","file:/etc/x"],"body":"host: mmm6 ip: 192.168.29.100\\nx"}') \
+        == [("ip", "192.168.29.100")]
+    # nothing has an address at all — only then do names decide, refs first
+    assert origin('{"refs":["host:mmm6","file:/x"],"body":"host: dgx\\nx"}') == [("name", "mmm6")]
+    # the same normalisation the live hostname gets: mDNS suffix and case
+    assert origin('{"refs":["host:DGX.local","host:n1"],"body":"# no hostline"}') \
+        == [("name", "dgx"), ("name", "n1")]
+    # nothing on record is not the same as "this box"
+    assert origin('{"refs":["file:/etc/x"],"body":"# no hostline here"}') == []
 
 def test_a_path_outside_the_mount_set_is_not_called_gone(client):
     """file:/home/astro/msc is real on the writer's machine and simply not
