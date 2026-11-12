@@ -1,11 +1,13 @@
 """API routes: memories CRUD, graph, relate."""
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from msc.config import get_settings
@@ -14,6 +16,8 @@ from msc.models import Memory, Tag, MemoryVersion, MemoryRelation, ApiKey
 from msc.schemas import (
     BatchMemories, MemoryCreate, MemoryUpdate, MemoryResponse,
     GraphResponse, GraphNode, GraphEdge,
+    MemoryInvalidate, MemoryVerdict, ProbeItem, PreflightItem, PreflightResponse,
+    MEMORY_STATUSES, dump_refs, parse_refs,
 )
 from msc.auth.api_key import verify_key, LAN_USER
 from msc.text import clean_body, normalize_tags, slugify
@@ -73,6 +77,9 @@ def _require_auth(request: Request, db: Session) -> dict:
 CATEGORIES = ("config", "project", "user", "knowledge", "reference")
 PRIORITIES = ("low", "medium", "high", "critical")
 LIFESPANS = ("temporary", "permanent")
+# A memory that a re-check contradicted is not deleted: a wrong belief is still
+# evidence. It stops being handed to the next session as if it were current.
+INVALIDATED_STATUSES = ("stale", "contradicted")
 
 
 def _slugify(name: str) -> str:
@@ -94,13 +101,33 @@ def _validate_vocab(data) -> None:
     The SQLite schema enforces these with CHECK constraints, so an unchecked
     value surfaces as a 500 IntegrityError — useless for an agent.
     """
-    for field, allowed in (("category", CATEGORIES), ("priority", PRIORITIES), ("lifespan", LIFESPANS)):
+    # status joins the same "422 must name the allowed values" contract. The
+    # CHECK constraint only exists in databases created after this column, so on
+    # an upgraded db an unchecked value would otherwise surface as a 500.
+    for field, allowed in (("category", CATEGORIES), ("priority", PRIORITIES),
+                           ("lifespan", LIFESPANS), ("status", MEMORY_STATUSES)):
         value = getattr(data, field, None)
         if value is not None and value not in allowed:
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid {field} {value!r}; allowed: {', '.join(allowed)}",
             )
+
+
+def _live_status_pred():
+    """Predicate for "not contradicted", NULL-safe.
+
+    A database upgraded with ALTER TABLE has NULL status on old rows, and NULL
+    compares as unknown — a bare ``!= 'contradicted'`` would hide every memory
+    written before this column existed.
+    """
+    return or_(Memory.status.is_(None), Memory.status != "contradicted")
+
+
+def _split_contradicted(query):
+    """Return (query_without_contradicted, how_many_were_hidden)."""
+    hidden = query.filter(Memory.status == "contradicted").count()
+    return query.filter(_live_status_pred()), hidden
 
 
 def _actor(request: Request) -> str:
@@ -182,6 +209,7 @@ def _create_by_slug(db: Session, slug: str, data: MemoryUpdate, actor: str) -> M
         category=data.category or "reference", lifespan=data.lifespan or "permanent",
         branch=data.branch or "", created_at=now, updated_at=now,
         source="msc", owner_id=None,
+        refs=dump_refs(data.refs), status="active",
     )
     db.add(memory)
     db.flush()
@@ -237,6 +265,9 @@ def list_memories(
     tag: Optional[str] = Query(None), branch: Optional[str] = Query(None),
     archived: bool = Query(False, description="List only the soft-deleted ones"),
     include_archived: bool = Query(False, description="Keep deleted ones in the list"),
+    include_invalidated: bool = Query(
+        False, description="Keep memories a re-check contradicted in the list "
+                           "(the default hides them; X-Contradicted-Hidden says how many)"),
     since: Optional[str] = Query(None, description="Only memories updated at/after this ISO timestamp"),
     q: Optional[str] = Query(None, description="Substring match on name/description/body/slug"),
     order: str = Query("updated", pattern="^(updated|created|priority|name)$"),
@@ -264,6 +295,13 @@ def list_memories(
             | (Memory.body.like(like)) | (Memory.slug.like(like))
         )
 
+    # Hide contradicted memories by default, but never silently: an agent that
+    # pulls incrementally must be able to notice the shelf is smaller than the
+    # library. The rows stay addressable by slug and via ?include_invalidated.
+    hidden = 0
+    if not include_invalidated:
+        query, hidden = _split_contradicted(query)
+
     order_col = {
         "updated": Memory.updated_at, "created": Memory.created_at,
         "name": Memory.name, "priority": Memory.priority,
@@ -272,6 +310,7 @@ def list_memories(
 
     if response is not None:
         response.headers["X-Total-Count"] = str(len(rows))
+        response.headers["X-Contradicted-Hidden"] = str(hidden)
 
     return rows[offset:offset + limit]
 
@@ -335,6 +374,129 @@ def auto_link_graph(
                                min_shared=min_shared, rebuild=rebuild)
 
 
+# ── Provenance preflight (MUST be before /{slug} route) ───────────────
+
+# HTTP methods that mean "not this verb", not "this endpoint is gone".
+_METHOD_UNSUPPORTED = (405, 501)
+
+
+def _url_verdict(status_code: int) -> tuple:
+    """Map an HTTP answer onto a provenance verdict: ``(verdict, detail)``.
+
+    Getting this wrong invents staleness, which is worse than missing it. A 405
+    only says the verb is unsupported; a 401/403 says something is there and
+    hiding; a 5xx says something is there and unwell. None of those contradicts
+    "this endpoint is where the fact lives". Only silence or a 404 does.
+    """
+    if status_code < 400:
+        return "ok", f"HTTP {status_code}"
+    if status_code == 404:
+        return "missing", "HTTP 404 — endpoint is gone"
+    if status_code in _METHOD_UNSUPPORTED:
+        return "retry", f"HTTP {status_code} — method unsupported"
+    if status_code in (401, 403):
+        return "unchecked", f"HTTP {status_code} — answers, but not to us"
+    if 400 <= status_code < 500:
+        return "unchecked", f"HTTP {status_code} — answers, path unconfirmed"
+    return "unchecked", f"HTTP {status_code} — answers, but unwell"
+
+
+def _probe_ref(db: Session, ref: str) -> ProbeItem:
+    """Re-check one ref from the server. Never raises.
+
+    `missing` means the handle is gone; `unchecked` means this server is not the
+    place to check it. Conflating the two would turn a probe into a rumour.
+    """
+    kind, _, target = ref.partition(":")
+    target = target.strip()
+    if kind == "mem":
+        hit = db.query(Memory).filter(Memory.slug == target, Memory.archived == 0).first()
+        if hit is None:
+            hit = db.query(Memory).filter(Memory.name == target, Memory.archived == 0).first()
+        return ProbeItem(ref=ref, kind=kind, verdict="ok" if hit else "missing",
+                         detail="live memory" if hit else "no live memory with that slug")
+    if kind == "file":
+        if not os.path.isabs(target):
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                             detail="relative path belongs to the writing host")
+        if os.path.exists(target):
+            return ProbeItem(ref=ref, kind=kind, verdict="ok", detail="path exists")
+        return ProbeItem(ref=ref, kind=kind, verdict="missing", detail="path is gone")
+    if kind == "url":
+        if not target.startswith(("http://", "https://")):
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked", detail="not an http(s) endpoint")
+        try:
+            import httpx
+            with httpx.Client(timeout=1.5) as probe_client:
+                reply = probe_client.head(target, follow_redirects=True)
+                verdict, detail = _url_verdict(reply.status_code)
+                if verdict == "retry":  # ask the same way a browser would
+                    reply = probe_client.get(target, follow_redirects=True)
+                    verdict, detail = _url_verdict(reply.status_code)
+            if verdict == "retry":
+                verdict, detail = "unchecked", detail
+            return ProbeItem(ref=ref, kind=kind, verdict=verdict, detail=detail)
+        except Exception as exc:
+            # No answer at all: the service this ref pointed at is not there.
+            return ProbeItem(ref=ref, kind=kind, verdict="missing",
+                             detail=f"{type(exc).__name__}: {exc}"[:160])
+    # git:/cmd:/host: — the only machine that can answer is the one that wrote
+    # it, and the server must not guess on its behalf.
+    return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                     detail=f"{kind}: refs are checked by the client that wrote them")
+
+
+@router.get("/preflight", response_model=PreflightResponse)
+def preflight(
+    limit: int = Query(20, le=100),
+    budget_ms: int = Query(1200, le=8000, description="Wall-clock ceiling for probing"),
+    category: Optional[str] = Query(None), priority: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    include_invalidated: bool = Query(
+        True, description="Re-probe contradicted ones too, so a re-check can restore them"),
+    db: Session = Depends(get_db),
+):
+    """Re-check as much of a memory's provenance as this server can reach.
+
+    A session hook calls this before injecting memory, so a belief that no
+    longer matches reality cannot enter the prompt as fact. Deliberately
+    partial and deliberately read-only: it reports verdicts, it never writes.
+    Turning a verdict into a status change is an explicit POST /{slug}/verify,
+    because a GET that silently rewrites the library would also be a GET that
+    corrupts it whenever two agents disagree about a probe.
+    """
+    deadline = time.monotonic() + max(0, budget_ms) / 1000.0
+    query = db.query(Memory).filter(Memory.archived == 0)
+    if category: query = query.filter(Memory.category == category)
+    if priority: query = query.filter(Memory.priority == priority)
+    if tag: query = query.join(Memory.tags).filter(Tag.name.in_(normalize_tags(tag)))
+
+    hidden = query.filter(Memory.status == "contradicted").count()
+    if not include_invalidated:
+        query = query.filter(_live_status_pred())
+    rows = [m for m in query.order_by(Memory.updated_at.desc()).all() if parse_refs(m.refs)]
+
+    items: List[PreflightItem] = []
+    for memory in rows[:limit]:
+        refs = parse_refs(memory.refs)
+        probes: List[ProbeItem] = []
+        for ref in refs:
+            if time.monotonic() > deadline:
+                probes.append(ProbeItem(ref=ref, kind=ref.partition(":")[0],
+                                        verdict="unchecked", detail="probe budget exhausted"))
+                continue
+            probes.append(_probe_ref(db, ref))
+        verdict, detail = "active", ""
+        gone = [p.ref for p in probes if p.verdict == "missing"]
+        if gone:
+            verdict, detail = "contradicted", "; ".join(gone)[:300]
+        elif probes and all(p.verdict == "unchecked" for p in probes):
+            verdict = "uncheckable"
+        items.append(PreflightItem(slug=memory.slug, status=memory.status or "active",
+                                   refs=refs, probes=probes, verdict=verdict, detail=detail))
+    return PreflightResponse(checked=len(items), hidden=hidden, budget_ms=budget_ms, items=items)
+
+
 # ── Get memory detail ─────────────────────────────────────────────────
 
 @router.get("/{slug}", response_model=MemoryResponse)
@@ -373,7 +535,8 @@ def create_memory(data: MemoryCreate, request: Request, db: Session = Depends(ge
     memory = Memory(slug=slug, name=data.name, description=data.description or "",
                     body=clean_body(data.body), priority=data.priority or "medium",
                     category=data.category or "reference", lifespan=data.lifespan or "permanent",
-                    branch=data.branch or "", created_at=now, updated_at=now, source="msc")
+                    branch=data.branch or "", created_at=now, updated_at=now, source="msc",
+                    refs=dump_refs(data.refs), status="active")
     memory.tags = tags
     db.add(memory)
     db.flush()
@@ -425,6 +588,12 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
         memory.body = clean_body(data.body)
     if data.tags is not None:
         _apply_tags(db, memory, data.tags)
+    if data.refs is not None:
+        memory.refs = dump_refs(data.refs)
+    # A PUT deliberately does NOT clear an invalidation. The session-turn channel
+    # PUTs a whole body every round; if rewriting text revived a memory, every
+    # contradicted belief would evaporate on the next turn. Only POST /{slug}/verify
+    # with verdict ok restores it — recovery is an act of checking, not of editing.
 
     memory.updated_at = datetime.now(timezone.utc).isoformat()
     db.commit()
@@ -509,6 +678,98 @@ def restore_memory(slug: str, request: Request, db: Session = Depends(get_db)):
 
     memory.archived = 0
     memory.updated_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    _write_through(db, memory)
+    return memory
+
+
+# ── Provenance: contradiction and recovery ────────────────────────────
+
+@router.post("/{slug}/invalidate", response_model=MemoryResponse)
+def invalidate_memory(slug: str, data: MemoryInvalidate, request: Request,
+                      db: Session = Depends(get_db)):
+    """Record that reality no longer matches this memory.
+
+    This is the write-back half of the loop a memory system otherwise never
+    closes: read → re-check → contradicted → stop believing it. Without it the
+    library only ever grows, and a stale claim keeps re-entering every later
+    session carrying the confidence of its own priority label.
+    """
+    _require_auth(request, db)
+    _guard_write()
+    memory = _resolve_memory(db, slug)
+    actor = _actor(request)
+
+    successor = None
+    if data.superseded_by:
+        if data.superseded_by == memory.slug:
+            raise HTTPException(status_code=422, detail="A memory cannot supersede itself")
+        successor = db.query(Memory).filter(
+            Memory.slug == data.superseded_by, Memory.archived == 0).first()
+        if successor is None:
+            raise HTTPException(status_code=404,
+                                detail=f"superseded_by not found: {data.superseded_by}")
+
+    if memory.status == data.status and (memory.invalidated_reason or "") == data.reason:
+        return memory  # the same verdict twice is a no-op, not a fresh stamp
+
+    snapshot_previous(db, memory, f"{data.status}: {data.reason}"[:500], actor)
+    now = datetime.now(timezone.utc).isoformat()
+    memory.status = data.status
+    memory.invalidated_at = now
+    memory.invalidated_reason = data.reason
+    memory.updated_at = now
+    if successor is not None:
+        edge = db.query(MemoryRelation).filter(
+            MemoryRelation.memory_id_a == successor.id,
+            MemoryRelation.memory_id_b == memory.id,
+            MemoryRelation.relation_type == "supersedes").first()
+        if edge is None:
+            db.add(MemoryRelation(memory_id_a=successor.id, memory_id_b=memory.id,
+                                  relation_type="supersedes", created_at=now))
+    db.commit()
+    _write_through(db, memory)
+    return memory
+
+
+@router.post("/{slug}/verify", response_model=MemoryResponse)
+def verify_memory(slug: str, data: MemoryVerdict, request: Request,
+                  db: Session = Depends(get_db)):
+    """Record what a re-check concluded. ``verdict: ok`` is the only way back.
+
+    Recovery is an act of checking, never an act of editing — so neither PUT nor
+    a rewritten body clears an invalidation. A successful re-check also drops the
+    supersedes edge the contradiction created: the graph is a working surface,
+    and an edge nobody still believes in misleads more than it documents. The
+    version snapshot keeps the evidence of the disagreement.
+    """
+    _require_auth(request, db)
+    _guard_write()
+    memory = _resolve_memory(db, slug)
+    now = datetime.now(timezone.utc).isoformat()
+
+    if data.verdict != "active" and not data.reason.strip():
+        raise HTTPException(status_code=422,
+                            detail=f"verdict {data.verdict!r} needs a reason — "
+                                   "an unexplained downgrade is just noise")
+
+    was_invalidated = memory.status in INVALIDATED_STATUSES
+    if data.verdict == "active":
+        memory.status = "active"
+        memory.verified_at = now
+        if was_invalidated:
+            memory.invalidated_at = None
+            memory.invalidated_reason = None
+            memory.updated_at = now
+            db.query(MemoryRelation).filter(
+                MemoryRelation.memory_id_b == memory.id,
+                MemoryRelation.relation_type == "supersedes").delete(synchronize_session=False)
+    else:
+        memory.status = data.verdict
+        memory.invalidated_at = now
+        memory.invalidated_reason = data.reason.strip()[:2000]
+        memory.updated_at = now
+
     db.commit()
     _write_through(db, memory)
     return memory

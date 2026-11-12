@@ -3,11 +3,13 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from msc.database import get_db, engine
 from msc.fts import sanitize_match
 from msc.models import Memory, Tag, MemoryRelation
+from msc.schemas import parse_refs
 from msc.text import normalize_tags
 
 router = APIRouter()
@@ -34,12 +36,32 @@ def _get_tags_for_memory(mem_id: int, db: Session) -> list:
 
 
 def _keyword_candidates(q: str, fetch: int, include_archived: bool) -> List[tuple]:
-    """FTS5 ranking with a LIKE backstop — the (memory_id, score) list that
-    both the keyword mode and the hybrid fusion start from."""
+    """The (memory_id, score) list, discarding the diagnosis. Kept as the public
+    shape for callers that only read results (see api/rag.py)."""
+    candidates, _, _ = _keyword_candidates_diag(q, fetch, include_archived)
+    return candidates
+
+
+def _keyword_candidates_diag(q: str, fetch: int, include_archived: bool):
+    """FTS5 ranking with a LIKE backstop — plus how the answer was produced.
+
+    Returns ``(candidates, status, error)``, status being one of: ``ok`` FTS5
+    answered (hits or not — the caller decides whether that was a no_match);
+    ``degraded`` FTS5 threw and only LIKE scored these; ``error`` both failed.
+    Two words for "found nothing" would be one too many to reason about.
+
+    The status is the whole point. The old code swallowed the FTS exception into
+    an empty list, so a broken index and an honest "no such memory" looked
+    identical from outside — the read-side twin of "curl exit 0 is not a written
+    row". An agent that cannot tell those apart will conclude the library has
+    forgotten something, and go re-write it.
+    """
     match = sanitize_match(q)
     active = "" if include_archived else " AND m.archived = 0"
     active_like = "" if include_archived else " AND archived = 0"
     candidates: List[tuple] = []
+    status = "ok"
+    error = ""
     try:
         rows = _raw_exec(
             "SELECT m.id, -f.rank FROM memories m "
@@ -50,18 +72,23 @@ def _keyword_candidates(q: str, fetch: int, include_archived: bool) -> List[tupl
         )
         candidates = [(r[0], round(min(1.0, max(0.0, float(r[1]))), 4)) for r in rows]
     except Exception:
-        candidates = []  # never let a weird query turn into a 500
+        candidates = []  # never let a weird query turn into a 500 …
+        status = "degraded"
+        error = "fts5 query failed"
 
     if not candidates:
-        like = f"%{q}%"
-        rows = _raw_exec(
-            "SELECT id FROM memories WHERE (name LIKE :p0 OR description LIKE :p1 "
-            "OR body LIKE :p2 OR slug LIKE :p3)" + active_like +
-            " ORDER BY updated_at DESC LIMIT :p4",
-            [like, like, like, like, fetch],
-        )
-        candidates = [(r[0], 0.5) for r in rows]
-    return candidates
+        try:
+            like = f"%{q}%"
+            rows = _raw_exec(
+                "SELECT id FROM memories WHERE (name LIKE :p0 OR description LIKE :p1 "
+                "OR body LIKE :p2 OR slug LIKE :p3)" + active_like +
+                " ORDER BY updated_at DESC LIMIT :p4",
+                [like, like, like, like, fetch],
+            )
+            candidates = [(r[0], 0.5) for r in rows]
+        except Exception as exc:  # … but say so when the backstop fails too
+            return [], "error", f"search failed: {type(exc).__name__}"
+    return candidates, status, error
 
 
 @router.get("")
@@ -72,6 +99,9 @@ def search_memories(
     priorities: Optional[str] = Query(None, description="Comma-separated priority filter"),
     branches: Optional[str] = Query(None, description="Comma-separated branch filter"),
     include_archived: bool = Query(False, description="Include soft-deleted memories"),
+    include_invalidated: bool = Query(
+        False, description="Include memories a re-check contradicted; "
+                           "X-Contradicted-Hidden reports how many were dropped"),
     mode: str = Query("keyword",
                       description="keyword = FTS only (default, 2.x behaviour); "
                                   "semantic = embeddings; hybrid = RRF fusion. "
@@ -95,6 +125,7 @@ def search_memories(
     from msc.services.rag import rrf_fusion, semantic_ids, setting
 
     settings = get_settings()
+    index_status, index_error, hidden = "ok", "", 0
     # A client sending an unknown mode (harmlessly possible — 2.x ignored the
     # parameter entirely) gets keyword behaviour, not a 422.
     if mode not in ("keyword", "semantic", "hybrid"):
@@ -105,9 +136,11 @@ def search_memories(
     if q:
         fetch = max(limit * 4, 40)
         if mode == "keyword" or not settings.rag_enabled:
-            candidates = _keyword_candidates(q, fetch, include_archived)
+            candidates, index_status, index_error = _keyword_candidates_diag(
+                q, fetch, include_archived)
         else:
-            keyword = _keyword_candidates(q, fetch, include_archived)
+            keyword, index_status, index_error = _keyword_candidates_diag(
+                q, fetch, include_archived)
             sem_ids, sem_cos, sem_error = ([], {}, None)
             if settings.rag_enabled:
                 sem_ids, sem_cos, sem_error = semantic_ids(
@@ -143,9 +176,25 @@ def search_memories(
 
     if q and mode == "keyword" and not candidates:
         # A text query that matched nothing should not fall through to "everything".
+        # It must not be reported as an ordinary empty answer either when the
+        # index is the thing that actually failed.
+        if response is not None:
+            response.headers["X-Search-Status"] = "no_match" if index_status == "ok" else index_status
+            response.headers["X-Search-Matched"] = "0"
+            response.headers["X-Contradicted-Hidden"] = "0"
+            if index_error:
+                from urllib.parse import quote
+                response.headers["X-Search-Error"] = quote(index_error)[:200]
         return []
     if q and mode != "keyword" and not candidates:
         return []
+
+    # Contradicted memories stay out of recall by default — a belief someone
+    # already disproved should not win a search just because it still matches the
+    # text — but the drop is announced, never quiet.
+    if not include_invalidated:
+        hidden = query.filter(Memory.status == "contradicted").count()
+        query = query.filter(or_(Memory.status.is_(None), Memory.status != "contradicted"))
 
     if tags:
         tag_list = normalize_tags(tags)
@@ -185,6 +234,8 @@ def search_memories(
             "priority": m.priority,
             "tags": [{"id": t.id, "name": t.name} for t in m.tags],
             "score": score,
+            "status": m.status or "active",
+            "refs": parse_refs(m.refs),
         }
         if mode != "keyword":
             entry["match"] = match_by_id.get(m.id, "keyword")
@@ -192,6 +243,13 @@ def search_memories(
 
     if response is not None:
         response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Search-Status"] = (
+            index_status if index_status != "ok" else ("ok" if total else "no_match"))
+        response.headers["X-Search-Matched"] = str(total)
+        response.headers["X-Contradicted-Hidden"] = str(hidden)
+        if index_error:
+            from urllib.parse import quote
+            response.headers["X-Search-Error"] = quote(index_error)[:200]
 
     return results
 

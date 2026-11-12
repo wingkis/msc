@@ -52,17 +52,20 @@ make restart              # = docker compose build && docker compose up -d
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/memories` | 列表，支持 `category/priority/tag/branch/since/q/include_archived/order/limit/offset` |
+| GET | `/memories` | 列表，支持 `category/priority/tag/branch/since/q/include_archived/include_invalidated/order/limit/offset`；响应头 `X-Contradicted-Hidden` 报被隐藏条数 |
 | GET | `/memories/{slug}` | 单条；slug、精确名称或唯一片段都行 |
+| GET | `/memories/preflight` | **复核 refs**（只报结论、绝不回写；`limit/budget_ms/category/priority/tag`） |
 | POST | `/memories` | 新建（`related_slugs` 顺便建关联） |
 | PUT | `/memories/{slug}` | upsert（`?upsert=false` 则不存在时 404） |
 | DELETE | `/memories/{slug}` | 软删除；`?hard=true` 彻底删除 |
 | POST | `/memories/{slug}/restore` | 撤销软删除 |
 | POST | `/memories/batch` | 批量，逐条返回结果 |
 | GET/POST | `/memories/{slug}/relate` | 查/建关联 |
+| POST | `/memories/{slug}/invalidate` | **记下"复核推翻了我"**：`{"reason":"…","status":"contradicted｜stale","superseded_by":"另一条slug"}` |
+| POST | `/memories/{slug}/verify` | 复核结论：`{"verdict":"ok｜stale｜contradicted","reason":"…"}`；`ok` 是唯一回到 active 的路 |
 | GET | `/memories/{slug}/versions` | 编辑历史（旧版路径 `/memories/versions/{slug}` 仍可用） |
 | POST | `/memories/versions/{slug}/restore/{n}` | 回到第 n 版 |
-| GET | `/search?q=...` | 全文 + 过滤，带 `X-Total-Count` |
+| GET | `/search?q=...` | 全文 + 过滤，带 `X-Total-Count`；`X-Search-Status`＝`ok｜no_match｜degraded｜error`（索引坏了与没命中不是一回事），`include_invalidated=true` 才召回被推翻的 |
 | GET | `/search/recommend/{slug}` | 相关推荐 |
 | GET | `/memories/graph` | 图谱数据 |
 | GET | `/meta` `/tags` `/branches` `/stats` | 词表、标签、分支、计数 |
@@ -155,6 +158,41 @@ MSC_SECRET_KEY=<随机串>
 
 记忆同时存在于数据库和 `~/.msc/memory/<slug>.md`（frontmatter + 正文），两边都能直接编辑。
 
+## 记忆出处与自我修正
+
+记忆是**历史观察**，不是已验证事实。这一节让"复核过、被推翻、已纠正"变成库里的一等事实，而不是一句注入时的免责声明。
+
+**出处 refs** — 每条记忆可挂若干 `<kind>:<target>`，存的是"后来人能廉价复核的那部分"：
+
+| 前缀 | 含义 | 谁能验 |
+------|------|--------|
+| `git:<sha>` | 某仓库的提交/对象 | 客户端（服务端探不了） |
+| `file:<path>` | 绝对路径 | 服务端＋客户端（各自本机视角） |
+| `url:<endpoint>` | 服务/接口 | 服务端＋客户端 |
+| `mem:<slug>` | 另一条记忆还在 | 服务端 |
+| `cmd:<line>` | 当时执行的命令 | **永不执行**，只作记录 |
+| `host:<name>` | 结论出自哪台机器 | 客户端比对当前主机 |
+
+前缀写错直接 422 并列出允许值——**一个验不了的出处比没有出处更糟**，因为它读起来像担保。
+
+**三态 status** — `active｜stale｜contradicted`。`contradicted` 的记忆：
+
+- 从 `GET /memories` 与 `/search` 默认结果里消失，但仍可按 slug 取，`?include_invalidated=true` 可召回；
+- 隐藏条数写进响应头 `X-Contradicted-Hidden`，**货架变窄从不静默**；
+- 永不删除——错的信念也是证据，`invalidated_at/reason` 记下是谁在什么时候把它推翻的；
+- 指定 `superseded_by` 会建 `supersedes` 关系边（复用已有关系类型，不新增字段）。
+
+**复位只有复核** — `POST /{slug}/verify {"verdict":"ok"}` 是唯一回到 `active` 的路；**改正文不会解除推翻**。轮次通道每轮 PUT 全文，若改写即可复位，那所有被推翻的信念下一轮就洗白了。恢复是"复核"这个动作的结果，不是编辑的结果。
+
+**复核分两头** — `GET /memories/preflight` 探服务端够得着的 `url:/file:/mem:`，`git:/cmd:/host:` 老实返回 `unchecked`（只有写下它的机器知道答案）。它只报结论不回写：一个会改库的 GET，也就是一个会在两个 agent 判断不一致时污染库的 GET。客户端用 `cli/msc-verify.sh` 补齐另一半：
+
+```bash
+MSC_URL=http://192.168.29.50:8000 sh cli/msc-verify.sh --limit 20        # dry-run
+MSC_URL=http://192.168.29.50:8000 sh cli/msc-verify.sh --yes <slug>      # 结论写回库
+```
+
+默认 dry-run。HTTP 语义也一并按"能不能算推翻"区分：连不上/404 才算 `missing`，405/501 会换 GET 再问一次，401/403/5xx 只算 `unchecked`——把"不接受这个动词"读成"端点没了"，探针就会自己造出过时来。
+
 ## 记忆小结与模型卡片
 
 **只在 Web UI 里操作**，属于后台管理功能：这些接口刻意不写进 `/api/v1/help` 与 `/llms.txt`，agent 不会看到它们。
@@ -213,6 +251,15 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 | `.msc_index.json` 里有已删除条目 | `msc sync reindex`（同时重建 FTS 和文件索引） |
 
 ## 更新记录
+
+### msc-me 分支（基于 2.3.1）：记忆出处与自我修正
+
+- **出处与状态** — `memories` 新增 `refs/status/invalidated_at/invalidated_reason/verified_at` 五列（`add_missing_columns` 自动补列；`ensure_provenance` 回填，因为 `ALTER TABLE ADD COLUMN` 在老库留下一片 NULL，而 NULL 在 SQL 里连 `!=` 都不满足，一条 `status != 'contradicted'` 能把升级库里的记忆**全部**变没）。`status` 刻意可空，与真实升级路径一致，读侧 NULL 安全。取代关系复用已有 `supersedes` 边，不新造字段。
+- **推翻与复位** — `POST /{slug}/invalidate`、`POST /{slug}/verify`；推翻是幂等的（同一结论重复上报不刷新时间戳），默认从列表/搜索消失但 `X-Contradicted-Hidden` 报数，`verify ok` 是唯一复位路径并顺带清掉那条 `supersedes` 边（证据留在版本快照里）。
+- **搜索不再说谎** — `_keyword_candidates` 以前用 `except Exception: candidates = []` 把 FTS 故障吞成"没找到"，于是**索引坏了与库里真没有**从外面完全同形（这正是 `search?q=codex` 返回 `hits: 0` 时被误读的东西）。现在拆成 `_keyword_candidates_diag` 报 `ok｜degraded｜error`，经 `X-Search-Status`/`X-Search-Error` 出给调用方；`api/rag.py` 用的旧签名保持原样。
+- **复核通道** — `GET /memories/preflight`（只读、预算受控 `budget_ms`，超预算的 ref 记 `unchecked` 而不是猜）＋ `cli/msc-verify.sh`（POSIX sh，补客户端才验得了的 `git:/host:`；默认 dry-run，`--yes` 写回）。
+- **自描述** — `/api/v1/help`、`/llms.txt` 与 `/meta` 的 `vocab` 同步补上 `status`/`ref_kind`，`/meta` 额外报 `contradicted` 计数：一个从不积累矛盾的库，不是恰好正确的库，是没人复核的库。
+- 迁移在**线上库副本**（107 条记忆）上演练过：五列补齐、214 个值回填、默认过滤器一条都不藏。测试 114 个（新增 `backend/tests/test_provenance.py` 15 项，含升级库 NULL 行、405 不算推翻、编辑不解推翻、preflight 只读、以及模块级自清理以免污染别人的计数断言）。
 
 ### 2.3.1（rag 分支）
 

@@ -13,6 +13,11 @@ import logging
 from sqlalchemy import inspect, text
 
 from msc.database import Base, engine
+# Base.metadata only knows the tables whose model classes have been imported.
+# Without this, add_missing_columns() iterates an empty metadata and quietly
+# adds nothing when run outside the app (a script, the CLI, a rehearsal against
+# a copied database) — the exact silent-upgrade bug this module exists to stop.
+from msc import models  # noqa: F401
 
 _log = logging.getLogger("msc.migrations")
 
@@ -51,6 +56,37 @@ def add_missing_columns() -> list[str]:
                 added.append(f"{table.name}.{column.name}")
                 _log.info("schema: added column %s.%s", table.name, column.name)
     return added
+
+
+def ensure_provenance() -> int:
+    """Backfill the provenance columns on a database that predates them.
+
+    ``ALTER TABLE ADD COLUMN`` leaves NULL on every existing row, and a NULL
+    ``status`` compares as unknown in SQL — a ``status != 'contradicted'`` filter
+    would quietly drop memories that were never invalidated. Reads stay defensive
+    too (see the MemoryResponse validators), but filters need real values.
+    """
+    if "memories" not in set(inspect(engine).get_table_names()):
+        return 0
+    with engine.begin() as conn:
+        if "status" not in _existing_columns(conn, "memories"):
+            return 0  # add_missing_columns() has not reached this db yet
+        touched = conn.execute(
+            text("UPDATE memories SET status = 'active' WHERE status IS NULL OR status = ''")
+        ).rowcount
+        touched += conn.execute(
+            text("UPDATE memories SET refs = '[]' WHERE refs IS NULL")
+        ).rowcount
+        # A row carrying an invalidation stamp but no status (hand-edited db,
+        # half-finished upgrade) must not read as live.
+        touched += conn.execute(
+            text("UPDATE memories SET status = 'contradicted' "
+                 "WHERE status = 'active' AND invalidated_at IS NOT NULL "
+                 "AND invalidated_at <> ''")
+        ).rowcount
+    if touched:
+        _log.info("provenance: backfilled %d memory row(s)", touched)
+    return touched
 
 
 def normalize_existing_tags() -> int:
@@ -270,6 +306,7 @@ def run_maintenance() -> dict:
     Base.metadata.create_all(bind=engine)
     summary = {
         "columns_added": add_missing_columns(),
+        "provenance_backfilled": ensure_provenance(),
         "tags_normalized": normalize_existing_tags(),
         "branches_registered": ensure_branch_records(),
         "bodies_cleaned": clean_existing_bodies(),
