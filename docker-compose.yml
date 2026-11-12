@@ -33,6 +33,10 @@ services:
       - MSC_READ_ONLY=${MSC_READ_ONLY:-false}
       - MSC_HEALTH_DETAIL=${MSC_HEALTH_DETAIL:-true}
       - MSC_SYNC_INTERVAL_SECONDS=${MSC_SYNC_INTERVAL_SECONDS:-60}
+      # Time decay: a memory nobody has verified or edited for this many days
+      # becomes "stale" (still listed, still recallable). 0 switches it off.
+      - MSC_STALE_AFTER_DAYS=${MSC_STALE_AFTER_DAYS:-90}
+      - MSC_DECAY_INTERVAL_SECONDS=${MSC_DECAY_INTERVAL_SECONDS:-3600}
       - MSC_BACKUP_KEEP=${MSC_BACKUP_KEEP:-14}
       # Model card first-run defaults; the Web UI writes them into the DB afterwards.
       - MSC_LLM_BASE_URL=${MSC_LLM_BASE_URL:-}
