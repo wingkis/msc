@@ -890,10 +890,27 @@ def update_memory(slug: str, data: MemoryUpdate, request: Request,
 # and a bare DELETE /memories/archived would otherwise be read as a slug.
 
 @router.delete("/archived")
-def purge_archived(request: Request, db: Session = Depends(get_db)):
-    """Hard-delete all soft-deleted memories in one pass (rows, history, relations)."""
+def purge_archived(request: Request,
+                   confirm: str = Query(
+                       "", description="Must be exactly 'all'; anything else purges nothing"),
+                   db: Session = Depends(get_db)):
+    """Hard-delete every archived memory in one pass (rows, history, relations).
+
+    This route has no filter — it is the one call that can erase the whole
+    archive, and it used to do so on request. 2026-11-13: someone sent it a body
+    carrying ``{"slug": ...}``, which this route ignores, and 17 archived
+    memories went away believing it was one. A request cannot prove intent by
+    existing, so the destructive half is now opt-in: ``?confirm=all`` or a 400
+    that names the route for one memory.
+    """
     _require_auth(request, db)
     _guard_write()
+    if confirm != "all":
+        raise HTTPException(
+            status_code=400,
+            detail="this purges every archived memory, not a filter: send "
+                   "?confirm=all to mean all of them, or DELETE "
+                   "/api/v1/memories/<slug>?hard=true for one")
     actor = _actor(request)
 
     memories = db.query(Memory).filter(Memory.archived == 1).all()

@@ -92,7 +92,9 @@ const API = {
     return apiFetch(`/memories/${encodeURIComponent(slug)}/restore`, { method: 'POST' });
   },
   purgeArchived() {
-    return apiFetch('/memories/archived', { method: 'DELETE' });
+    // The endpoint is deliberately inert without confirm=all: it has no filter,
+    // so this is the one call that can erase the whole archive at once.
+    return apiFetch('/memories/archived?confirm=all', { method: 'DELETE' });
   },
 
   // Provenance. preflight reports verdicts and never writes — turning a

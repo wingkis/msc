@@ -164,7 +164,9 @@ def test_purge_archived_hard_deletes_everything_soft_deleted(client):
     for slug in slugs:
         assert client.delete(f"/api/v1/memories/{slug}").status_code == 200  # soft
 
-    result = client.delete("/api/v1/memories/archived")
+    # The confirmed call is the only one that purges; see
+    # test_purge_archived_refuses_to_guess for what a bare one does.
+    result = client.delete("/api/v1/memories/archived", params={"confirm": "all"})
     assert result.status_code == 200
     assert result.json()["purged"] >= 3
 
@@ -172,6 +174,36 @@ def test_purge_archived_hard_deletes_everything_soft_deleted(client):
     for slug in slugs:
         assert client.get(f"/api/v1/memories/{slug}",
                           params={"include_archived": True}).status_code == 404
+
+
+def test_purge_archived_refuses_to_guess(client):
+    """One call, no filter, whole archive gone: it must not happen by accident.
+
+    2026-11-13: a DELETE carrying {"slug": ...} in the body — a field this
+    route never reads — purged 17 archived memories. Recovery came from a
+    backup, not from the API. Anything that does not say ``confirm=all`` now
+    gets a 400 that names the route for a single memory instead.
+    """
+    slug = client.post("/api/v1/memories", json=_payload(name="Purge Gate")).json()["slug"]
+    assert client.delete(f"/api/v1/memories/{slug}").status_code == 200
+
+    for bare in (client.delete("/api/v1/memories/archived"),
+                 client.delete("/api/v1/memories/archived", params={"confirm": "yes"}),
+                 client.delete("/api/v1/memories/archived", params={"confirm": "ALL"})):
+        assert bare.status_code == 400
+        assert "confirm=all" in bare.json()["detail"]
+        assert "hard=true" in bare.json()["detail"]
+
+    # nothing purged: the archived row is still sitting there
+    still = client.get("/api/v1/memories", params={"archived": True}).json()
+    assert any(m["slug"] == slug for m in still)
+
+    # the escape hatch the 400 points at really works on an archived row
+    hard = client.delete(f"/api/v1/memories/{slug}", params={"hard": "true"})
+    assert hard.status_code == 200
+    assert hard.json()["hard"] is True
+    assert client.get(f"/api/v1/memories/{slug}",
+                      params={"include_archived": True}).status_code == 404
 
 
 def test_graph_auto_link_shares_exact_keywords(client):
