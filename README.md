@@ -286,6 +286,19 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.6（main）：复核只作用挂了出处的记忆
+
+上一版把时钟装上之后，队列第一次跑起来是这样：116 条活跃记忆、32 条待复核，而 32 条的理由**全是同一句"没挂出处"**。这条 nag 永远无解 —— 没有把手，复核就无从下手，于是它既不是工作也不是信息，只会把真信号淹掉。
+
+- **切法从"时间增量"换成"有没有把手"** — 提过按上线日切一刀，只审"之后新增的"。没采纳，两个原因：最老的那批恰恰是被引用最多、错了最疼的（`最新有效模型api`、`body-and-soul` 这类），按时间切等于给风险最高的一批永久免检；而且"2026-11-13 之前写的"是日历巧合，不是记忆的属性，把它写进库的语义，等于让一次部署决定哪些信念可以不被质疑。改成结构线：**衰减与到期队列只作用于挂了 ≥1 个 `refs` 的记忆**。没有出处的不是 unconfirmed，是 **unconfirmable** —— 给这样一条盖 `stale`，是把复核者的不方便写成信念的属性。
+- **两桶，都计数** — `bucket=checkable`（挂了出处 → 该去重查）与 `bucket=unanchored`（没挂出处 → 补一次把手就完事，不是每次都要来看的杂务）。`?only=checkable|unanchored` 只切换**列出什么**，响应里的 `counts` 普查**不随切片变化**：一个会因为你 asking 更窄就变小的库，和索引坏了返回空是同一类谎。`total` 始终是全部到期项，新增 `listed` 说明本次返回了几条。
+- **豁免要有记录，不能变成 0** — 两类完全移出范围，但在 `counts` 里点名数量：`skipped_flow`（会话流水与自动产物：tag `turn`/`echo`，以及 `turn-<日期>`/`sess-<日期>`/`summary-<日期>` 这些自动生成的 slug 形状 —— 它们的生命周期是 consolidate→archive，不是 re-verify）、`skipped_no_review`（人写的 `no-review` 标签：「这条是偏好，不需要复核」是一个决定）。流水**刻意不用 `summary` 标签判定** —— `msc-2-1-1-upgrade-summary` 挂着它，却是别人会引用的耐久知识，标签太松。
+- **范围收在源头** — `aged_memories()` 的 SQL 里就带上 refs 谓词，Python 侧再跳过流水与豁免，所以 `apply_decay()` 与每小时 worker 不需要各自的第二道判断（两处规则迟早会漂移成两个答案）。队列里的 age 类理由同样要求有出处；"没挂出处"那句改成"（一次性补把手，不是每次都要来看）"。
+- **文档与 CLI 同步** — `/help`、`/llms.txt`、`/meta` 的 review-due 与 decay 段落重写；`msc review-due --only checkable`，输出加"可复核 N · 缺出处 M"与"范围外：流水 X · 人工免检 Y · 未到期 Z"。`ReviewDueItem.bucket`、`ReviewDueResponse.only/total/listed/counts` 进 schema。
+- **测试** — 新增 3 条：无把手永不老化 / 流水与 `no-review` 被豁免且被计数（含只靠 slug 形状认出的自动小结）/ 普查与切片一致且非法 `only` 回 422。全量 `223 passed`，`ruff --select F,E9` 干净。
+
+没做的：那 32 条 `unanchored` 还是没把手，只是不再每天占用队列 —— 要么人工挂上，要么承认它们是不可核的偏好并打 `no-review`。
+
 ### 2.6.5（main）：库自己开始老化和留痕
 
 372 号复核建议里剩下那四条（`msc-provenance-review-20261113`）。共同点是"没有自动路径"：机制都在，没人触发就等于没有。
