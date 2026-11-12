@@ -270,3 +270,42 @@ def test_preflight_of_a_contradicted_memory_offers_the_way_back(client):
     assert item["status"] == "contradicted"      # still shown, so it can be re-checked
     assert item["verdict"] == "active"           # and the probe says it holds again
     assert report.json()["hidden"] >= 1
+
+
+def test_contradicted_ids_is_the_single_null_safe_definition(client):
+    """``status = 'contradicted'`` is NULL-safe in the direction that matters:
+    a row upgraded in by ALTER TABLE has NULL and is not a contradiction."""
+    from msc.api.rag import _contradicted_ids
+    from msc.database import SessionLocal
+    from msc.models import Memory
+
+    slug = _create(client, "Prov Rag Legacy Null")
+    db = SessionLocal()
+    try:
+        db.execute(text("UPDATE memories SET status = NULL WHERE slug = :s"), {"s": slug})
+        db.commit()
+        memory_id = db.query(Memory).filter_by(slug=slug).first().id
+        assert memory_id not in _contradicted_ids(db)
+    finally:
+        db.close()
+
+    assert client.post(f"/api/v1/memories/{slug}/invalidate",
+                       json={"reason": "provtest rag leg"}).status_code == 200
+    db = SessionLocal()
+    try:
+        assert memory_id in _contradicted_ids(db)
+    finally:
+        db.close()
+
+
+def test_the_voice_and_daily_pick_legs_share_the_filter(client):
+    """The voice 「similar」 list offers places to append a new fact; daily-pick
+    chooses material for the long-form. Both read the same vectors, and both
+    need a live provider to drive end to end, so what is pinned here is the
+    thing that keeps them honest: they ask the same helper for the contradicted
+    ids instead of inventing a predicate that forgets NULL."""
+    import inspect
+    from msc.api import rag
+
+    for endpoint in (rag.rag_search, rag.transcribe, rag.daily_pick):
+        assert "_contradicted_ids(db)" in inspect.getsource(endpoint), endpoint.__name__

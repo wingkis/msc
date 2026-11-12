@@ -49,6 +49,20 @@ def _embed_card(db: Session):
     return cfg, bool(cfg.enabled and (cfg.base_url or "").strip() and (cfg.model or "").strip())
 
 
+def _contradicted_ids(db: Session) -> set:
+    """The ids a re-check has already contradicted.
+
+    One definition for every recall leg in this module, because the failure is
+    the same everywhere: a contradicted memory still has a vector, still matches
+    text, and so still surfaces — as a search hit, as a 「similar」 append
+    target, as daily-pick material. ``status = 'contradicted'`` is NULL-safe in
+    this direction: a legacy row upgraded in by ALTER TABLE carries NULL and
+    never matches, so old memories stay recallable.
+    """
+    return {row[0] for row in db.query(Memory.id).filter(
+        Memory.status == "contradicted").all()}
+
+
 # ── Status ───────────────────────────────────────────────────────────
 
 @router.get("/status")
@@ -165,6 +179,15 @@ def rag_search(q: str = Query(..., min_length=1), top: int = Query(10, le=50),
                 rerank_note = str(exc)  # degrade to plain cosine order
 
     keyword = [(row[0], row[1]) for row in _keyword_for_fusion(q, recall, False)]
+    # Filtered before the fusion, not after the truncation: dropping a
+    # contradicted memory must not also cost a result slot. The count travels
+    # with the answer — a quiet disappearance is what made 「索引坏了」 and
+    # 「已被推翻」 unreadable from outside in the first place.
+    gone = _contradicted_ids(db)
+    hidden = len(({i for i in sem_ids} | {i for i, _ in keyword}) & gone)
+    if hidden:
+        sem_ids = [i for i in sem_ids if i not in gone]
+        keyword = [(mid, score) for mid, score in keyword if mid not in gone]
     fused = rrf_fusion([cid for cid, _ in keyword], sem_ids, rrf_k=setting(db, "rrf_k"))
 
     top_ids = [mid for mid, _, _ in fused][:top]
@@ -181,7 +204,8 @@ def rag_search(q: str = Query(..., min_length=1), top: int = Query(10, le=50),
             "cos": round(sem_cos.get(mid, 0.0), 4) if match in ("semantic", "both") else None,
         })
     out = {"query": q, "results": results,
-           "model": (get_config(db, "embed").model or "").strip()}
+           "model": (get_config(db, "embed").model or "").strip(),
+           "contradicted_hidden": hidden}
     if rerank_note:
         out["rerank_error"] = rerank_note
     return out
@@ -237,6 +261,10 @@ def transcribe(request: Request, file: UploadFile = File(...),
     embed_cfg, embed_ready = _embed_card(db)
     if embed_ready:
         sem_ids, sem_cos, _ = semantic_ids(db, result["text"], 5)
+        # Near-duplicate suggestions decide what an agent appends to, so a
+        # disproved belief must not be offered as a home for new facts.
+        gone = _contradicted_ids(db)
+        sem_ids = [i for i in sem_ids if i not in gone]
         by_id = {m.id: m for m in db.query(Memory).filter(Memory.id.in_(sem_ids)).all()}
         for mid in sem_ids:
             cos = sem_cos.get(mid, 0.0)
@@ -341,11 +369,15 @@ def daily_pick(refresh: bool = Query(False), db: Session = Depends(get_db)):
         return {**json.loads(cached.value), "cached": True, "date": today}
 
     week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    pool = db.query(Memory).filter(Memory.archived == 0,
+    gone = _contradicted_ids(db)
+    live = [Memory.archived == 0]
+    if gone:
+        live.append(Memory.id.notin_(gone))
+    pool = db.query(Memory).filter(*live,
                                    Memory.updated_at >= week_ago).order_by(
         Memory.updated_at.desc()).limit(40).all()
     if not pool:
-        pool = db.query(Memory).filter(Memory.archived == 0).order_by(
+        pool = db.query(Memory).filter(*live).order_by(
             Memory.updated_at.desc()).limit(20).all()
     if not pool:
         raise HTTPException(status_code=422, detail="还没有记忆可以取材")

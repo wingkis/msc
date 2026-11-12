@@ -286,15 +286,16 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
-### 记忆出处与自我修正（并入 main · 原 msc-me 分支，基于 2.3.1）
+### 2.6.0（main）：记忆出处与自我修正
 
 - **出处与状态** — `memories` 新增 `refs/status/invalidated_at/invalidated_reason/verified_at` 五列（`add_missing_columns` 自动补列；`ensure_provenance` 回填，因为 `ALTER TABLE ADD COLUMN` 在老库留下一片 NULL，而 NULL 在 SQL 里连 `!=` 都不满足，一条 `status != 'contradicted'` 能把升级库里的记忆**全部**变没）。`status` 刻意可空，与真实升级路径一致，读侧 NULL 安全。取代关系复用已有 `supersedes` 边，不新造字段。
 - **推翻与复位** — `POST /{slug}/invalidate`、`POST /{slug}/verify`；推翻是幂等的（同一结论重复上报不刷新时间戳），默认从列表/搜索消失但 `X-Contradicted-Hidden` 报数，`verify ok` 是唯一复位路径并顺带清掉那条 `supersedes` 边（证据留在版本快照里）。
 - **搜索不再说谎** — `_keyword_candidates` 以前用 `except Exception: candidates = []` 把 FTS 故障吞成"没找到"，于是**索引坏了与库里真没有**从外面完全同形（这正是 `search?q=codex` 返回 `hits: 0` 时被误读的东西）。现在拆成 `_keyword_candidates_diag` 报 `ok｜degraded｜error`，经 `X-Search-Status`/`X-Search-Error` 出给调用方；`api/rag.py` 用的旧签名保持原样。
 - **复核通道** — `GET /memories/preflight`（只读、预算受控 `budget_ms`，超预算的 ref 记 `unchecked` 而不是猜）＋ `cli/msc-verify.sh`（POSIX sh，补客户端才验得了的 `git:/host:`；默认 dry-run，`--yes` 写回）。
 - **自描述** — `/api/v1/help`、`/llms.txt` 与 `/meta` 的 `vocab` 同步补上 `status`/`ref_kind`，`/meta` 额外报 `contradicted` 计数：一个从不积累矛盾的库，不是恰好正确的库，是没人复核的库。
-- 迁移在**线上库副本**（107 条记忆）上演练过：五列补齐、214 个值回填、默认过滤器一条都不藏。测试 189 个（并入 main 后：2.5.16 的 174 + 本功能 15）（新增 `backend/tests/test_provenance.py` 15 项，含升级库 NULL 行、405 不算推翻、编辑不解推翻、preflight 只读、以及模块级自清理以免污染别人的计数断言）。
-- **并入 main 时的接缝** — 与 2.5.16 撞在三处：README 更新记录；`memories.py`（pic 的 `DELETE /graph/auto-links` 与这里的 provenance 块落在同一位置，两块都保留）；`schemas`（`Dict` 与 `json`/`field_validator` 取并集）。`run_maintenance()` 现在同时跑 `ensure_provenance()` 与 `ensure_pic_defaults()`。已知遗留：`backend/msc/api/rag.py:191` 仍用不过滤 `status` 的旧签名 `_keyword_candidates`，RAG 上下文那条腿暂时还能捞到已推翻的记忆。
+- 迁移在**线上库副本**（107 条记忆）上演练过：五列补齐、214 个值回填、默认过滤器一条都不藏。测试 192 个（2.5.16 的 174 + provenance 15 + 本轮 RAG 三条腿 3）（新增 `backend/tests/test_provenance.py` 15 项，含升级库 NULL 行、405 不算推翻、编辑不解推翻、preflight 只读、以及模块级自清理以免污染别人的计数断言）。
+- **并入 main 时的接缝** — 与 2.5.16 撞在三处：README 更新记录；`memories.py`（pic 的 `DELETE /graph/auto-links` 与这里的 provenance 块落在同一位置，两块都保留）；`schemas`（`Dict` 与 `json`/`field_validator` 取并集）。`run_maintenance()` 现在同时跑 `ensure_provenance()` 与 `ensure_pic_defaults()`。
+- **RAG 的三条腿一起堵上** — 已推翻的记忆向量还在、FTS 行还在，所以 `/rag/search` 照样把它排进结果，语音转写的「相似」候选会提议往它身上追加新事实，daily-pick 还会拿它取材。新增 `rag._contradicted_ids()`：一处定义（`status = 'contradicted'` 这个方向天然 NULL 安全 —— 老库的 NULL 行不匹配，不会被误藏）、三处调用；过滤在 RRF 融合之前做，掉一条不多占一个坑，响应多带一个 `contradicted_hidden`。`/rag/health-report` 与图谱刻意不过滤：那是库的体检表，不是往会话里递事实的地方。
 
 ### 2.5.16（msc-pic 分支）
 

@@ -483,3 +483,31 @@ def test_heatmap_counts_by_day(client):
     assert heatmap["days"] == 30 and heatmap["counts"]
     today = sum(c["count"] for c in heatmap["counts"])
     assert today >= 1
+
+
+def test_rag_search_leg_drops_contradicted(client, monkeypatch):
+    """A contradicted memory keeps its FTS row and its vector, so /rag/search
+    went on handing it back: this leg had no status filter at all until this
+    test said so. Lives here rather than in test_provenance because the embed
+    card and the fake provider belong to this file — a half-set-up card leaks
+    into every later module."""
+    _embed_card(client)
+    monkeypatch.setattr(rag_providers, "embed", _fake_embed)
+    live = _make(client, "Rag Leg Live", body="ragleg7731 同一来源的两种说法")
+    dead = _make(client, "Rag Leg Dead", body="ragleg7731 同一来源的两种说法")
+    rag_worker.run_once()
+
+    before = client.get("/api/v1/rag/search", params={"q": "ragleg7731", "top": 50}).json()
+    assert {live, dead} <= {r["slug"] for r in before["results"]}, before
+
+    invalidated = client.post(f"/api/v1/memories/{dead}/invalidate",
+                              json={"reason": "re-check says ragleg7731 is wrong"})
+    assert invalidated.status_code == 200, invalidated.text
+
+    after = client.get("/api/v1/rag/search", params={"q": "ragleg7731", "top": 50}).json()
+    found = {r["slug"] for r in after["results"]}
+    assert dead not in found and live in found
+    assert after["contradicted_hidden"] >= 1, "the drop is announced, never quiet"
+
+    client.delete(f"/api/v1/memories/{live}")   # leave no contradicted residue
+    client.delete(f"/api/v1/memories/{dead}")   # for the modules that run next
