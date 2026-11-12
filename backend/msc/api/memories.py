@@ -729,6 +729,7 @@ def review_due(
         None, ge=0, description="Override MSC_STALE_AFTER_DAYS for this call"),
     priority: Optional[str] = Query(None), category: Optional[str] = Query(None),
     tag: Optional[str] = Query(None), limit: int = Query(50, le=500),
+    only: Optional[str] = Query(None, description="checkable | unanchored (default: both)"),
     db: Session = Depends(get_db),
 ):
     """What deserves a re-check next, and why — read-only.
@@ -740,10 +741,23 @@ def review_due(
     "already contradicted") so the reader knows what kind of check is missing.
     Nothing here writes: a clock may make a memory suspicious, only a re-check
     may contradict it.
+
+    Two buckets are reported separately and both are counted. ``checkable`` rows
+    carry refs, so the work is a re-check. ``unanchored`` rows carry none, so the
+    work is one-time: attach a handle or accept that nobody ever will. Session
+    flow (turn/sess/digests/echo), digests and memories tagged ``no-review`` are
+    out of scope entirely — decay never stamps them and the queue never nags
+    about them — but the ``counts`` census says how many there are, because a
+    number that quietly shrinks is the same lie as a search index that returns
+    nothing.
     """
+    if only not in (None, "", "all", "checkable", "unanchored"):
+        raise HTTPException(status_code=422,
+                            detail=f"only must be checkable or unanchored, got {only!r}")
     days = settings.stale_after_days if stale_after_days is None else stale_after_days
     return freshness.review_queue(
-        db, days=days, limit=limit, priority=priority, category=category, tag=tag)
+        db, days=days, limit=limit, priority=priority, category=category, tag=tag,
+        only=only or None)
 
 
 @router.get("/{slug}", response_model=MemoryResponse)

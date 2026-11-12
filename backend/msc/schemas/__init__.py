@@ -335,12 +335,20 @@ class ReviewDueItem(BaseModel):
     last_confirmed_at: Optional[str] = None
     last_edited_at: Optional[str] = None
     age_days: Optional[int] = None
+    # checkable = has refs, a re-check is possible; unanchored = no refs, the
+    # work is to attach a handle once. Out-of-scope rows never appear here.
+    bucket: str = "checkable"
     reasons: List[str] = []
 
 
 class ReviewDueResponse(BaseModel):
     stale_after_days: int = 0
-    total: int = 0
+    only: str = "all"
+    total: int = 0                # every due row, independent of the slice
+    listed: int = 0               # how many of them are in this response
+    # Census, not just the queue: where the non-queued memories went
+    # (skipped_flow / skipped_no_review / not_due).
+    counts: dict = {}
     items: List[ReviewDueItem] = []
 
 

@@ -146,6 +146,86 @@ def test_only_a_re_check_clears_the_age(client):
     assert slug not in [i["slug"] for i in due]
 
 
+def test_a_memory_with_no_handle_never_ages(client):
+    """Decay is a verdict about re-checking, so it needs something to re-check.
+
+    An unanchored memory is not "unconfirmed", it is "unconfirmable": stamping it
+    stale would report the reviewer's inconvenience as a property of the belief,
+    and would let an old hand-written note rot visibly while saying nothing about
+    what to do. It waits in its own bucket instead.
+    """
+    slug = _create(client, "Unanchored Ages Never", refs=[], priority="critical")
+    _age(client, slug, days=400)
+
+    slugs = client.post("/api/v1/memories/decay",
+                        params={"stale_after_days": 90, "apply": "true"}).json()["slugs"]
+    assert slug not in slugs
+    assert _status(client, slug) == "active"
+
+    due = client.get("/api/v1/memories/review-due").json()
+    item = [i for i in due["items"] if i["slug"] == slug][0]
+    assert item["bucket"] == "unanchored"
+    assert not any("天" in reason for reason in item["reasons"]), item["reasons"]
+
+
+def test_session_flow_and_no_review_are_out_of_scope_by_record(client):
+    """Turn records and digests get consolidated and archived, not re-verified;
+    `no-review` is a human saying "this is a preference". Neither disappears —
+    both are counted in the census, because a queue that shrinks by itself is
+    indistinguishable from a library that got healthier."""
+    flow = _create(client, "Flow Aged", tags=["reviewloop", "turn"])
+    exempt = _create(client, "Exempt Preference", tags=["reviewloop", "no-review"], refs=[])
+    for slug in (flow, exempt):
+        _age(client, slug, days=400)
+
+    due = client.get("/api/v1/memories/review-due").json()
+    slugs = [i["slug"] for i in due["items"]]
+    assert flow not in slugs and exempt not in slugs
+    assert due["counts"]["skipped_flow"] >= 1
+    assert due["counts"]["skipped_no_review"] >= 1
+
+    decayed = client.post("/api/v1/memories/decay",
+                          params={"stale_after_days": 90, "apply": "true"}).json()["slugs"]
+    assert flow not in decayed and exempt not in decayed
+
+    # a slug that matches the auto-generated shapes counts as flow without a tag
+    untagged = _create(client, "Digest Shape", tags=["reviewloop"])
+    from msc.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        db.execute(text("UPDATE memories SET slug = :n WHERE slug = :o"),
+                   {"n": "daily-summary-20991231", "o": untagged})
+        db.commit()
+    finally:
+        db.close()
+    _CREATED.append("daily-summary-20991231")
+    assert client.get("/api/v1/memories/review-due").json()["counts"]["skipped_flow"] >= 2
+
+
+def test_queue_census_and_bucket_filter_agree(client):
+    """?only must not change what the library contains, only what is listed."""
+    checkable = _create(client, "Census Checkable", refs=["host:testhost"])
+    unanchored = _create(client, "Census Unanchored", refs=[])
+    _age(client, checkable, days=400)
+
+    both = client.get("/api/v1/memories/review-due").json()
+    only_check = client.get("/api/v1/memories/review-due", params={"only": "checkable"}).json()
+    only_un = client.get("/api/v1/memories/review-due", params={"only": "unanchored"}).json()
+
+    assert checkable in [i["slug"] for i in both["items"]]
+    assert unanchored in [i["slug"] for i in both["items"]]
+    assert [i["slug"] for i in only_check["items"]] == [i["slug"] for i in both["items"]
+                                                        if i["bucket"] == "checkable"]
+    assert all(i["bucket"] == "unanchored" for i in only_un["items"])
+    # the census is the same whichever slice you asked for
+    assert only_check["counts"] == only_un["counts"] == both["counts"]
+    assert both["counts"]["checkable"] >= 1 and both["counts"]["unanchored"] >= 1
+
+    bad = client.get("/api/v1/memories/review-due", params={"only": "everything"})
+    assert bad.status_code == 422
+
+
 # ── the queue ─────────────────────────────────────────────────────────
 
 def test_review_queue_names_the_missing_kind_of_check(client):
@@ -157,6 +237,7 @@ def test_review_queue_names_the_missing_kind_of_check(client):
     by_slug = {i["slug"]: i for i in queue["items"]}
     assert by_slug[aged]["reasons"] and by_slug[refless]["reasons"]
     assert any("出处" in reason for reason in by_slug[refless]["reasons"])
+    assert by_slug[refless]["bucket"] == "unanchored" and by_slug[aged]["bucket"] == "checkable"
     # priority first: a critical belief nobody has looked at outranks a note
     assert queue["items"][0]["slug"] == aged
     # a fresh memory that carries refs is not "due" merely because it exists

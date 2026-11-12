@@ -108,9 +108,14 @@ READ
                                       only — it never writes. Server can reach url:/file:/
                                       mem:; git:/cmd:/host: come back "unchecked"
   GET  /memories/review-due           what deserves a re-check next, ranked by priority
-                                      then age, each item saying why (never verified /
-                                      no refs / contradicted and waiting). ?limit<=500,
-                                      ?stale_after_days=N (0 = only structural gaps).
+                                      then age, each item saying why. Two buckets, both
+                                      counted: bucket=checkable (has refs -> re-check it)
+                                      and bucket=unanchored (no refs -> attach a handle
+                                      once, it is not a recurring errand). ?only=checkable
+                                      |unanchored, ?limit<=500, ?stale_after_days=N.
+                                      The response also carries a census (counts):
+                                      skipped_flow / skipped_no_review / not_due — so a
+                                      short queue never reads as an empty library.
                                       Read-only: age makes a memory suspicious, never wrong
                                       GET  /search?q=...                  full-text (safe with any characters) + filters
                                       mode=keyword|semantic|hybrid (default keyword;
@@ -153,6 +158,9 @@ WRITE
   POST   /memories/decay              stamp long-unchecked memories "stale" (still listed,
                                       still recallable). ?apply=true to write, otherwise it
                                       only reports; ?stale_after_days=N to override.
+                                      Scope: memories that carry refs, and not session
+                                      flow / digests / no-review rows — with nothing to
+                                      re-check, ageing would be a verdict about the reader.
                                       Never contradicts, never restores: those need a reason
   POST   /memories/graph/auto-link    connect memory pairs sharing >=min_shared exact
                                       keywords (default min_freq=3, max_coverage=0.3,
@@ -189,9 +197,15 @@ CONVENTIONS
     readable by slug; the drop is announced in X-Contradicted-Hidden, never quiet.
     They are never deleted — a wrong belief is evidence.
   - Ageing: after MSC_STALE_AFTER_DAYS (default 90, 0 = off) a memory nobody has
-    verified or edited becomes "stale" on its own. That is suspicion, not evidence —
-    stale memories keep showing up in lists, search and digests. Clear it with
+    verified becomes "stale" on its own. That is suspicion, not evidence — stale
+    memories keep showing up in lists, search and digests. Clear it with
     POST /memories/{{slug}}/verify {{"verdict":"ok"}}, or work down GET /memories/review-due.
+    Only memories that carry refs age: with no handle there is nothing to re-check,
+    so those rows wait in the "unanchored" bucket instead of on a clock, and an old
+    or hand-written memory is never nagged into a status it cannot answer for.
+    Session flow (tag=turn, sess-/summary-/回响 slugs) and anything tagged
+    "no-review" is exempt by record, counted in the census. Rewriting a body is
+    NOT a re-check — only verify clears the clock.
     /meta reports stale / never_verified / no_refs so you can see how honest the
     library is being before you quote it.
   - Send "X-Agent: <your name>" on writes; it is recorded in the version history.

@@ -15,7 +15,7 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-__version__ = "2.6.5"
+__version__ = "2.6.6"
 
 console = Console()
 err_console = Console(stderr=True)
@@ -513,8 +513,10 @@ def reviews(ctx, ref, limit):
 @click.option("--tag", default=None, help="Comma-separated tag names.")
 @click.option("--days", "stale_after_days", type=int, default=None,
               help="Age threshold; 0 shows only structural gaps (no refs, open contradictions).")
+@click.option("--only", type=click.Choice(["checkable", "unanchored"]), default=None,
+              help="One bucket instead of both.")
 @click.pass_context
-def review_due(ctx, limit, priority, category, tag, stale_after_days):
+def review_due(ctx, limit, priority, category, tag, stale_after_days, only):
     """What deserves a re-check next, ranked by priority then age. Read-only.
 
     This is the queue that turns an aged memory back into work: each row says
@@ -531,19 +533,26 @@ def review_due(ctx, limit, priority, category, tag, stale_after_days):
         params["tag"] = tag
     if stale_after_days is not None:
         params["stale_after_days"] = stale_after_days
+    if only:
+        params["only"] = only
     queue = client.get("/api/v1/memories/review-due", params=params)
 
     def human():
         items = queue.get("items") or []
-        console.print(f"待复核 {queue.get('total', 0)} 条"
-                      f"（阈值 {queue.get('stale_after_days')} 天；只显示前 {len(items)} 条）")
+        counts = queue.get("counts") or {}
+        console.print(f"待复核 {queue.get('total', 0)} 条（阈值 {queue.get('stale_after_days')} 天，"
+                      f"只显示前 {len(items)} 条）："
+                      f"可复核 {counts.get('checkable', 0)} · 缺出处 {counts.get('unanchored', 0)}")
         for item in items:
             age = "?" if item.get("age_days") is None else f"{item['age_days']}天"
             console.print(f"  {item['priority']:8s} {item['slug']}  "
-                          f"({item['status']}, {age}, {item['last_confirmed']}) :: "
-                          f"{'; '.join(item['reasons'])}")
+                          f"({item['bucket']}, {item['status']}, {age}, "
+                          f"{item['last_confirmed']}) :: {'; '.join(item['reasons'])}")
         if not items:
-            console.print("  没有到期项：库里每条都在阈值内被确认过，或者都挂着出处")
+            console.print("  没有到期项：挂了出处的都在阈值内，缺出处的已被上面的计数点名")
+        console.print(f"  范围外（有记录，不是消失）：流水 {counts.get('skipped_flow', 0)} · "
+                      f"人工免检 {counts.get('skipped_no_review', 0)} · "
+                      f"未到期 {counts.get('not_due', 0)}")
 
     _output(queue, human)
 
