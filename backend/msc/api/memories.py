@@ -449,6 +449,30 @@ def clear_auto_links(request: Request = None, db: Session = Depends(get_db)):
 _METHOD_UNSUPPORTED = (405, 501)
 
 
+def _mount_targets() -> list:
+    """The path prefixes this process could see a file under.
+
+    A container's filesystem is not the filesystem of the machine that wrote
+    the memory. Inside the directories this service actually serves — database,
+    backups, both memory dirs, the photo roots — 「not found」 is evidence;
+    anywhere else it is only this process's mount table talking. `MSC_REF_ROOTS`
+    adds prefixes the operator mounts on purpose.
+    """
+    raw = [settings.memory_dir, settings.claude_memory_dir, settings.backup_dir,
+           settings.pic_dir, os.path.dirname(str(settings.db_path))]
+    raw += (settings.pic_roots or "").split(",")
+    raw += (settings.ref_roots or "").split(",")
+    return [os.path.normpath(str(p).strip()) for p in raw if str(p).strip()]
+
+
+def _mount_visible(path: str) -> bool:
+    target = os.path.normpath(path)
+    for root in _mount_targets():
+        if target == root or target.startswith(root.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def _url_verdict(status_code: int) -> tuple:
     """Map an HTTP answer onto a provenance verdict: ``(verdict, detail)``.
 
@@ -490,6 +514,14 @@ def _probe_ref(db: Session, ref: str) -> ProbeItem:
                              detail="relative path belongs to the writing host")
         if os.path.exists(target):
             return ProbeItem(ref=ref, kind=kind, verdict="ok", detail="path exists")
+        if not _mount_visible(target):
+            # Absence of evidence, not evidence of absence: /home/astro/msc is
+            # real on the machine that wrote it and simply not mounted in here.
+            # Calling it 「path is gone」 contradicts a memory because of this
+            # process's mount table — the file: twin of reading 405 as a dead
+            # endpoint, and the client (msc-verify.sh) is the one that can answer.
+            return ProbeItem(ref=ref, kind=kind, verdict="unchecked",
+                             detail="path is outside this server's mounts")
         return ProbeItem(ref=ref, kind=kind, verdict="missing", detail="path is gone")
     if kind == "url":
         if not target.startswith(("http://", "https://")):

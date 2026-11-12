@@ -334,3 +334,28 @@ def test_the_client_probe_answers_verdict_tab_detail():
         assert separator == "\t", f"{ref} answered without a separator: {run.stdout!r}"
         assert verdict == want, f"{ref}: {run.stdout!r}"
         assert detail.strip(), f"{ref}: no detail for {want}"
+
+
+def test_a_path_outside_the_mount_set_is_not_called_gone(client):
+    """file:/home/astro/msc is real on the writer's machine and simply not
+    mounted inside the container. Answering 「path is gone」 there contradicts a
+    memory for a reason that has nothing to do with the memory — the file: twin
+    of reading 405 as a dead endpoint. Absence only counts as evidence where
+    this server could have seen the file."""
+    from msc.api.memories import _mount_targets, _probe_ref
+    from msc.config import get_settings
+    from msc.database import SessionLocal
+
+    memory_dir = str(get_settings().memory_dir)
+    assert memory_dir in _mount_targets()
+
+    db = SessionLocal()
+    try:
+        inside = _probe_ref(db, f"file:{memory_dir}/prov-note-nobody-wrote.md")
+        assert inside.verdict == "missing", inside.detail      # mounted: absence is evidence
+        elsewhere = _probe_ref(db, "file:/etc/prov-note-nobody-wrote.conf")
+        assert elsewhere.verdict == "unchecked", elsewhere.detail  # not mounted: no verdict
+        present = _probe_ref(db, f"file:{memory_dir}")
+        assert present.verdict == "ok", present.detail         # exists: no argument needed
+    finally:
+        db.close()

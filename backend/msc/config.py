@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 
 # Bumped together by the CLI, the Web UI and /api/v1/health so a mismatch is
 # impossible to miss.
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 
 
 class Settings(BaseSettings):
@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     backup_dir: Path = Path("/app/backups")
     # How many archives the scheduled backup keeps. 0 disables pruning.
     backup_keep: int = 14
+
+    # Extra prefixes a file: ref may legitimately point at. The probe already
+    # knows this service's own directories (database / backups / memory dirs /
+    # photo roots); list more here — a source tree, a NAS mount — when the
+    # container should be trusted to see them. A path outside every one of
+    # these is reported "unchecked", never "gone".
+    ref_roots: str = ""
 
     # Auth
     # auth_enabled=False → 局域网免登录模式：所有 API 与 Web UI 无需 token / API Key

@@ -80,6 +80,11 @@ services:
       - MSC_PIC_ROOTS=${MSC_PIC_ROOTS:-/home/astro/photos}
       - MSC_PIC_THUMB_PX=${MSC_PIC_THUMB_PX:-512}
       - MSC_PIC_MAX_ORIGINAL_MB=${MSC_PIC_MAX_ORIGINAL_MB:-256}
+      # Extra prefixes a file: ref may be judged against. Only list paths the
+      # container genuinely mounts above: /memories/preflight reports a file:
+      # ref outside this list as "unchecked" rather than "gone", which is the
+      # honest answer for a source tree that lives on the host, not in here.
+      - MSC_REF_ROOTS=${MSC_REF_ROOTS:-}
     restart: unless-stopped
     # The access log is the audit trail of a no-login service — keep it, but
     # cap it so it cannot fill the disk.

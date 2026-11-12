@@ -286,6 +286,12 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.1（main）：把出处真的用起来
+
+- **`cli/msc-refs-backfill.sh`** — 老记忆的出处一直写在正文里（首行的 host 头、正文中的提交号、路径、网址），可读，但没法复核：preflight 只认解析得出的把手。这个工具把当场确认得了的那部分抬进 `refs`，口径与探针一致 —— `host:` 取首行并去掉 `.local`（不去就永远比不中 `hostname -s`）；`git:` 必须 `git cat-file -e <sha>^{commit}` 真解析成提交，md5、日期这种长得像十六进制的自己就被刷掉；`file:` 必须存在且是项目/配置级路径（`/bin/sh`、`/dev/null` 几乎每条正文里都有，那不是出处）；`url:` 必须答话且不是 404（挂一个已经死掉的端点等于当场把这条记忆判死）；`localhost` 网址一律不挂 —— 那只对写它的那台机器成立，是 `host:` 的活。默认 dry-run，`--yes` 才写；已有 refs 的一条不碰（要覆盖加 `--force`）。
+- **现网回填** — 78 条挂上 236 个出处，另外 31 条在这台机器上确认不了，就一条都不挂。回填只是元数据动作：PUT 顺手把 `updated_at` 推到当下，111 条集体"刚刚更新"会把注入侧的「最近更新」和按 `updated_at` 的折叠判定一起带歪，所以按写入前的快照把时间戳还原。
+- **容器看不见的路径不再算「没了」** — 回填后 preflight 把 78 条里的 27 条判成 `contradicted`，理由清一色 `file:/home/astro/msc … path is gone`：路径是在主机上确认的，探测却跑在容器里，而源码树根本没挂载进这个容器。现在 `file:` 只有落在本服务真正挂载的目录（数据库 / 备份 / 两个记忆目录 / 照片根 / `MSC_REF_ROOTS`）才允许判 `missing`，其余一律 `unchecked`。判「没了」需要资格，正如判「端点消失」需要 404 而不是 405。`MSC_REF_ROOTS` 只填容器真挂载的前缀：把主机路径填进去，等于把这类误判重新请回来。
+
 ### 2.6.0（main）：记忆出处与自我修正
 
 - **出处与状态** — `memories` 新增 `refs/status/invalidated_at/invalidated_reason/verified_at` 五列（`add_missing_columns` 自动补列；`ensure_provenance` 回填，因为 `ALTER TABLE ADD COLUMN` 在老库留下一片 NULL，而 NULL 在 SQL 里连 `!=` 都不满足，一条 `status != 'contradicted'` 能把升级库里的记忆**全部**变没）。`status` 刻意可空，与真实升级路径一致，读侧 NULL 安全。取代关系复用已有 `supersedes` 边，不新造字段。
