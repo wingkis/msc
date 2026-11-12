@@ -322,7 +322,9 @@ a:hover { text-decoration-color: currentColor; }
   transition: all 0.15s;
 }
 .memory-card:hover { border-color: var(--primary); background: var(--bg-hover); }
-.echo-inline-btn { margin-left: auto; align-self: center; opacity: 0; transition: opacity 0.15s; white-space: nowrap; }
+/* Kept visible at low contrast: opacity 0 until hover meant the button looked
+   like it did not exist, and on touch there is no hover to discover it with. */
+.echo-inline-btn { margin-left: auto; align-self: center; opacity: 0.55; transition: opacity 0.15s; white-space: nowrap; flex-shrink: 0; }
 .memory-card:hover .echo-inline-btn { opacity: 1; }
 .memory-priority-dot {
   width: 8px;
@@ -1335,6 +1337,9 @@ a:hover { text-decoration-color: currentColor; }
 /* Four footer buttons in a phone-wide photo modal: wrap onto a second row
    rather than squeezing past the card edge (the 2.5.12 flex-min-content trap). */
 .pic-modal .modal-footer { flex-wrap: wrap; }
+
+/* Five footer buttons fit on a wide screen but not on a phone: let them wrap. */
+#detail-content .modal-footer { flex-wrap: wrap; }
 
 /* Empty view / paging tail. */
 .pic-empty { text-align: center; padding: 48px 0 40px; color: var(--text-muted); }

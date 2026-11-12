@@ -103,10 +103,13 @@ function renderMemoryCard(m) {
   const tagsHtml = (m.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const date = m.updated_at ? m.updated_at.substring(0, 10) : '';
   const idLabel = m.id != null ? `#${m.id}` : '';
+  // Echo lives on the live cards only: the API resolves a slug among non-archived
+  // memories, so a button on an archived card would always fail.
   const actions = m.archived
     ? `<button class="btn btn-sm restore-btn" onclick="event.stopPropagation();restoreMemoryUI('${escHtml(m.slug)}')">恢复</button>
        <button class="btn btn-sm btn-hard" onclick="event.stopPropagation();hardDeleteMemoryUI('${escHtml(m.slug)}')">彻底删除</button>`
-    : '';
+    : `<button class="btn btn-ghost btn-sm echo-inline-btn" title="让模型给这条记忆写回响评注"
+              onclick="event.stopPropagation();startEchoFor('${escHtml(m.slug)}')">回响</button>`;
   // Multi-select feeds the digest modal. Archived memories cannot be picked:
   // the API only resolves live ones.
   const selectBox = (selectMode && !m.archived)
@@ -294,7 +297,7 @@ function renderSearchResult(r) {
           ${tagsHtml}
         </div>
       </div>
-      <button class="btn btn-ghost btn-small echo-inline-btn" title="让模型给这条记忆写回响评注"
+      <button class="btn btn-ghost btn-sm echo-inline-btn" title="让模型给这条记忆写回响评注"
               onclick="event.stopPropagation(); startEchoFor('${escHtml(r.slug)}')">回响</button>
     </div>
   `;
@@ -369,11 +372,23 @@ function renderSearchDigest(result, saved) {
     <div class="search-digest-actions">${actions}</div>`;
 }
 
-// Search-result echo button: prefill the insights echo panel and run it.
+// Echo entry points (search cards, memory cards, the detail modal) all funnel
+// here: the commentary itself is long (1-2 minutes), so it always runs in the
+// insights panel where the status line and the result live.
 function startEchoFor(slug) {
   navTo('insights');
   document.getElementById('echo-slug').value = slug;
   runEcho();
+}
+
+// The detail modal's 回响 button: the modal has no room for a 1-2 minute job,
+// so hand off to the insights panel. closeDetailModal() clears the slug, so
+// read it first.
+function echoCurrentMemory() {
+  const slug = currentDetailSlug;
+  if (!slug) return;
+  closeDetailModal();
+  startEchoFor(slug);
 }
 
 // ── Memory Detail ───────────────────────────────────────────────────
@@ -408,6 +423,9 @@ async function showMemoryDetail(slug) {
     setDetailFooter('detail-restore-btn', !!m.archived);
     setDetailFooter('detail-delete-btn', !m.archived);
     setDetailFooter('detail-edit-btn', !m.archived);
+    // Same rule as the cards: an archived memory cannot be echoed (the slug
+    // lookup skips archived rows), so no button on it either.
+    setDetailFooter('detail-echo-btn', !m.archived);
     loadDetailExtra(slug);
   } catch (e) {
     toast('加载失败: ' + e.message, 'error');
