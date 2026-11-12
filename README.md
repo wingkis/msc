@@ -286,6 +286,23 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 
 ## 更新记录
 
+### 2.6.5（main）：库自己开始老化和留痕
+
+372 号复核建议里剩下那四条（`msc-provenance-review-20261113`）。共同点是"没有自动路径"：机制都在，没人触发就等于没有。
+
+- **时间衰减（#7）** — `verified_at` 以前只写不读，于是没有任何东西会过期：一条信念只要没人碰它，就永远以 `active` 的身份带着自己的优先级进每一次注入。现在 `MSC_STALE_AFTER_DAYS`（默认 90，0=关）到期自动降 `stale`，worker 每小时看一次，操作天然幂等（只动 `active`，刚降过的行不再匹配）。三条边界：**时钟只降不判** —— `stale` 是怀疑不是证据，`contradicted` 必须给理由；**`stale` 不隐藏** —— 列表、搜索、小结照旧，只有被推翻的才退出默认视野；**只有复核能清时钟** —— 改正文和衰减自己的时间戳都不算确认（否则每轮扫一遍就等于给自己续 90 天，一个错字也能再买三个月不被质疑）。
+- **复核队列（#7）** — `GET /memories/review-due`：按 priority→年龄排序，每条写清楚缺哪种复核（从未复核 / 没挂出处 / 已推翻还挂着 / 复核之后正文又改过）。只读。`?stale_after_days=0` 只看结构性缺口。`/meta` 同时报 `stale`、`never_verified`、`no_refs` —— 在引用这个库之前先看这三个数。
+- **复核留痕（#9）** — 新表 `memory_reviews`：每次 `invalidate` / `verify` / `decay` 追加一行（谁、何时、from→to、理由），`GET /memories/{slug}/reviews` 读。状态列只存"现在信什么"，存不了"三月被推翻、五月被复位"；判决写得越便宜，越需要知道这条被翻过几次。快照表会被裁剪，这些行不裁（不含正文）。
+- **乐观锁（#9）** — `if_status` / `if_updated_at`：两个 agent 同时复核同一条，后写的不再静默拥有真相，而是 409 告诉你"它已经动了"。Web UI 的两个判决按钮都带上了这个前提，冲突时提示重开。
+- **复核进 SessionStart（#6）** — hook v3.7 后台跑本机 `msc-verify.sh --brief`（原子换报告 + TTL 默认 6h），把结论摘要并入注入：`抽样 N · 确认 X · 本机无法核 Y · 已失效 Z`，失效的点名到 slug 和把手。绝不阻塞启动（实测 dgx/mmm6 都是 0.1–0.2s 返回，本轮读上一份、下一轮换新）。服务端只能验 `url:/file:/mem:`，`git:/host:` 必须回到写它的那台机器上验 —— 这一半以前没人跑。
+- **小账（#10）** — 列表端点从"多跑一个 COUNT + 把整个匹配集捞进 Python 再切片"改成**一条聚合出 total 与隐藏数 + SQL 侧分页**；顺手修掉 `?tag=a,b` 返回重复记忆（DISTINCT，计数与行数从此一致）；`preflight` 不再把没有出处的行读出来再在 Python 里丢掉。新索引 `idx_memories_status / updated_at / created_at` 与部分索引 `idx_memories_refs_live`。诚实一句：`?ref=` 的 `LIKE '%…%'` 用不上任何索引，影响面反查天生是扫描。
+- **CLI** — `msc review-due` / `msc decay [--apply]` / `msc reviews <slug>`（`--apply` 之前默认只看不动）。
+
+移植与实测又抓到两个客户端 bug（都是"只在 dgx 测等于没测"这一类的续集）：
+
+- `msc-verify.sh` 的 refs 解析用了 GNU sed 的 `\|` 与替换串里的 `\n`：**BSD sed 两个都不支持，而且不报错**，于是 macOS 上客户端复核永远报"这条没有出处"——一个看起来像"库很干净"的 0。改成 awk 实现（`match()` + 按 `","` 切分，保留值内空格）。
+- 跨机的 `file:` 出处在别的机器上被判"路径没了"：dgx 的 `/home/astro/...` 在 mmm6 上不存在，`--yes` 一跑就会把十几条好记忆判成推翻。现在按这台机器的形状判：`/home/*` 只在 Linux 上断言、`/Users/*` 只在 Darwin 上断言、家目录属主不是当前用户就回 `unchecked`。残留风险：同用户同系统的绝对路径（`/srv/app`）仍然只由本机说了算。
+
 ### 2.6.4（main）：把 372 号复核建议里成立的部分逐条打掉
 
 `msc-provenance-review-20261113`（记忆 id 372）只读复核了出处机制，给了 12 条建议。这一版执行其中七条，按重要性排：
