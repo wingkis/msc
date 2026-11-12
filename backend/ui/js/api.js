@@ -102,6 +102,16 @@ const API = {
     return apiFetch(`/memories/${encodeURIComponent(slug)}/invalidate`,
       { method: 'POST', body: JSON.stringify(data || {}) });
   },
+  // The audit trail of re-checking: who judged it, when, on what grounds.
+  reviews(slug, params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return apiFetch(`/memories/${encodeURIComponent(slug)}/reviews${qs ? '?' + qs : ''}`);
+  },
+  // What deserves a re-check next. Read-only: age is suspicion, not evidence.
+  reviewDue(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return apiFetch('/memories/review-due?' + qs);
+  },
   verify(slug, data) {
     return apiFetch(`/memories/${encodeURIComponent(slug)}/verify`,
       { method: 'POST', body: JSON.stringify(data || {}) });

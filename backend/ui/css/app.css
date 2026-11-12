@@ -1481,6 +1481,26 @@ a:hover { text-decoration-color: currentColor; }
 .ref-chip.ref-host, .ref-chip.ref-cmd { color: var(--text-dim); }
 
 .ref-verdicts { margin-top: 10px; }
+/* Re-check history: every verdict ever recorded, newest first. A contradicted
+   and restored memory reads as one quiet status badge without this. */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.review-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.review-action { font-weight: 600; }
+.review-move { color: var(--text-muted); }
+.review-reason { flex-basis: 100%; color: var(--text-dim); }
+
 .ref-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .ref-verdict {
   flex-shrink: 0;

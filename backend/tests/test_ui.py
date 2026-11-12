@@ -202,9 +202,18 @@ def test_memory_detail_can_contradict_and_recheck(client):
     # a PUT that omits refs keeps them; the form must not read "untouched" as "delete"
     assert "currentEditRefs" in js
 
+    # 复核要留痕：详情面板里没有历史，"谁判过、后来又复位了"就只能靠猜
+    assert "复核历史" in js and "API.reviews" in js
+    assert "/reviews" in (UI / "js" / "api.js").read_text(encoding="utf-8")
+    # 一个判决不许静默盖掉另一个：读到的版本要跟着写回去
+    assert "if_status" in js and "isMovedConflict" in js
+    # 活着的记忆也要说"多久没人复核过"，否则读的人以为它一直是新的
+    assert "从未复核过" in js
+
     css = (UI / "css" / "app.css").read_text(encoding="utf-8")
     for selector in (".detail-refs", ".ref-chip", ".ref-row", ".verdict-missing",
-                     ".status-badge", ".invalidate-form", ".form-hint"):
+                     ".status-badge", ".invalidate-form", ".form-hint",
+                     ".review-list", ".review-row"):
         assert selector in css, selector
 
 

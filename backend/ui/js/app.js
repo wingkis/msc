@@ -473,7 +473,9 @@ async function loadDetailExtra(slug) {
   const box = document.getElementById('detail-extra');
   if (!box) return;
   try {
-    const [versions, related] = await Promise.all([API.listVersions(slug), API.listRelations(slug)]);
+    const [versions, related, reviews] = await Promise.all([
+      API.listVersions(slug), API.listRelations(slug), API.reviews(slug, { limit: 20 }),
+    ]);
     if (!document.body.contains(box)) return;  // the modal was replaced while loading
 
     // Only the latest snapshot is kept per memory (undo of the last edit).
@@ -489,6 +491,18 @@ async function loadDetailExtra(slug) {
           </div>`).join('')
       : '<div class="empty-hint">还没有编辑历史</div>';
 
+    // Verdicts are recorded, not overwritten: the status column says what is
+    // believed now, this says the same claim was contradicted and restored.
+    const reviewHtml = reviews.length
+      ? reviews.map(r => `
+          <div class="review-row">
+            <span class="review-action review-${escAttr(r.action)}">${escHtml(REVIEW_ACTION_LABELS[r.action] || r.action)}</span>
+            <span class="review-move">${escHtml(r.from_status || '?')} → ${escHtml(r.to_status || '?')}</span>
+            <span class="version-when">${escHtml(fmtDate(r.created_at))}${r.actor ? ' · ' + escHtml(r.actor) : ''}</span>
+            <div class="review-reason">${escHtml(r.reason || '')}</div>
+          </div>`).join('')
+      : '<div class="empty-hint">还没有复核记录 —— 没人判过它，不等于它是对的</div>';
+
     const relatedHtml = related.length
       ? related.map(r => `
           <span class="related-item" onclick="showMemoryDetail('${escHtml(r.slug)}')" title="${escHtml(r.relation_type)}">
@@ -497,6 +511,10 @@ async function loadDetailExtra(slug) {
       : '<div class="empty-hint">暂无关联记忆</div>';
 
     box.innerHTML = `
+      <div class="detail-section">
+        <h4>复核历史 (${reviews.length})</h4>
+        <div class="review-list">${reviewHtml}</div>
+      </div>
       <div class="detail-section">
         <h4>关联记忆</h4>
         <div class="related-list">${relatedHtml}</div>
@@ -515,6 +533,10 @@ async function loadDetailExtra(slug) {
 }
 
 // ── Provenance: refs, re-check, contradiction, the only way back ─────
+const REVIEW_ACTION_LABELS = {
+  invalidate: '推翻', verify: '复核', decay: '到期降级',
+};
+
 function refChip(ref) {
   const kind = String(ref).split(':')[0];
   const target = String(ref).slice(kind.length + 1);
@@ -547,10 +569,16 @@ function renderRefsBlock(m) {
   const chips = refs.length
     ? `<div class="ref-list">${refs.map(refChip).join('')}</div>`
     : '<div class="empty-hint">没有挂出处：读者没法复核这条是从哪来的</div>';
+  // Shown even when the memory is live: "nobody has checked this since 2025" is
+  // the fact a reader is otherwise never told.
+  const checkedLine = m.verified_at
+    ? `上次复核 ${escHtml(fmtDate(m.verified_at))}`
+    : '从未复核过' + (m.created_at ? `（写下已 ${escHtml(fmtDate(m.created_at))}）` : '');
   return `
     <h4>出处 (${refs.length})</h4>
     ${banner}
     ${chips}
+    <div class="ref-note">${checkedLine}</div>
     <div id="detail-ref-verdicts" class="ref-verdicts"></div>
     <div id="invalidate-form" class="invalidate-form" style="display:none">
       <input type="text" id="invalidate-reason" placeholder="为什么不成立了（必填，后来人只能看见这句话）">
@@ -613,7 +641,7 @@ async function confirmInvalidate() {
   if (!reason) { toast('写下为什么不成立 —— 原因是后来人唯一的线索', 'error'); return; }
   const supersededBy = (document.getElementById('invalidate-supersedes').value || '').trim();
   const status = document.getElementById('invalidate-status').value;
-  const payload = { reason, status };
+  const payload = { reason, status, if_status: 'active' };
   if (supersededBy) payload.superseded_by = supersededBy;
   try {
     await API.invalidate(slug, payload);
@@ -622,7 +650,11 @@ async function confirmInvalidate() {
     showMemoryDetail(slug);
     reloadCurrentPage();
   } catch (e) {
-    toast('推翻失败: ' + e.message, 'error');
+    // 409 = somebody else judged it while this form was open. Overwriting them
+    // silently is the failure the precondition exists to prevent.
+    toast(isMovedConflict(e) ? '这条已经被别人改过：请重新打开再判（内容已刷新）'
+                             : '推翻失败: ' + e.message, 'error');
+    showMemoryDetail(slug);
   }
 }
 
@@ -635,13 +667,24 @@ function verifyCurrentMemory() {
 // round and that would launder a wrong belief back into fact nightly.
 async function verifyMemoryUI(slug, verdict = 'ok') {
   try {
-    const m = await API.verify(slug, { verdict, reason: '在 Web UI 里人工复核' });
+    // Read first, then name the revision: if another agent judged it in between
+    // the server answers 409 instead of letting the later write own the truth.
+    const before = await API.getMemory(slug);
+    const m = await API.verify(slug, { verdict, reason: '在 Web UI 里人工复核',
+                                       if_status: before.status || 'active' });
     toast(`已复核 ${slug}: ${m.status === 'active' ? '回到列表与搜索' : m.status}`);
     if (currentDetailSlug === slug) showMemoryDetail(slug);
     reloadCurrentPage();
   } catch (e) {
-    toast('复核写回失败: ' + e.message, 'error');
+    toast(isMovedConflict(e) ? '这条已经被别人改过：请重新打开再判（内容已刷新）'
+                             : '复核写回失败: ' + e.message, 'error');
+    if (currentDetailSlug === slug) showMemoryDetail(slug);
   }
+}
+
+// FastAPI hands the 409 detail through as its message text.
+function isMovedConflict(error) {
+  return /moved since you read it/.test(String(error && error.message || ''));
 }
 
 async function relateFromDetail(slug) {
