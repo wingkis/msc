@@ -18,10 +18,10 @@
   --primary-hover: #ffffff;
   --primary-bg: rgba(255,255,255,0.08);
   --ink-on-accent: #101010;      /* text sitting on a filled --primary */
-  --success: #a2a2a2;            /* healthy = quiet */
-  --warning: #d4d4d4;
-  --danger: #ffffff;             /* broken = loudest, and it also gets a border */
-  --info: #d4d4d4;
+  --success: #52c41a;            /* healthy = quiet */
+  --warning: #faad14;
+  --danger: #ff4d4f;             /* broken = loudest, and it also gets a border */
+  --info: #1890ff;
   --border: #2c2c2c;
   --radius: 8px;
   --radius-lg: 12px;
@@ -32,10 +32,10 @@
   --category-user: #979797;
   --category-knowledge: #757575;
   --category-reference: #565656;
-  --priority-critical: #ffffff;
-  --priority-high: #c9c9c9;
-  --priority-medium: #979797;
-  --priority-low: #626262;
+  --priority-critical: #ff4d4f;
+  --priority-high: #fa8c16;
+  --priority-medium: #1890ff;
+  --priority-low: #52c41a;
   /* Type: one size for the entire UI. The wordmark is the single exception, at
      half of it. Font stacks stay whatever they were - no new webfont. */
   --fs: 14px;
@@ -347,11 +347,12 @@ a:hover { text-decoration-color: currentColor; }
   border-radius: 50%;
   margin-top: 6px;
   flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
 }
-.priority-critical { background: var(--priority-critical); }
-.priority-high { background: var(--priority-high); }
-.priority-medium { background: var(--priority-medium); }
-.priority-low { background: var(--priority-low); }
+.priority-critical { background: var(--priority-critical); color: var(--priority-critical); }
+.priority-high { background: var(--priority-high); color: var(--priority-high); }
+.priority-medium { background: var(--priority-medium); color: var(--priority-medium); }
+.priority-low { background: var(--priority-low); color: var(--priority-low); }
 .memory-content { flex: 1; min-width: 0; }
 .memory-name {
   font-size: var(--fs);

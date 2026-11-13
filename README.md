@@ -8,7 +8,7 @@
 - **记忆管理** — 增删改查，分类/标签/优先级/分支过滤，软删除可撤销
 - **全文搜索** — SQLite FTS5（自动触发器维护），任意字符都不会破坏查询，另有 LIKE 兜底
 - **版本历史** — 每次编辑自动存版本，可查看/回滚（回滚本身也进历史）
-- **记忆图谱** — Vis.js 动态图，节点按分类着色
+- **记忆图谱** — Vis.js 动态图，节点按优先级着色（淡彩）
 - **双向同步** — API 写入即时落盘；磁盘上手改 markdown 由后台 worker 拉回库（`MSC_SYNC_INTERVAL_SECONDS`）
 - **自描述 API** — `GET /api/v1/help`、`/llms.txt`、`/meta`，agent 读完就会用
 - **自愈迁移** — 启动时补列、清洗标签、注册分支、清理正文里混入的 frontmatter、修复搜索索引
@@ -301,6 +301,17 @@ Startup maintenance: {'columns_added': ['sync_conflicts.status'], 'tags_normaliz
 - 服务端只动契约不动判定：`ip` 进 `REF_KINDS`，`/help` 与 `X-Provenance-Hint` 的示例改用 `ip:`。API 仍是唯一地址 `http://192.168.29.50:8000/api/v1`，dgx 本机也照样走 HTTP，不开本地后门。
 - 测试 `228 passed`、`ruff --select F,E9` 干净；新增用例覆盖：地址分级与「名字不许否决地址」、无归属默认关闭、认不出自己的机器什么都不判、跨 OS 形状（两侧都断言，守卫不许吃掉本机的系统路径）、`ip:` ref 的往返与拒绝、以及「沉默不是矛盾」（本地起一个真 HTTP 服务：`/alive` 200 → ok、`/gone` 404 → missing、端口 1 拒绝与 `.invalid` 不解析 → unchecked）。
 - 上线后四台八侧同步到同一 md5，各跑 `--brief --limit 200`（99 条带出处的记忆）：dgx `69/0`、n1 `33/0`、n4 `36/0`、mmm6 `51/0`（确认/矛盾）。改之前 n1、n4 各凭空判死 6 条、mmm6 判死 4 条。剩下 30~66 条 `uncheckable` 是对的：`git:` 对象不在这个 checkout、`host:` 写的是别的机器、以及 15 条至今没挂任何归属的老记忆——它们的出路是补 `ip:`，不是把判据放松。
+
+### 2.7.1（main）：WebUI 淡彩点缀
+
+灰色主基调上，给关键状态加了低饱和的淡彩色，区分优先级与分类，不抢视觉重心。
+
+- **优先级彩色** — 节点与优先级点：critical = 淡红 `#ffe0e0`，high = 淡黄 `#fff0c0`，medium = 淡蓝 `#cce5ff`，low = 淡绿 `#d4f5d4`；优先级圆点缩小到 7px，带发光效果。
+- **分类彩色** — config = 淡蓝 `#b3c6e7`，project = 淡绿 `#c9d8b5`，user = 淡粉 `#f0c4c4`，knowledge = 淡黄 `#e7d5a8`，reference = 淡紫灰 `#c9c9d4`。
+- **图谱节点** — 不再用分类灰度，改为按优先级着色（`graph.js` 的 `PRIORITY_COLORS` 映射）；`CATEGORY_COLORS` 同步更新为淡彩。
+- **状态色同步** — success = 淡绿，warning = 琥珀，danger = 淡红，info = 淡蓝。
+
+灰色仍占 90% 以上，色彩只用于一眼需要区分的地方：优先级点、分类标签、状态指示灯。
 
 ### 2.6.9（main）：清空归档必须明说，不然什么都不做
 
