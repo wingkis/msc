@@ -38,7 +38,7 @@
   --priority-low: #626262;
   /* Type: one size for the entire UI. The wordmark is the single exception, at
      half of it. Font stacks stay whatever they were - no new webfont. */
-  --fs: 13px;
+  --fs: 14px;
   --fs-micro: calc(var(--fs) / 2);
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
@@ -61,6 +61,13 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* Firefox: -webkit-scrollbar is not recognised; add native scrollbar tokens. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*:hover { scrollbar-color: var(--text-dim) transparent; }
 
 /* Bare <a>s (the summarise run log, the near-duplicate pairs, search hits) had
    no rule at all, so the browser's blue/purple showed through. A link here is
@@ -232,8 +239,16 @@ a:hover { text-decoration-color: currentColor; }
   margin: 0 auto;
   padding: 24px;
 }
-.page { display: none; }
+.page {
+  display: none;
+  animation: pageFadeIn 0.2s ease;
+}
 .page.active { display: block; }
+
+@keyframes pageFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
 /* ── Stats Grid ─────────────────────────────────── */
 .stats-grid {
@@ -327,8 +342,8 @@ a:hover { text-decoration-color: currentColor; }
 .echo-inline-btn { margin-left: auto; align-self: center; opacity: 0.55; transition: opacity 0.15s; white-space: nowrap; flex-shrink: 0; }
 .memory-card:hover .echo-inline-btn { opacity: 1; }
 .memory-priority-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   margin-top: 6px;
   flex-shrink: 0;
@@ -674,7 +689,10 @@ a:hover { text-decoration-color: currentColor; }
   align-items: center;
   justify-content: center;
 }
-.modal-overlay.active { display: flex; }
+.modal-overlay.active {
+  display: flex;
+  animation: overlayFadeIn 0.15s ease;
+}
 .modal {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -684,6 +702,7 @@ a:hover { text-decoration-color: currentColor; }
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
+  animation: modalSlideIn 0.2s ease;
 }
 .modal-sm { max-width: 400px; }
 .modal-lg { max-width: 800px; }
@@ -749,6 +768,26 @@ a:hover { text-decoration-color: currentColor; }
   border-color: var(--primary);
 }
 .form-group textarea { resize: vertical; }
+
+/* Form validation feedback: red outline for invalid, green for valid.
+   Native browser tooltips are kept via :placeholder-shown trick so the user
+   always sees a reason when the field is empty. */
+.form-group input:not(:placeholder-shown):invalid {
+  border-color: var(--danger);
+}
+.form-group input:not(:placeholder-shown):valid {
+  border-color: var(--success);
+}
+.form-group input::placeholder { color: var(--text-dim); }
+
+/* Error message shown on submit (JS-driven). */
+.form-error {
+  font-size: var(--fs);
+  color: var(--danger);
+  margin-top: 4px;
+  display: none;
+}
+.form-error.visible { display: block; }
 
 /* ── Search Box ─────────────────────────────────── */
 .search-box {
@@ -850,6 +889,13 @@ a:hover { text-decoration-color: currentColor; }
 }
 .empty-state-text { font-size: var(--fs); }
 
+/* Empty-state "warm" variant: shows a hint about how to fill the void. */
+.empty-state-hint {
+  font-size: var(--fs);
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+
 /* ── Responsive ─────────────────────────────────── */
 @media (max-width: 900px) {
   .dashboard-layout { grid-template-columns: 1fr; }
@@ -897,6 +943,15 @@ a:hover { text-decoration-color: currentColor; }
   to { opacity: 1; transform: translateY(0); }
 }
 .memory-card { animation: fadeIn 0.2s ease; }
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes modalSlideIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 @keyframes spin {
   to { transform: rotate(360deg); }
@@ -1124,6 +1179,21 @@ a:hover { text-decoration-color: currentColor; }
 /* ── RAG: voice page ────────────────────────────────────────────── */
 .voice-page { max-width: 760px; margin: 0 auto; }
 
+/* Voice playback area: inline audio player with warm feedback. */
+.voice-playback {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: none;
+  align-items: center;
+  gap: 10px;
+}
+.voice-playback.visible { display: flex; }
+.voice-playback audio { flex: 1; height: 32px; }
+.voice-playback .voice-playback-actions { display: flex; gap: 6px; }
+
 /* ── RAG: insights page ─────────────────────────────────────────── */
 .pick-body { margin-top: 10px; }
 .pick-meta { color: var(--text-muted, #a2a2a2); font-size: var(--fs); margin-bottom: 8px; }
@@ -1319,6 +1389,14 @@ a:hover { text-decoration-color: currentColor; }
 .pic-tile-btns { display: flex; gap: 4px; padding-top: 4px; }
 .pic-tile-btns .btn { font-size: var(--fs); padding: 2px 8px; }
 
+/* ── Search Highlight ───────────────────────────── */
+mark.search-hl {
+  background: rgba(255,255,255,0.22);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
 /* Single-photo delete: same grammar as the checkbox — it lives on the photo
    and only shows when the tile is hovered/selected. Bottom-right keeps it out
    of the way of the 失败/副本 badge (top-right) and the search-match chip
@@ -1481,26 +1559,6 @@ a:hover { text-decoration-color: currentColor; }
 .ref-chip.ref-host, .ref-chip.ref-cmd { color: var(--text-dim); }
 
 .ref-verdicts { margin-top: 10px; }
-/* Re-check history: every verdict ever recorded, newest first. A contradicted
-   and restored memory reads as one quiet status badge without this. */
-.review-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.review-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.review-action { font-weight: 600; }
-.review-move { color: var(--text-muted); }
-.review-reason { flex-basis: 100%; color: var(--text-dim); }
-
 .ref-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .ref-verdict {
   flex-shrink: 0;

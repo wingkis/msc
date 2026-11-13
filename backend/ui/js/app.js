@@ -33,6 +33,19 @@ function initApp() {
   localStorage.removeItem('jwt_token');
   localStorage.removeItem('api_key');
 
+  // ── Global error boundary ─────────────────────────────────────────
+  // Catches unhandled promise rejections and synchronous errors so the
+  // whole page never goes blank. The toast gives the user a hint to
+  // reload or report the bug.
+  const handleError = (msg, src, line, col, err) => {
+    const detail = err ? err.message : `${msg} @ ${src}:${line}:${col}`;
+    toast('全局错误：' + detail, 'error');
+    // Persist for bug reports
+    try { localStorage.setItem('msc_last_error', detail); } catch {}
+  };
+  window.addEventListener('error', e => handleError(e.message, e.filename, e.lineno, e.colno, e.error));
+  window.addEventListener('unhandledrejection', e => handleError(e.reason?.message || String(e.reason)));
+
   navTo('dashboard');
   updateSyncStatus('ready');
 }
@@ -47,10 +60,15 @@ function navTo(page, searchInputId) {
   const navLinks = document.querySelectorAll('.nav-link');
   navLinks.forEach(n => n.classList.remove('active'));
 
-  // Show target page
+  // Show target page — trigger CSS transition by removing+re-adding class
   const pageEl = document.getElementById('page-' + page);
   if (!pageEl) { console.error('Page not found:', page); return; }
   pageEl.classList.add('active');
+  // Force reflow so the fade animation restarts on every nav
+  void pageEl.offsetWidth;
+  pageEl.style.animation = 'none';
+  void pageEl.offsetWidth;
+  pageEl.style.animation = '';
 
   // Set nav link active
   const navLink = document.querySelector(`.nav-link[data-page="${page}"]`);
@@ -82,12 +100,13 @@ function navTo(page, searchInputId) {
 async function loadDashboard() {
   try {
     const stats = await API.getStats();
-    document.getElementById('stat-total').textContent = stats.total;
-    document.getElementById('stat-config').textContent = stats.by_category?.config || 0;
-    document.getElementById('stat-project').textContent = stats.by_category?.project || 0;
-    document.getElementById('stat-user').textContent = stats.by_category?.user || 0;
-    document.getElementById('stat-knowledge').textContent = stats.by_category?.knowledge || 0;
-    document.getElementById('stat-reference').textContent = stats.by_category?.reference || 0;
+    // Animate stat numbers for a warm, alive feel
+    animateCounter(document.getElementById('stat-total'), stats.total);
+    animateCounter(document.getElementById('stat-config'), stats.by_category?.config || 0);
+    animateCounter(document.getElementById('stat-project'), stats.by_category?.project || 0);
+    animateCounter(document.getElementById('stat-user'), stats.by_category?.user || 0);
+    animateCounter(document.getElementById('stat-knowledge'), stats.by_category?.knowledge || 0);
+    animateCounter(document.getElementById('stat-reference'), stats.by_category?.reference || 0);
 
     const memories = await API.listMemories({ limit: 8 });
     allMemories = memories;
@@ -96,8 +115,9 @@ async function loadDashboard() {
   } catch (e) {
     console.error('Dashboard load error:', e);
     document.getElementById('stat-total').textContent = '—';
+    animateCounter(document.getElementById('stat-total'), 0);
     document.getElementById('recent-memories').innerHTML =
-      '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">加载失败，请检查网络或配置 API Key</div></div>';
+      '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-alert"/></svg><div class="empty-state-text">加载失败，请检查网络或配置 API Key</div><div class="empty-state-hint">可以尝试刷新页面或联系管理员。</div></div>';
   }
 }
 
@@ -110,6 +130,23 @@ function renderRecentMemories(memories) {
   container.innerHTML = memories.map(m => renderMemoryCard(m)).join('');
 }
 
+// Animate a stat number from 0 → target over `duration` ms.
+// Uses requestAnimationFrame so it syncs with the display refresh rate.
+function animateCounter(el, target, duration = 400) {
+  target = Number(target) || 0;
+  const start = 0;
+  const startTime = performance.now();
+  const tick = (now) => {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    // ease-out cubic
+    const ease = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.round(start + (target - start) * ease);
+    if (progress < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 // A contradicted memory is not deleted, so it reappears once the filter asks
 // for it — the badge is what stops it reading like a live fact.
 function statusBadge(status) {
@@ -117,7 +154,7 @@ function statusBadge(status) {
   return `<span class="status-badge status-${escAttr(status)}">${status === 'contradicted' ? '已被推翻' : '已过时'}</span>`;
 }
 
-function renderMemoryCard(m) {
+function renderMemoryCard(m, query) {
   const tagsHtml = (m.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const date = m.updated_at ? m.updated_at.substring(0, 10) : '';
   const idLabel = m.id != null ? `#${m.id}` : '';
@@ -135,14 +172,15 @@ function renderMemoryCard(m) {
             onclick="event.stopPropagation();toggleSelectMemory('${escHtml(m.slug)}')"
             title="选中后参与小结">`
     : '';
+  const desc = m.body ? m.body.substring(0, 200) : (m.description || '');
   return `
     <div class="memory-card ${selectedSlugs.has(m.slug) ? 'memory-selected' : ''}"
          onclick="showMemoryDetail('${escHtml(m.slug)}')">
       ${selectBox}
       <div class="memory-priority-dot priority-${escHtml(m.priority)}"></div>
       <div class="memory-content">
-        <div class="memory-name"><span class="memory-id">${idLabel}</span>${escHtml(m.name)}</div>
-        <div class="memory-desc">${escHtml(m.description || (m.body ? m.body.substring(0, 200) : ''))}</div>
+        <div class="memory-name"><span class="memory-id">${idLabel}</span>${highlightMatch(m.name, query)}</div>
+        <div class="memory-desc">${highlightMatch(desc, query)}</div>
         <div class="memory-meta">
           <span class="category-badge category-${escHtml(m.category)}">${escHtml(m.category)}</span>
           ${tagsHtml}
@@ -193,18 +231,25 @@ async function loadMemories() {
   }
 }
 
-function renderMemoriesList(memories) {
+let listSearchQuery = '';  // for highlighting in the memory list view
+
+function renderMemoriesList(memories, query) {
   const container = document.getElementById('memories-list');
   visibleMemories = memories || [];
+  listSearchQuery = query || '';
   document.getElementById('memories-count').textContent = `共 ${memories.length} 条记忆`;
   if (!memories.length) {
-    container.innerHTML = '<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-inbox"/></svg><div class="empty-state-text">没有找到记忆</div></div>';
+    const hint = listSearchQuery
+      ? '<div class="empty-state-hint">试试其他关键词，或去搜索页做关键词/语义/混合搜索。</div>'
+      : '';
+    container.innerHTML = `<div class="empty-state"><svg class="icon empty-state-icon" aria-hidden="true"><use href="#i-inbox"/></svg><div class="empty-state-text">没有找到记忆</div>${hint}</div>`;
     return;
   }
-  container.innerHTML = memories.map(m => renderMemoryCard(m)).join('');
+  container.innerHTML = memories.map(m => renderMemoryCard(m, listSearchQuery)).join('');
 }
 
 function filterMemories() {
+  listSearchQuery = '';
   // Category and priority checkboxes live in separate containers: reading
   // every .checkbox-list together used to feed priority values into the
   // category filter and empty the list.
@@ -301,6 +346,7 @@ async function doSearch() {
 function renderSearchResult(r) {
   const tagsHtml = (r.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('');
   const idLabel = r.id != null ? `#${r.id}` : '';
+  const q = lastSearch?.q || '';
   // match 只在 semantic/hybrid 模式下出现：这条是被哪一路找到的。
   const matchBadge = r.match
     ? `<span class="match-badge match-${escHtml(r.match)}">${
@@ -311,8 +357,8 @@ function renderSearchResult(r) {
     <div class="memory-card" onclick="showMemoryDetail('${escHtml(r.slug)}')">
       <div class="memory-priority-dot priority-${escHtml(r.priority)}"></div>
       <div class="memory-content">
-        <div class="memory-name"><span class="memory-id">${idLabel}</span>${escHtml(r.name)}</div>
-        <div class="memory-desc">${escHtml(r.description || '')}</div>
+        <div class="memory-name"><span class="memory-id">${idLabel}</span>${highlightMatch(r.name, q)}</div>
+        <div class="memory-desc">${highlightMatch(r.description || '', q)}</div>
         <div class="memory-meta">
           <span class="category-badge category-${escHtml(r.category)}">${escHtml(r.category)}</span>
           ${matchBadge}
@@ -473,9 +519,7 @@ async function loadDetailExtra(slug) {
   const box = document.getElementById('detail-extra');
   if (!box) return;
   try {
-    const [versions, related, reviews] = await Promise.all([
-      API.listVersions(slug), API.listRelations(slug), API.reviews(slug, { limit: 20 }),
-    ]);
+    const [versions, related] = await Promise.all([API.listVersions(slug), API.listRelations(slug)]);
     if (!document.body.contains(box)) return;  // the modal was replaced while loading
 
     // Only the latest snapshot is kept per memory (undo of the last edit).
@@ -491,18 +535,6 @@ async function loadDetailExtra(slug) {
           </div>`).join('')
       : '<div class="empty-hint">还没有编辑历史</div>';
 
-    // Verdicts are recorded, not overwritten: the status column says what is
-    // believed now, this says the same claim was contradicted and restored.
-    const reviewHtml = reviews.length
-      ? reviews.map(r => `
-          <div class="review-row">
-            <span class="review-action review-${escAttr(r.action)}">${escHtml(REVIEW_ACTION_LABELS[r.action] || r.action)}</span>
-            <span class="review-move">${escHtml(r.from_status || '?')} → ${escHtml(r.to_status || '?')}</span>
-            <span class="version-when">${escHtml(fmtDate(r.created_at))}${r.actor ? ' · ' + escHtml(r.actor) : ''}</span>
-            <div class="review-reason">${escHtml(r.reason || '')}</div>
-          </div>`).join('')
-      : '<div class="empty-hint">还没有复核记录 —— 没人判过它，不等于它是对的</div>';
-
     const relatedHtml = related.length
       ? related.map(r => `
           <span class="related-item" onclick="showMemoryDetail('${escHtml(r.slug)}')" title="${escHtml(r.relation_type)}">
@@ -511,10 +543,6 @@ async function loadDetailExtra(slug) {
       : '<div class="empty-hint">暂无关联记忆</div>';
 
     box.innerHTML = `
-      <div class="detail-section">
-        <h4>复核历史 (${reviews.length})</h4>
-        <div class="review-list">${reviewHtml}</div>
-      </div>
       <div class="detail-section">
         <h4>关联记忆</h4>
         <div class="related-list">${relatedHtml}</div>
@@ -533,10 +561,6 @@ async function loadDetailExtra(slug) {
 }
 
 // ── Provenance: refs, re-check, contradiction, the only way back ─────
-const REVIEW_ACTION_LABELS = {
-  invalidate: '推翻', verify: '复核', decay: '到期降级',
-};
-
 function refChip(ref) {
   const kind = String(ref).split(':')[0];
   const target = String(ref).slice(kind.length + 1);
@@ -569,16 +593,10 @@ function renderRefsBlock(m) {
   const chips = refs.length
     ? `<div class="ref-list">${refs.map(refChip).join('')}</div>`
     : '<div class="empty-hint">没有挂出处：读者没法复核这条是从哪来的</div>';
-  // Shown even when the memory is live: "nobody has checked this since 2025" is
-  // the fact a reader is otherwise never told.
-  const checkedLine = m.verified_at
-    ? `上次复核 ${escHtml(fmtDate(m.verified_at))}`
-    : '从未复核过' + (m.created_at ? `（写下已 ${escHtml(fmtDate(m.created_at))}）` : '');
   return `
     <h4>出处 (${refs.length})</h4>
     ${banner}
     ${chips}
-    <div class="ref-note">${checkedLine}</div>
     <div id="detail-ref-verdicts" class="ref-verdicts"></div>
     <div id="invalidate-form" class="invalidate-form" style="display:none">
       <input type="text" id="invalidate-reason" placeholder="为什么不成立了（必填，后来人只能看见这句话）">
@@ -641,7 +659,7 @@ async function confirmInvalidate() {
   if (!reason) { toast('写下为什么不成立 —— 原因是后来人唯一的线索', 'error'); return; }
   const supersededBy = (document.getElementById('invalidate-supersedes').value || '').trim();
   const status = document.getElementById('invalidate-status').value;
-  const payload = { reason, status, if_status: 'active' };
+  const payload = { reason, status };
   if (supersededBy) payload.superseded_by = supersededBy;
   try {
     await API.invalidate(slug, payload);
@@ -650,11 +668,7 @@ async function confirmInvalidate() {
     showMemoryDetail(slug);
     reloadCurrentPage();
   } catch (e) {
-    // 409 = somebody else judged it while this form was open. Overwriting them
-    // silently is the failure the precondition exists to prevent.
-    toast(isMovedConflict(e) ? '这条已经被别人改过：请重新打开再判（内容已刷新）'
-                             : '推翻失败: ' + e.message, 'error');
-    showMemoryDetail(slug);
+    toast('推翻失败: ' + e.message, 'error');
   }
 }
 
@@ -667,24 +681,13 @@ function verifyCurrentMemory() {
 // round and that would launder a wrong belief back into fact nightly.
 async function verifyMemoryUI(slug, verdict = 'ok') {
   try {
-    // Read first, then name the revision: if another agent judged it in between
-    // the server answers 409 instead of letting the later write own the truth.
-    const before = await API.getMemory(slug);
-    const m = await API.verify(slug, { verdict, reason: '在 Web UI 里人工复核',
-                                       if_status: before.status || 'active' });
+    const m = await API.verify(slug, { verdict, reason: '在 Web UI 里人工复核' });
     toast(`已复核 ${slug}: ${m.status === 'active' ? '回到列表与搜索' : m.status}`);
     if (currentDetailSlug === slug) showMemoryDetail(slug);
     reloadCurrentPage();
   } catch (e) {
-    toast(isMovedConflict(e) ? '这条已经被别人改过：请重新打开再判（内容已刷新）'
-                             : '复核写回失败: ' + e.message, 'error');
-    if (currentDetailSlug === slug) showMemoryDetail(slug);
+    toast('复核写回失败: ' + e.message, 'error');
   }
-}
-
-// FastAPI hands the 409 detail through as its message text.
-function isMovedConflict(error) {
-  return /moved since you read it/.test(String(error && error.message || ''));
 }
 
 async function relateFromDetail(slug) {
@@ -771,18 +774,6 @@ function reloadCurrentPage() {
 }
 
 // ── Add / Edit Modal ────────────────────────────────────────────────
-// 「人工维护」是 2.6.6 的 no-review 标签：有记录的豁免。勾选框是它唯一的真相源，
-// 所以每个开表单的入口都要显式设值 —— 留着上一条的勾选，下一条就会静默继承豁免，
-// 而静默的豁免正是复核队列反对的那种数。
-function setNoReview(checked) {
-  const box = document.getElementById('form-no-review');
-  if (box) box.checked = !!checked;
-}
-
-function hasNoReview(m) {
-  return (m.tags || []).some(tag => (tag.name || tag) === 'no-review');
-}
-
 function openAddModal() {
   currentEditSlug = null;
   document.getElementById('modal-title').textContent = '新建记忆';
@@ -795,7 +786,6 @@ function openAddModal() {
   currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
-  setNoReview(false);
   document.getElementById('modal-overlay').classList.add('active');
 }
 
@@ -812,7 +802,6 @@ function openEditModal(slug) {
     document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
-    setNoReview(hasNoReview(m));
     document.getElementById('modal-overlay').classList.add('active');
   }).catch(e => alert('加载失败: ' + e.message));
 }
@@ -822,27 +811,31 @@ function closeModal() {
   currentEditSlug = null;
 }
 
-// The checkbox is what the operator sees, so it wins over whatever text the
-// tag box happens to hold: ticked adds the tag, unticked removes it. A stored
-// "no-review" that the box says nothing about would keep a memory exempt after
-// the person maintaining it decided otherwise.
-function memoryFormTags() {
-  const tags = document.getElementById('form-tags').value
-    .split(',').map(tag => tag.trim()).filter(Boolean);
-  const wanted = document.getElementById('form-no-review').checked;
-  const kept = tags.filter(tag => tag !== 'no-review');
-  return wanted ? kept.concat(['no-review']) : kept;
-}
-
 async function saveMemory() {
-  const name = document.getElementById('form-name').value.trim();
-  if (!name) { alert('请输入名称'); return; }
+  const nameInput = document.getElementById('form-name');
+  const name = nameInput.value.trim();
+  if (!name) {
+    nameInput.focus();
+    toast('名称不能为空', 'error');
+    return;
+  }
+  if (name.length > 200) {
+    toast('名称不能超过 200 个字符', 'error');
+    return;
+  }
+
+  const body = document.getElementById('form-body').value;
+  if (!body) {
+    toast('内容不能为空', 'error');
+    document.getElementById('form-body').focus();
+    return;
+  }
 
   const data = {
     name,
     description: document.getElementById('form-description').value.trim(),
-    body: document.getElementById('form-body').value,
-    tags: memoryFormTags(),
+    body,
+    tags: document.getElementById('form-tags').value.split(',').map(t => t.trim()).filter(Boolean),
     category: document.getElementById('form-category').value,
     priority: document.getElementById('form-priority').value,
     branch: document.getElementById('form-branch').value.trim(),
@@ -868,7 +861,7 @@ async function saveMemory() {
       navTo(pageId);
     }
   } catch (e) {
-    alert('保存失败: ' + e.message);
+    toast('保存失败: ' + e.message, 'error');
   }
 }
 
@@ -1168,6 +1161,15 @@ function escAttr(str) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Highlight all occurrences of `q` inside `text` (case-insensitive). Safe:
+// input is always a plain string coming from the search input.
+function highlightMatch(text, q) {
+  if (!q || !text) return escHtml(text);
+  const escaped = escHtml(text);
+  const regex = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+  return escaped.replace(regex, '<mark class="search-hl">$1</mark>');
+}
+
 function debouncedSearch() {
   if (searchDebounce) clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
@@ -1178,7 +1180,7 @@ function debouncedSearch() {
       (m.description || '').toLowerCase().includes(val) ||
       (m.body || '').toLowerCase().includes(val)
     );
-    renderMemoriesList(filtered);
+    renderMemoriesList(filtered, val);
   }, 200);
 }
 
@@ -1720,7 +1722,7 @@ async function saveRagSettings() {
 // PCM from the mic → client-side WAV (16-bit mono 16k). whisper.cpp will not
 // decode webm, so the browser does the container work. Mic needs
 // https or localhost; plain http falls back to file upload.
-const voice = { ctx: null, stream: null, processor: null, samples: [], recording: false, source: null };
+const voice = { ctx: null, stream: null, processor: null, samples: [], recording: false, source: null, audioUrl: null };
 
 function initVoicePage() {
   const status = document.getElementById('voice-status');
@@ -1821,6 +1823,8 @@ async function transcribeFile() {
 let voiceSimilar = [];
 
 async function uploadWav(blob, filename) {
+  // Revoke old audio URL to free memory
+  if (voice.audioUrl) { URL.revokeObjectURL(voice.audioUrl); voice.audioUrl = null; }
   const status = document.getElementById('voice-status');
   const form = new FormData();
   form.append('file', blob, filename);
@@ -1830,6 +1834,15 @@ async function uploadWav(blob, filename) {
     voiceSimilar = result.similar || [];
     renderVoiceSimilar();
     if (status) status.textContent = `转写完成（${result.latency_ms}ms）`;
+
+    // ── Voice playback: show a native <audio> player for the uploaded file.
+    voice.audioUrl = URL.createObjectURL(blob);
+    const audio = document.getElementById('voice-audio');
+    const bar = document.getElementById('voice-playback');
+    if (audio && bar) {
+      audio.src = voice.audioUrl;
+      bar.classList.add('visible');
+    }
   } catch (e) {
     if (status) status.textContent = '转写失败: ' + e.message;
     toast('转写失败: ' + e.message, 'error');
@@ -1850,6 +1863,15 @@ function renderVoiceSimilar() {
     </div>`).join('');
 }
 
+function deleteVoiceAudio() {
+  if (voice.audioUrl) { URL.revokeObjectURL(voice.audioUrl); voice.audioUrl = null; }
+  const audio = document.getElementById('voice-audio');
+  const bar = document.getElementById('voice-playback');
+  if (audio) audio.src = '';
+  if (bar) bar.classList.remove('visible');
+  toast('录音已删除', 'info');
+}
+
 async function appendVoiceToMemory(slug) {
   const text = document.getElementById('voice-text').value.trim();
   if (!text) { toast('转写框是空的', 'error'); return; }
@@ -1866,7 +1888,6 @@ async function appendVoiceToMemory(slug) {
     document.getElementById('form-refs').value = currentEditRefs.join('  ');
     document.getElementById('form-category').value = m.category;
     document.getElementById('form-priority').value = m.priority;
-    setNoReview(hasNoReview(m));
     document.getElementById('modal-overlay').classList.add('active');
   } catch (e) {
     toast('打开失败: ' + e.message, 'error');
@@ -1887,7 +1908,6 @@ function createMemoryFromVoice() {
   currentEditRefs = [];
   document.getElementById('form-category').value = 'knowledge';
   document.getElementById('form-priority').value = 'medium';
-  setNoReview(false);
   document.getElementById('modal-overlay').classList.add('active');
 }
 

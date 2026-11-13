@@ -305,9 +305,16 @@
             <input type="file" id="voice-file" accept=".wav,.mp3,.m4a,.ogg,.webm,.flac,audio/*">
             <button class="btn" onclick="transcribeFile()">转写文件</button>
           </div>
+          <div class="voice-playback" id="voice-playback">
+            <svg class="icon" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><use href="#i-mic"/></svg>
+            <audio id="voice-audio" controls preload="auto"></audio>
+            <div class="voice-playback-actions">
+              <button class="btn btn-sm btn-ghost" id="voice-playback-delete" onclick="deleteVoiceAudio()">删除</button>
+            </div>
+          </div>
           <div class="form-group">
             <label>转写结果（可直接编辑后再写入）</label>
-            <textarea id="voice-text" rows="6" placeholder="录音或上传后，文字出现在这里…"></textarea>
+            <textarea id="voice-text" rows="6" placeholder="录音或上传后，文字出现在这里…" required></textarea>
           </div>
           <h4>相似记忆（cos &gt; 0.6）</h4>
           <div id="voice-similar" class="log-list"><div class="empty-hint">还没有转写结果</div></div>
@@ -322,11 +329,11 @@
     <section id="page-pics" class="page">
       <div class="pic-topbar">
         <div class="pic-tabs">
-          <button class="pic-tab active" data-view="" onclick="picSetView('')">相册</button>
-          <button class="pic-tab" data-view="missing" onclick="picSetView('missing')">缺失</button>
-          <button class="pic-tab" data-view="failed" onclick="picSetView('failed')">失败</button>
-          <button class="pic-tab" data-view="ignored" onclick="picSetView('ignored')">已忽略</button>
-          <button class="pic-tab" data-view="trash" onclick="picSetView('trash')">回收站</button>
+          <button class="pic-tab active" data-view="" tabindex="0" onclick="picSetView('')">相册</button>
+          <button class="pic-tab" data-view="missing" tabindex="0" onclick="picSetView('missing')">缺失</button>
+          <button class="pic-tab" data-view="failed" tabindex="0" onclick="picSetView('failed')">失败</button>
+          <button class="pic-tab" data-view="ignored" tabindex="0" onclick="picSetView('ignored')">已忽略</button>
+          <button class="pic-tab" data-view="trash" tabindex="0" onclick="picSetView('trash')">回收站</button>
         </div>
         <div class="pic-searchbox">
           <svg class="icon pic-search-icon" aria-hidden="true"><use href="#i-sparkle"/></svg>
@@ -887,10 +894,6 @@
           <div class="form-group">
             <label>标签</label>
             <input type="text" id="form-tags" placeholder="逗号分隔">
-            <label class="form-hint" for="form-no-review">
-              <input type="checkbox" id="form-no-review"> 人工维护 · 不参与复核与老化
-            </label>
-            <div class="form-hint">勾上写入 <code>no-review</code>：这条由人自己维护，不降 stale、不进待复核队列，队列的 counts 仍把它点名（有记录的跳过，不是静默消失）。没挂出处的记忆本来就不会老化，但会一直留在「补把手」清单里。</div>
           </div>
           <div class="form-group">
             <label>分支</label>
